@@ -1,0 +1,111 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum LocationStatus {
+  pending
+  active
+  removed
+}
+
+enum WebhookStatus {
+  received
+  processed
+  failed
+}
+
+model AgencyInstall {
+  id                String    @id @default(cuid())
+  ghlCompanyId      String    @unique
+  companyName       String?
+  userId            String?
+  userType          String?
+  accessTokenEnc    String
+  refreshTokenEnc   String
+  tokenExpiresAt    DateTime
+  scopes            String?
+  status            String    @default("active")
+  installedAt       DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  locations         LocationInstall[]
+  menuLink          CustomMenuLinkRegistration?
+
+  @@index([status])
+}
+
+model LocationInstall {
+  id                String    @id @default(cuid())
+  agencyInstallId   String
+  agencyInstall     AgencyInstall @relation(fields: [agencyInstallId], references: [id])
+  ghlLocationId     String    @unique
+  locationName      String?
+  status            LocationStatus @default(pending)
+  enabled           Boolean   @default(false)
+  userId            String?
+  userType          String?
+  accessTokenEnc    String?
+  refreshTokenEnc   String?
+  tokenExpiresAt    DateTime?
+  scopes            String?
+  installedAt       DateTime?
+  activatedAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  themeConfigs      ThemeConfig[]
+
+  @@index([agencyInstallId])
+  @@index([status])
+}
+
+model ThemeConfig {
+  id                  String    @id @default(cuid())
+  locationInstallId   String
+  locationInstall     LocationInstall @relation(fields: [locationInstallId], references: [id])
+  brandName           String?
+  logoUrl             String?
+  faviconUrl          String?
+  primaryColor        String?
+  secondaryColor      String?
+  accentColor         String?
+  menuLabelOverrides  Json?
+  hiddenFeatures      Json?
+  customCssOverride   String?
+  version             Int       @default(1)
+  updatedByUserId     String?
+  updatedAt           DateTime  @updatedAt
+  createdAt           DateTime  @default(now())
+
+  @@index([locationInstallId])
+}
+
+model CustomMenuLinkRegistration {
+  id                  String    @id @default(cuid())
+  agencyInstallId     String    @unique
+  agencyInstall       AgencyInstall @relation(fields: [agencyInstallId], references: [id])
+  ghlMenuLinkId       String
+  slug                String    @unique
+  url                 String
+  targetLocationIds   Json
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+}
+
+model WebhookEvent {
+  id            String    @id @default(cuid())
+  ghlEventId    String    @unique
+  eventType     String
+  payload       Json
+  receivedAt    DateTime  @default(now())
+  processedAt   DateTime?
+  status        WebhookStatus @default(received)
+  errorMessage  String?
+
+  @@index([eventType])
+}

@@ -1,0 +1,14 @@
+{
+  "name": "ghl-theme-builder",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev --workspace apps/server",
+    "build:server": "npm run build --workspace apps/server",
+    "prisma:generate": "npm run prisma:generate --workspace apps/server",
+    "prisma:migrate": "npm run prisma:migrate --workspace apps/server"
+  }
+}
