@@ -110,8 +110,10 @@ export function ThemeEditorModal({
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    fetchSidebarFeatures().then(setFeatures);
-  }, []);
+    // Editing the agency default (no brand name) → show the agency sidebar items;
+    // editing a sub-account → show the sub-account items.
+    fetchSidebarFeatures(showBrandName ? undefined : "agency").then(setFeatures);
+  }, [showBrandName]);
 
   const patchLook = (p: Partial<Look>) => setLook((l) => ({ ...l, ...p }));
 

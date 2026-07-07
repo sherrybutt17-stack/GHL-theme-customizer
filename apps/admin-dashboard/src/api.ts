@@ -125,8 +125,8 @@ const j = (method: string, body?: unknown) => ({
 
 const g = () => ({ headers: authHeaders() });
 
-export const fetchSidebarFeatures = (): Promise<SidebarFeature[]> =>
-  fetch(`${API_BASE}/admin/api/sidebar-features`, g()).then(handle);
+export const fetchSidebarFeatures = (scope?: "agency"): Promise<SidebarFeature[]> =>
+  fetch(`${API_BASE}/admin/api/sidebar-features${scope ? `?scope=${scope}` : ""}`, g()).then(handle);
 
 export const fetchLocations = (a: string): Promise<LocationRow[]> =>
   fetch(`${API_BASE}/admin/api/${a}/locations`, g()).then(handle);

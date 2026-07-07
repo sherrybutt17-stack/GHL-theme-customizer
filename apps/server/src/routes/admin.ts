@@ -1,14 +1,19 @@
 import { Router, Request, Response } from "express";
 import { prisma } from "../services/prisma";
 import { generateThemeCssBundle } from "../services/themeCssBundle";
-import { GHL_SIDEBAR_FEATURES } from "../services/ghlSidebarFeatures";
+import { GHL_SIDEBAR_FEATURES, GHL_AGENCY_SIDEBAR_FEATURES } from "../services/ghlSidebarFeatures";
 import { dashboardAuthEnabled, verifyDashboardToken } from "../services/dashboardAuth";
 
 export const adminRouter = Router();
 
-/** Static list of themeable sidebar features, for the admin UI's toggles. */
-adminRouter.get("/admin/api/sidebar-features", (_req: Request, res: Response) => {
-  res.json(GHL_SIDEBAR_FEATURES);
+/**
+ * Static list of themeable sidebar features for the admin UI's toggles.
+ * `?scope=agency` returns the agency-level sidebar items (shown when editing the
+ * agency default); otherwise the sub-account items.
+ */
+adminRouter.get("/admin/api/sidebar-features", (req: Request, res: Response) => {
+  const agency = req.query.scope === "agency";
+  res.json(agency ? GHL_AGENCY_SIDEBAR_FEATURES : GHL_SIDEBAR_FEATURES);
 });
 
 /** Pull the shared visual theme fields out of a request body (whitelist). */
