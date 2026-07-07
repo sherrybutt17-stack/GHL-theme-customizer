@@ -239,7 +239,11 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
   // default) so it shows only on that sub-account's pages. CSS-only, so it's a
   // persistent banner, not a click-to-dismiss modal (that would need JS).
   if (theme.alertMessage && theme.alertMessage.trim()) {
-    const target = scope.prefix || "body";
+    // Anchor to the page root so `position: fixed` stays viewport-relative
+    // (a `transform` on any ancestor would otherwise break fixed positioning).
+    // Scope to the location via :has() - the banner shows only on pages that
+    // contain that sub-account's wrapper element.
+    const target = scope.prefix ? `html:has(${scope.prefix})` : "body";
     const color = theme.alertColor || "#4f46e5";
     const safe = theme.alertMessage.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\s*\n\s*/g, " ");
     rules.push(
