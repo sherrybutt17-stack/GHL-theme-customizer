@@ -1,5 +1,23 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3210";
 
+// Dashboard session token, minted at /admin-embed and passed as ?t=...
+// We stash it so every API call carries it (verified server-side when
+// DASHBOARD_AUTH_ENABLED=true). Persisted to sessionStorage so it survives
+// in-app navigations that drop the query string.
+function readToken(): string {
+  const fromUrl = new URLSearchParams(window.location.search).get("t");
+  if (fromUrl) {
+    sessionStorage.setItem("mosaic_token", fromUrl);
+    return fromUrl;
+  }
+  return sessionStorage.getItem("mosaic_token") ?? "";
+}
+const TOKEN = readToken();
+
+function authHeaders(): Record<string, string> {
+  return TOKEN ? { "x-mosaic-token": TOKEN } : {};
+}
+
 /** The visual look fields shared by location themes, the agency default, and presets. */
 export interface VisualTheme {
   logoUrl: string | null;
@@ -78,15 +96,17 @@ async function handle(res: Response): Promise<any> {
 
 const j = (method: string, body?: unknown) => ({
   method,
-  headers: { "Content-Type": "application/json" },
+  headers: { "Content-Type": "application/json", ...authHeaders() },
   ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
 });
 
+const g = () => ({ headers: authHeaders() });
+
 export const fetchSidebarFeatures = (): Promise<SidebarFeature[]> =>
-  fetch(`${API_BASE}/admin/api/sidebar-features`).then(handle);
+  fetch(`${API_BASE}/admin/api/sidebar-features`, g()).then(handle);
 
 export const fetchLocations = (a: string): Promise<LocationRow[]> =>
-  fetch(`${API_BASE}/admin/api/${a}/locations`).then(handle);
+  fetch(`${API_BASE}/admin/api/${a}/locations`, g()).then(handle);
 
 export const saveTheme = (a: string, loc: string, theme: ThemeInput): Promise<ThemeConfig> =>
   fetch(`${API_BASE}/admin/api/${a}/locations/${loc}/theme`, j("PUT", theme)).then(handle);
@@ -95,13 +115,13 @@ export const setEnabled = (a: string, loc: string, enabled: boolean) =>
   fetch(`${API_BASE}/admin/api/${a}/locations/${loc}/enabled`, j("PUT", { enabled })).then(handle);
 
 export const fetchDefaultTheme = (a: string): Promise<AgencyDefaultTheme | null> =>
-  fetch(`${API_BASE}/admin/api/${a}/default-theme`).then(handle);
+  fetch(`${API_BASE}/admin/api/${a}/default-theme`, g()).then(handle);
 
 export const saveDefaultTheme = (a: string, theme: ThemeInput): Promise<AgencyDefaultTheme> =>
   fetch(`${API_BASE}/admin/api/${a}/default-theme`, j("PUT", theme)).then(handle);
 
 export const fetchPresets = (a: string): Promise<ThemePreset[]> =>
-  fetch(`${API_BASE}/admin/api/${a}/presets`).then(handle);
+  fetch(`${API_BASE}/admin/api/${a}/presets`, g()).then(handle);
 
 export const createPreset = (a: string, preset: Partial<ThemePreset> & { name: string }): Promise<ThemePreset> =>
   fetch(`${API_BASE}/admin/api/${a}/presets`, j("POST", preset)).then(handle);
@@ -115,4 +135,4 @@ export interface EmbedInfo {
 }
 
 export const fetchEmbedInfo = (a: string): Promise<EmbedInfo> =>
-  fetch(`${API_BASE}/admin/api/${a}/embed`).then(handle);
+  fetch(`${API_BASE}/admin/api/${a}/embed`, g()).then(handle);

@@ -13,10 +13,11 @@ const LOGO_CONTAINER_SELECTOR = ".agency-logo-container";
 const LOGO_IMG_SELECTOR = "img.agency-logo";
 
 /**
- * Top-bar selector. PLACEHOLDER - needs confirming via DOM inspection of the
- * white header bar. Update this one constant once known.
+ * Top-bar (white header) selector, confirmed via DOM inspection:
+ * <header class="hl_header hl_header--collapse">. It sits inside the
+ * location-classed wrapper, so location scoping applies the same as the sidebar.
  */
-const TOP_BAR_SELECTOR = ".hl_header, #hl_header, .hl-header-container";
+const TOP_BAR_SELECTOR = ".hl_header";
 
 /** Visual fields shared by ThemeConfig, AgencyDefaultTheme, and ThemePreset. */
 interface VisualTheme {

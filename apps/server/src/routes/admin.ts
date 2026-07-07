@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { prisma } from "../services/prisma";
 import { generateThemeCssBundle } from "../services/themeCssBundle";
 import { GHL_SIDEBAR_FEATURES } from "../services/ghlSidebarFeatures";
+import { dashboardAuthEnabled, verifyDashboardToken } from "../services/dashboardAuth";
 
 export const adminRouter = Router();
 
@@ -29,16 +30,24 @@ function visualFields(body: any) {
 }
 
 /**
- * Every route here is scoped by :agencyInstallId in the path. This is the same
- * "link carries the tenant" pattern as the onboarding page (no separate login
- * system yet) - real auth is a future refinement, not required for the admin
- * to safely manage only their own agency's data.
+ * Every route here is scoped by :agencyInstallId in the path. When
+ * DASHBOARD_AUTH_ENABLED=true, we additionally require a valid HMAC token
+ * (minted at /admin-embed, sent by the dashboard as x-mosaic-token) that matches
+ * the agency in the path - a real, expiring credential. When disabled (dev
+ * default), we fall back to the "menu-link URL carries the tenant" model.
  */
 async function requireAgency(req: Request, res: Response): Promise<string | null> {
   const agency = await prisma.agencyInstall.findUnique({ where: { id: req.params.agencyInstallId } });
   if (!agency) {
     res.status(404).json({ error: "Unknown agency install" });
     return null;
+  }
+  if (dashboardAuthEnabled()) {
+    const token = (req.headers["x-mosaic-token"] as string | undefined) ?? undefined;
+    if (!verifyDashboardToken(token, agency.id)) {
+      res.status(401).json({ error: "Missing or invalid dashboard token" });
+      return null;
+    }
   }
   return agency.id;
 }

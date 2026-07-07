@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { prisma } from "../services/prisma";
+import { mintDashboardToken } from "../services/dashboardAuth";
 
 export const adminEmbedRouter = Router();
 
@@ -23,5 +24,6 @@ adminEmbedRouter.get("/admin-embed/:agencyInstallId", async (req: Request, res: 
   }
 
   const adminDashboardUrl = process.env.ADMIN_DASHBOARD_URL ?? "http://localhost:5173";
-  res.redirect(`${adminDashboardUrl}/${agency.id}`);
+  const token = mintDashboardToken(agency.id);
+  res.redirect(`${adminDashboardUrl}/${agency.id}?t=${encodeURIComponent(token)}`);
 });
