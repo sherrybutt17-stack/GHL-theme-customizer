@@ -1,4 +1,5 @@
 import { prisma } from "./prisma";
+import { featureSelector } from "./ghlSidebarFeatures";
 
 /**
  * GHL sidebar logo, confirmed via live DOM inspection:
@@ -47,6 +48,11 @@ export async function generateThemeCssBundle(agencyInstallId: string): Promise<s
       `#sidebar-v2:has(a[href*="/location/${loc.ghlLocationId}/"])`,
       `.hl_sidebar:has(a[href*="/location/${loc.ghlLocationId}/"])`,
     ];
+    // The sidebar wrapper div carries the raw location id as a CSS class
+    // (confirmed in DOM). Used for logo/feature/label rules, which need a
+    // location-scoped ancestor without the ":has() + descendant" pattern that
+    // GHL's rendering didn't honor.
+    const wrapper = `[class~="${loc.ghlLocationId}"]`;
 
     const rules = [
       `${bases.join(", ")} { background: ${primary} !important; }`,
@@ -62,11 +68,43 @@ export async function generateThemeCssBundle(agencyInstallId: string): Promise<s
     // Paint the new logo as a container background and hide the original <img>
     // with opacity:0 (keeps layout height so the background fills correctly).
     if (theme.logoUrl) {
-      const wrapper = `[class~="${loc.ghlLocationId}"]`;
       rules.push(
         `${wrapper} ${LOGO_CONTAINER_SELECTOR} { background-image: url("${theme.logoUrl}") !important; background-size: contain !important; background-repeat: no-repeat !important; background-position: center !important; min-height: 40px !important; }`
       );
       rules.push(`${wrapper} ${LOGO_IMG_SELECTOR} { opacity: 0 !important; }`);
+    }
+
+    // Feature hiding ("SaaS lockout"): hide specific sidebar items for this
+    // sub-account. hiddenFeatures is a JSON array of feature keys (see
+    // ghlSidebarFeatures.ts).
+    const hidden = Array.isArray(theme.hiddenFeatures) ? (theme.hiddenFeatures as string[]) : [];
+    for (const key of hidden) {
+      const sel = featureSelector(key)
+        .split(", ")
+        .map((s) => `${wrapper} ${s}`)
+        .join(", ");
+      rules.push(`${sel} { display: none !important; }`);
+    }
+
+    // Menu label renaming: replace a feature's visible label. CSS can't edit an
+    // element's text node, so we zero out the original label span and inject the
+    // custom text via ::after. menuLabelOverrides is a JSON object { key: label }.
+    const labels =
+      theme.menuLabelOverrides && typeof theme.menuLabelOverrides === "object"
+        ? (theme.menuLabelOverrides as Record<string, string>)
+        : {};
+    for (const [key, label] of Object.entries(labels)) {
+      if (!label) continue;
+      const safe = label.replace(/"/g, '\\"');
+      const parts = featureSelector(key)
+        .split(", ")
+        .map((s) => `${wrapper} ${s} .nav-title`);
+      // ::after must be appended to EACH selector, not the joined string (CSS
+      // commas don't distribute a trailing pseudo-element).
+      rules.push(`${parts.join(", ")} { font-size: 0 !important; }`);
+      rules.push(
+        `${parts.map((p) => `${p}::after`).join(", ")} { content: "${safe}" !important; font-size: 14px !important; }`
+      );
     }
 
     blocks.push(`/* ${loc.locationName ?? loc.ghlLocationId} */\n` + rules.join("\n"));

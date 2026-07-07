@@ -331,6 +331,74 @@ body {
   font-size: 14px;
 }
 
+/* Modal tabs */
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  padding: 12px 8px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+/* Feature list */
+.feature-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.feature-row {
+  display: grid;
+  grid-template-columns: 1fr 130px 84px;
+  align-items: center;
+  gap: 10px;
+}
+
+.feature-name {
+  font-size: 14px;
+}
+
+.feature-name.hidden {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.feature-rename {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.feature-rename:disabled {
+  background: #f3f4f6;
+  cursor: not-allowed;
+}
+
 .error-banner {
   background: #fef2f2;
   border: 1px solid #fecaca;

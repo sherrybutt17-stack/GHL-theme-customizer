@@ -7,7 +7,18 @@ export interface ThemeConfig {
   primaryColor: string | null;
   secondaryColor: string | null;
   accentColor: string | null;
+  menuLabelOverrides: Record<string, string> | null;
+  hiddenFeatures: string[] | null;
   version: number;
+}
+
+export interface SidebarFeature {
+  key: string;
+  label: string;
+}
+
+export function fetchSidebarFeatures(): Promise<SidebarFeature[]> {
+  return fetch(`${API_BASE}/admin/api/sidebar-features`).then((r) => handle(r));
 }
 
 export interface LocationRow {
@@ -24,6 +35,8 @@ export interface ThemeInput {
   primaryColor: string;
   secondaryColor: string;
   accentColor: string;
+  menuLabelOverrides: Record<string, string>;
+  hiddenFeatures: string[];
 }
 
 async function handle<T>(res: Response): Promise<T> {

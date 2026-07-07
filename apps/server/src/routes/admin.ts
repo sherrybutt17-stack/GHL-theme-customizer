@@ -1,8 +1,14 @@
 import { Router, Request, Response } from "express";
 import { prisma } from "../services/prisma";
 import { generateThemeCssBundle } from "../services/themeCssBundle";
+import { GHL_SIDEBAR_FEATURES } from "../services/ghlSidebarFeatures";
 
 export const adminRouter = Router();
+
+/** Static list of themeable sidebar features, for the admin UI's toggles. */
+adminRouter.get("/admin/api/sidebar-features", (_req: Request, res: Response) => {
+  res.json(GHL_SIDEBAR_FEATURES);
+});
 
 /**
  * Every route here is scoped by :agencyInstallId in the path. This is the same
