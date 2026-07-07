@@ -35,9 +35,6 @@ export interface VisualTheme {
   scrollbarColor: string | null;
   darkMode: boolean;
   hideUpgrade: boolean;
-  animateLoadIn: boolean;
-  animateScroll: boolean;
-  topNav: boolean;
   alertMessage: string | null;
   alertColor: string | null;
   menuLabelOverrides: Record<string, string> | null;
@@ -71,9 +68,6 @@ export interface ThemePreset {
   cornerRadius: number | null;
   scrollbarColor: string | null;
   darkMode: boolean;
-  animateLoadIn: boolean;
-  animateScroll: boolean;
-  topNav: boolean;
 }
 
 export interface LocationRow {
@@ -107,9 +101,6 @@ export interface ThemeInput {
   scrollbarColor: string;
   darkMode: boolean;
   hideUpgrade: boolean;
-  animateLoadIn: boolean;
-  animateScroll: boolean;
-  topNav: boolean;
   alertMessage: string;
   alertColor: string;
   customCss: string;

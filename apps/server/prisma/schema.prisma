@@ -89,9 +89,6 @@ model ThemeConfig {
   scrollbarColor      String?
   darkMode            Boolean   @default(false)
   hideUpgrade         Boolean   @default(false)
-  animateLoadIn       Boolean   @default(false)
-  animateScroll       Boolean   @default(false)
-  topNav              Boolean   @default(false)
   alertMessage        String?
   alertColor          String?
   menuLabelOverrides  Json?
@@ -128,9 +125,6 @@ model AgencyDefaultTheme {
   scrollbarColor      String?
   darkMode            Boolean   @default(false)
   hideUpgrade         Boolean   @default(false)
-  animateLoadIn       Boolean   @default(false)
-  animateScroll       Boolean   @default(false)
-  topNav              Boolean   @default(false)
   alertMessage        String?
   alertColor          String?
   customCss           String?
@@ -160,9 +154,6 @@ model ThemePreset {
   cornerRadius        Int?
   scrollbarColor      String?
   darkMode            Boolean   @default(false)
-  animateLoadIn       Boolean   @default(false)
-  animateScroll       Boolean   @default(false)
-  topNav              Boolean   @default(false)
   createdAt           DateTime  @default(now())
 
   @@index([agencyInstallId])

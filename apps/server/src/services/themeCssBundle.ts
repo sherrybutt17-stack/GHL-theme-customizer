@@ -35,9 +35,6 @@ interface VisualTheme {
   scrollbarColor?: string | null;
   darkMode?: boolean | null;
   hideUpgrade?: boolean | null;
-  animateLoadIn?: boolean | null;
-  animateScroll?: boolean | null;
-  topNav?: boolean | null;
   alertMessage?: string | null;
   alertColor?: string | null;
   menuLabelOverrides?: unknown;
@@ -61,30 +58,20 @@ const DARK_SURFACE_SELECTOR = ".hl_wrapper, .hl_wrapper--inner, .hl-main, main";
 const DARK_CARD_SELECTOR = ".card, .hl-card";
 const UPGRADE_SELECTOR =
   "[class*='upgrade'], [href*='upgrade'], [href*='billing'], .upgrade-banner, [data-testid*='upgrade']";
-/** Cards that reveal on scroll (confirmed: GHL cards use .hl-card). */
-const SCROLL_REVEAL_SELECTOR = ".hl-card, .card";
-/** Emitted once at the top of the bundle when any theme uses an animation. */
-const ANIMATION_KEYFRAMES =
-  "@keyframes mosaic-fade-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }";
 
 /**
  * A scope determines whether rules apply globally (agency default) or only to
  * one sub-account (location override, which wins by specificity).
  *  - bases:   selectors for the sidebar element itself (for background).
  *  - prefix:  ancestor selector prepended to descendant rules ("" for global).
- *  - descendant(sel): helper that scopes a descendant selector list correctly.
  */
 interface Scope {
   bases: string[];
   prefix: string;
-  // `:has(...)` fragment that lets us select the layout WRAPPER (an ancestor of
-  // the sidebar) for just this location - needed for top-nav layout reflow.
-  // Empty for the global/agency-default scope (applies to all).
-  wrap: string;
 }
 
 function globalScope(): Scope {
-  return { bases: ["#sidebar-v2", ".hl_sidebar"], prefix: "", wrap: "" };
+  return { bases: ["#sidebar-v2", ".hl_sidebar"], prefix: "" };
 }
 
 function locationScope(locationId: string): Scope {
@@ -93,17 +80,8 @@ function locationScope(locationId: string): Scope {
     bases: [`#sidebar-v2${has}`, `.hl_sidebar${has}`],
     // The sidebar wrapper div carries the raw location id as a CSS class.
     prefix: `[class~="${locationId}"]`,
-    wrap: has,
   };
 }
-
-/**
- * The flex container that holds the sidebar + content side by side, confirmed
- * via live DOM: <div class="flex sidebar-v2-location pmd-app {locationId} ...">.
- * It carries the location id as a class, so scope.prefix already targets it for
- * a location; ".sidebar-v2-location" is the global (all-locations) equivalent.
- */
-const LAYOUT_WRAPPER_GLOBAL = ".sidebar-v2-location";
 
 /** Scope a comma-separated descendant selector list under the scope's prefix. */
 function scoped(scope: Scope, selectorList: string): string {
@@ -225,58 +203,6 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     rules.push(`${scoped(scope, UPGRADE_SELECTOR)} { display: none !important; }`);
   }
 
-  // Load-in: fade the content column up on each page load. The content is the
-  // non-sidebar child of the layout wrapper (which carries the location class).
-  if (theme.animateLoadIn) {
-    const content = scope.prefix ? `${scope.prefix} > div` : `${LAYOUT_WRAPPER_GLOBAL} > div`;
-    rules.push(`${content} { animation: mosaic-fade-in 0.5s ease both !important; }`);
-  }
-
-  // Scroll-reveal: cards fade in as they enter the viewport (CSS scroll-driven
-  // animation - progressive enhancement; ignored by browsers without support).
-  if (theme.animateScroll) {
-    rules.push(
-      `${scoped(scope, SCROLL_REVEAL_SELECTOR)} { animation: mosaic-fade-in linear both !important; animation-timeline: view() !important; animation-range: entry 0% cover 25% !important; }`
-    );
-  }
-
-  // Top navigation: reflow the layout so the sidebar sits across the top as a
-  // horizontal bar instead of down the left side.
-  if (theme.topNav) {
-    // Sidebar internals, confirmed via live DOM inspection:
-    //   #sidebar-v2 > div.relative.flex.flex-col.h-screen.w-14   (main column)
-    //     > div.flex.flex-col...lead-connector
-    //       > div...hl_nav-header (scroll area)
-    //         > nav.flex-1.w-full
-    //           > a.w-full...        (w-full = each link stretches full width)
-    // So: flip the wrapper to a column, flatten the sidebar's flex-col stacks
-    // into rows, drop the h-screen/w-14 sizing, and stop links being full-width.
-    const wrapper = scope.prefix || LAYOUT_WRAPPER_GLOBAL;
-    const sb = scope.prefix ? `${scope.prefix} #sidebar-v2` : "#sidebar-v2";
-
-    // 1. Stack sidebar above content.
-    rules.push(`${wrapper} { flex-direction: column !important; }`);
-    // 2. Sidebar becomes a full-width, auto-height strip.
-    rules.push(
-      `${sb} { width: 100% !important; max-width: 100% !important; height: auto !important; min-height: 0 !important; }`
-    );
-    // 3. Every vertical flex-col stack inside the sidebar becomes a row.
-    rules.push(
-      `${sb} .flex.flex-col { flex-direction: row !important; height: auto !important; min-height: 0 !important; align-items: center !important; }`
-    );
-    // 4. Undo the full-viewport-height and fixed-narrow-width utilities.
-    rules.push(`${sb} .h-screen { height: auto !important; min-height: 0 !important; }`);
-    rules.push(`${sb} .w-14 { width: 100% !important; }`);
-    // 5. Nav areas scroll sideways instead of down.
-    rules.push(
-      `${sb} .hl_nav-header, ${sb} nav { width: 100% !important; overflow-x: auto !important; overflow-y: hidden !important; }`
-    );
-    // 6. Links size to their content instead of stretching full-width.
-    rules.push(
-      `${sb} a.w-full, ${sb} nav a { width: auto !important; flex: 0 0 auto !important; white-space: nowrap !important; }`
-    );
-  }
-
   // Logo swap
   if (theme.logoUrl) {
     rules.push(
@@ -379,10 +305,6 @@ export async function generateThemeCssBundle(agencyInstallId: string): Promise<s
 
   const imports = fontImports(allThemes);
   if (imports) blocks.push(imports);
-
-  if (allThemes.some((t) => t.animateLoadIn || t.animateScroll)) {
-    blocks.push(ANIMATION_KEYFRAMES);
-  }
 
   if (defaultTheme) {
     blocks.push("/* Agency default (applies to all sub-accounts unless overridden) */\n" + renderRules(globalScope(), defaultTheme as VisualTheme).join("\n"));

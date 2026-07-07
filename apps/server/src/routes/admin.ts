@@ -30,9 +30,6 @@ function visualFields(body: any) {
     scrollbarColor: body?.scrollbarColor || null,
     darkMode: !!body?.darkMode,
     hideUpgrade: !!body?.hideUpgrade,
-    animateLoadIn: !!body?.animateLoadIn,
-    animateScroll: !!body?.animateScroll,
-    topNav: !!body?.topNav,
     alertMessage: body?.alertMessage || null,
     alertColor: body?.alertColor || null,
     menuLabelOverrides: body?.menuLabelOverrides,
@@ -55,9 +52,6 @@ function presetLookFields(body: any) {
     cornerRadius: typeof body?.cornerRadius === "number" ? body.cornerRadius : null,
     scrollbarColor: body?.scrollbarColor || null,
     darkMode: !!body?.darkMode,
-    animateLoadIn: !!body?.animateLoadIn,
-    animateScroll: !!body?.animateScroll,
-    topNav: !!body?.topNav,
   };
 }
 
@@ -309,9 +303,6 @@ adminRouter.post(
             cornerRadius: preset.cornerRadius,
             scrollbarColor: preset.scrollbarColor,
             darkMode: preset.darkMode,
-            animateLoadIn: preset.animateLoadIn,
-            animateScroll: preset.animateScroll,
-            topNav: preset.topNav,
             version: (prev?.version ?? 0) + 1,
           },
         });
