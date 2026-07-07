@@ -92,6 +92,8 @@ model ThemeConfig {
   animateLoadIn       Boolean   @default(false)
   animateScroll       Boolean   @default(false)
   topNav              Boolean   @default(false)
+  alertMessage        String?
+  alertColor          String?
   menuLabelOverrides  Json?
   hiddenFeatures      Json?
   customCssOverride   String?
@@ -129,6 +131,8 @@ model AgencyDefaultTheme {
   animateLoadIn       Boolean   @default(false)
   animateScroll       Boolean   @default(false)
   topNav              Boolean   @default(false)
+  alertMessage        String?
+  alertColor          String?
   customCss           String?
   menuLabelOverrides  Json?
   hiddenFeatures      Json?

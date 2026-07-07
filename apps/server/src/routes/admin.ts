@@ -33,6 +33,8 @@ function visualFields(body: any) {
     animateLoadIn: !!body?.animateLoadIn,
     animateScroll: !!body?.animateScroll,
     topNav: !!body?.topNav,
+    alertMessage: body?.alertMessage || null,
+    alertColor: body?.alertColor || null,
     menuLabelOverrides: body?.menuLabelOverrides,
     hiddenFeatures: body?.hiddenFeatures,
   };

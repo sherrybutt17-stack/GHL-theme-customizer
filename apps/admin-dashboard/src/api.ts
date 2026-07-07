@@ -38,6 +38,8 @@ export interface VisualTheme {
   animateLoadIn: boolean;
   animateScroll: boolean;
   topNav: boolean;
+  alertMessage: string | null;
+  alertColor: string | null;
   menuLabelOverrides: Record<string, string> | null;
   hiddenFeatures: string[] | null;
 }
@@ -108,6 +110,8 @@ export interface ThemeInput {
   animateLoadIn: boolean;
   animateScroll: boolean;
   topNav: boolean;
+  alertMessage: string;
+  alertColor: string;
   customCss: string;
   menuLabelOverrides: Record<string, string>;
   hiddenFeatures: string[];

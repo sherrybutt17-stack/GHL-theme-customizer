@@ -24,6 +24,36 @@ interface Props {
   onCancel: () => void;
 }
 
+/**
+ * Read an uploaded image file, shrink it to at most `maxDim` px on its longest
+ * side, and return a compact data: URL. Embedding the logo as a data URL means
+ * no external file hosting is needed - it rides along in the theme CSS.
+ */
+function fileToDownscaledDataUrl(file: File, maxDim = 512): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read file"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Could not load image"));
+      img.onload = () => {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale);
+        const h = Math.round(img.height * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return reject(new Error("Canvas unsupported"));
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/png"));
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 function lookFrom(initial: Props["initial"]): Look {
   return {
     primaryColor: initial?.primaryColor ?? "#4f46e5",
@@ -61,6 +91,9 @@ export function ThemeEditorModal({
   const [sidebarImageUrl, setSidebarImageUrl] = useState(initial?.sidebarImageUrl ?? "");
   const [hideUpgrade, setHideUpgrade] = useState(initial?.hideUpgrade ?? false);
   const [customCss, setCustomCss] = useState(initial?.customCssOverride ?? initial?.customCss ?? "");
+  const [alertMessage, setAlertMessage] = useState(initial?.alertMessage ?? "");
+  const [alertColor, setAlertColor] = useState(initial?.alertColor ?? "#4f46e5");
+  const [logoErr, setLogoErr] = useState<string | null>(null);
   const [features, setFeatures] = useState<SidebarFeature[]>([]);
   const [saving, setSaving] = useState(false);
 
@@ -69,6 +102,17 @@ export function ThemeEditorModal({
   }, []);
 
   const patchLook = (p: Partial<Look>) => setLook((l) => ({ ...l, ...p }));
+
+  async function handleLogoFile(file: File | undefined) {
+    if (!file) return;
+    setLogoErr(null);
+    try {
+      const dataUrl = await fileToDownscaledDataUrl(file);
+      setLogoUrl(dataUrl);
+    } catch (e) {
+      setLogoErr((e as Error).message);
+    }
+  }
 
   function applyPreset(id: string) {
     const p = presets.find((x) => x.id === id);
@@ -126,6 +170,8 @@ export function ThemeEditorModal({
         sidebarImageUrl,
         hideUpgrade,
         customCss,
+        alertMessage,
+        alertColor,
         hiddenFeatures: [...hidden],
         menuLabelOverrides: cleanedLabels,
       });
@@ -200,13 +246,26 @@ export function ThemeEditorModal({
               )}
 
               <div className="field">
-                <label>Logo URL</label>
+                <label>Logo</label>
                 <input
                   type="url"
-                  value={logoUrl}
+                  value={logoUrl.startsWith("data:") ? "" : logoUrl}
                   onChange={(e) => setLogoUrl(e.target.value)}
-                  placeholder="https://…"
+                  placeholder="Paste an image URL…"
                 />
+                <div className="logo-upload-row">
+                  <label className="btn btn-ghost logo-upload-btn">
+                    Upload from computer
+                    <input
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      onChange={(e) => handleLogoFile(e.target.files?.[0])}
+                    />
+                  </label>
+                  {logoUrl.startsWith("data:") && <span className="logo-uploaded">Uploaded image ✓</span>}
+                </div>
+                {logoErr && <div className="field-error">{logoErr}</div>}
                 {logoUrl && (
                   <div className="logo-preview" style={{ marginTop: 8 }}>
                     <img src={logoUrl} alt="logo preview" />
@@ -258,6 +317,29 @@ export function ThemeEditorModal({
 
           {tab === "advanced" && (
             <>
+              <div className="field">
+                <label>Account alert banner</label>
+                <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 8px" }}>
+                  Shows a floating message at the bottom of {showBrandName ? "this sub-account's" : "every sub-account's"} screens
+                  (e.g. “Payment overdue” or “Scheduled maintenance Sunday”). Leave blank for none.
+                </p>
+                <input
+                  type="text"
+                  value={alertMessage}
+                  onChange={(e) => setAlertMessage(e.target.value)}
+                  placeholder="e.g. Your account is past due — please update billing."
+                />
+                {alertMessage.trim() && (
+                  <div className="alert-color-row">
+                    <input type="color" value={alertColor} onChange={(e) => setAlertColor(e.target.value)} />
+                    <span>Banner color</span>
+                    <span className="alert-preview" style={{ background: alertColor }}>
+                      {alertMessage.slice(0, 40)}
+                    </span>
+                  </div>
+                )}
+              </div>
+
               <div className="field">
                 <label>Sidebar background image URL</label>
                 <input

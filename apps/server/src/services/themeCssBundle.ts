@@ -38,6 +38,8 @@ interface VisualTheme {
   animateLoadIn?: boolean | null;
   animateScroll?: boolean | null;
   topNav?: boolean | null;
+  alertMessage?: string | null;
+  alertColor?: string | null;
   menuLabelOverrides?: unknown;
   hiddenFeatures?: unknown;
   // Raw power-user CSS. ThemeConfig stores it as customCssOverride, the agency
@@ -59,9 +61,8 @@ const DARK_SURFACE_SELECTOR = ".hl_wrapper, .hl_wrapper--inner, .hl-main, main";
 const DARK_CARD_SELECTOR = ".card, .hl-card";
 const UPGRADE_SELECTOR =
   "[class*='upgrade'], [href*='upgrade'], [href*='billing'], .upgrade-banner, [data-testid*='upgrade']";
-/** Content surfaces that fade in on load; cards that reveal on scroll. */
-const LOAD_IN_SELECTOR = ".hl_wrapper, .hl_wrapper--inner, .hl-main, main";
-const SCROLL_REVEAL_SELECTOR = ".card, .hl-card";
+/** Cards that reveal on scroll (confirmed: GHL cards use .hl-card). */
+const SCROLL_REVEAL_SELECTOR = ".hl-card, .card";
 /** Emitted once at the top of the bundle when any theme uses an animation. */
 const ANIMATION_KEYFRAMES =
   "@keyframes mosaic-fade-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }";
@@ -97,11 +98,12 @@ function locationScope(locationId: string): Scope {
 }
 
 /**
- * Selectors for the flex container that holds the sidebar + content side by
- * side. Best-effort (needs live DOM confirmation) - top-nav flips these to
- * stack vertically so the sidebar sits on top.
+ * The flex container that holds the sidebar + content side by side, confirmed
+ * via live DOM: <div class="flex sidebar-v2-location pmd-app {locationId} ...">.
+ * It carries the location id as a class, so scope.prefix already targets it for
+ * a location; ".sidebar-v2-location" is the global (all-locations) equivalent.
  */
-const LAYOUT_WRAPPER_SELECTORS = ["#app", ".hl_wrapper", ".hl_wrapper--inner"];
+const LAYOUT_WRAPPER_GLOBAL = ".sidebar-v2-location";
 
 /** Scope a comma-separated descendant selector list under the scope's prefix. */
 function scoped(scope: Scope, selectorList: string): string {
@@ -223,9 +225,11 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     rules.push(`${scoped(scope, UPGRADE_SELECTOR)} { display: none !important; }`);
   }
 
-  // Load-in: fade the main content up on each page load
+  // Load-in: fade the content column up on each page load. The content is the
+  // non-sidebar child of the layout wrapper (which carries the location class).
   if (theme.animateLoadIn) {
-    rules.push(`${scoped(scope, LOAD_IN_SELECTOR)} { animation: mosaic-fade-in 0.5s ease both !important; }`);
+    const content = scope.prefix ? `${scope.prefix} > div` : `${LAYOUT_WRAPPER_GLOBAL} > div`;
+    rules.push(`${content} { animation: mosaic-fade-in 0.5s ease both !important; }`);
   }
 
   // Scroll-reveal: cards fade in as they enter the viewport (CSS scroll-driven
@@ -240,8 +244,10 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
   // horizontal bar instead of down the left side.
   if (theme.topNav) {
     // 1. Flip the wrapper (that holds sidebar + content) from a row to a column.
-    const wrappers = LAYOUT_WRAPPER_SELECTORS.map((w) => `${w}${scope.wrap}`).join(", ");
-    rules.push(`${wrappers} { flex-direction: column !important; }`);
+    //    The wrapper carries the location id class, so scope.prefix IS the
+    //    wrapper for a location; ".sidebar-v2-location" covers all locations.
+    const wrapper = scope.prefix || LAYOUT_WRAPPER_GLOBAL;
+    rules.push(`${wrapper} { flex-direction: column !important; }`);
     // 2. Turn the sidebar into a full-width, short, horizontally-scrolling bar.
     rules.push(
       `${scope.bases.join(", ")} { width: 100% !important; max-width: 100% !important; min-width: 0 !important; height: auto !important; min-height: 0 !important; flex-direction: row !important; align-items: center !important; overflow-x: auto !important; overflow-y: hidden !important; }`
@@ -283,6 +289,19 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     rules.push(`${parts.join(", ")} { font-size: 0 !important; }`);
     rules.push(
       `${parts.map((p) => `${p}::after`).join(", ")} { content: "${safe}" !important; font-size: 14px !important; }`
+    );
+  }
+
+  // Account alert: a fixed announcement toast rendered from CSS `content`. We
+  // hang it off the location wrapper's ::before (or body for the agency-wide
+  // default) so it shows only on that sub-account's pages. CSS-only, so it's a
+  // persistent banner, not a click-to-dismiss modal (that would need JS).
+  if (theme.alertMessage && theme.alertMessage.trim()) {
+    const target = scope.prefix || "body";
+    const color = theme.alertColor || "#4f46e5";
+    const safe = theme.alertMessage.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\s*\n\s*/g, " ");
+    rules.push(
+      `${target}::before { content: "${safe}" !important; position: fixed !important; bottom: 20px !important; left: 50% !important; transform: translateX(-50%) !important; z-index: 2147483000 !important; background: ${color} !important; color: #fff !important; padding: 12px 24px !important; border-radius: 999px !important; font-weight: 600 !important; font-size: 14px !important; box-shadow: 0 8px 24px rgba(0,0,0,0.25) !important; max-width: 90vw !important; text-align: center !important; pointer-events: none !important; }`
     );
   }
 
