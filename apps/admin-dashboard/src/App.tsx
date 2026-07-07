@@ -6,6 +6,7 @@ import {
   fetchDefaultTheme,
   fetchLocations,
   fetchPresets,
+  resetTheme,
   saveDefaultTheme,
   saveTheme,
   setEnabled,
@@ -80,6 +81,12 @@ export function App() {
   async function handleToggle(locId: string, enabled: boolean) {
     setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, enabled } : l)));
     await setEnabled(agencyId!, locId, enabled);
+  }
+
+  async function handleReset(locId: string, name: string) {
+    if (!confirm(`Reset "${name}" back to the agency default look? Its custom theme will be removed.`)) return;
+    await resetTheme(agencyId!, locId);
+    setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, theme: null } : l)));
   }
 
   async function removePreset(id: string) {
@@ -220,9 +227,20 @@ export function App() {
               ))}
             </div>
 
-            <button className="btn" onClick={() => setEditingLocation(loc)}>
-              Edit theme
-            </button>
+            <div className="row-actions">
+              {loc.theme && (
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => handleReset(loc.id, loc.locationName ?? loc.ghlLocationId)}
+                  title="Remove this sub-account's custom theme and inherit the agency default"
+                >
+                  Reset
+                </button>
+              )}
+              <button className="btn" onClick={() => setEditingLocation(loc)}>
+                Edit theme
+              </button>
+            </div>
           </div>
         ))}
       </div>

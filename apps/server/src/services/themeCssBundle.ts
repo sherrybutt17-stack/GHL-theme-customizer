@@ -35,6 +35,8 @@ interface VisualTheme {
   scrollbarColor?: string | null;
   darkMode?: boolean | null;
   hideUpgrade?: boolean | null;
+  animateLoadIn?: boolean | null;
+  animateScroll?: boolean | null;
   menuLabelOverrides?: unknown;
   hiddenFeatures?: unknown;
   // Raw power-user CSS. ThemeConfig stores it as customCssOverride, the agency
@@ -56,6 +58,12 @@ const DARK_SURFACE_SELECTOR = ".hl_wrapper, .hl_wrapper--inner, .hl-main, main";
 const DARK_CARD_SELECTOR = ".card, .hl-card";
 const UPGRADE_SELECTOR =
   "[class*='upgrade'], [href*='upgrade'], [href*='billing'], .upgrade-banner, [data-testid*='upgrade']";
+/** Content surfaces that fade in on load; cards that reveal on scroll. */
+const LOAD_IN_SELECTOR = ".hl_wrapper, .hl_wrapper--inner, .hl-main, main";
+const SCROLL_REVEAL_SELECTOR = ".card, .hl-card";
+/** Emitted once at the top of the bundle when any theme uses an animation. */
+const ANIMATION_KEYFRAMES =
+  "@keyframes mosaic-fade-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }";
 
 /**
  * A scope determines whether rules apply globally (agency default) or only to
@@ -204,6 +212,19 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     rules.push(`${scoped(scope, UPGRADE_SELECTOR)} { display: none !important; }`);
   }
 
+  // Load-in: fade the main content up on each page load
+  if (theme.animateLoadIn) {
+    rules.push(`${scoped(scope, LOAD_IN_SELECTOR)} { animation: mosaic-fade-in 0.5s ease both !important; }`);
+  }
+
+  // Scroll-reveal: cards fade in as they enter the viewport (CSS scroll-driven
+  // animation - progressive enhancement; ignored by browsers without support).
+  if (theme.animateScroll) {
+    rules.push(
+      `${scoped(scope, SCROLL_REVEAL_SELECTOR)} { animation: mosaic-fade-in linear both !important; animation-timeline: view() !important; animation-range: entry 0% cover 25% !important; }`
+    );
+  }
+
   // Logo swap
   if (theme.logoUrl) {
     rules.push(
@@ -293,6 +314,10 @@ export async function generateThemeCssBundle(agencyInstallId: string): Promise<s
 
   const imports = fontImports(allThemes);
   if (imports) blocks.push(imports);
+
+  if (allThemes.some((t) => t.animateLoadIn || t.animateScroll)) {
+    blocks.push(ANIMATION_KEYFRAMES);
+  }
 
   if (defaultTheme) {
     blocks.push("/* Agency default (applies to all sub-accounts unless overridden) */\n" + renderRules(globalScope(), defaultTheme as VisualTheme).join("\n"));

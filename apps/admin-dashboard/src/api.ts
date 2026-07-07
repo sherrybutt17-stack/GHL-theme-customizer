@@ -35,6 +35,8 @@ export interface VisualTheme {
   scrollbarColor: string | null;
   darkMode: boolean;
   hideUpgrade: boolean;
+  animateLoadIn: boolean;
+  animateScroll: boolean;
   menuLabelOverrides: Record<string, string> | null;
   hiddenFeatures: string[] | null;
 }
@@ -66,6 +68,8 @@ export interface ThemePreset {
   cornerRadius: number | null;
   scrollbarColor: string | null;
   darkMode: boolean;
+  animateLoadIn: boolean;
+  animateScroll: boolean;
 }
 
 export interface LocationRow {
@@ -99,6 +103,8 @@ export interface ThemeInput {
   scrollbarColor: string;
   darkMode: boolean;
   hideUpgrade: boolean;
+  animateLoadIn: boolean;
+  animateScroll: boolean;
   customCss: string;
   menuLabelOverrides: Record<string, string>;
   hiddenFeatures: string[];
@@ -132,6 +138,9 @@ export const saveTheme = (a: string, loc: string, theme: ThemeInput): Promise<Th
 
 export const setEnabled = (a: string, loc: string, enabled: boolean) =>
   fetch(`${API_BASE}/admin/api/${a}/locations/${loc}/enabled`, j("PUT", { enabled })).then(handle);
+
+export const resetTheme = (a: string, loc: string): Promise<{ reset: boolean }> =>
+  fetch(`${API_BASE}/admin/api/${a}/locations/${loc}/theme`, j("DELETE")).then(handle);
 
 export const fetchDefaultTheme = (a: string): Promise<AgencyDefaultTheme | null> =>
   fetch(`${API_BASE}/admin/api/${a}/default-theme`, g()).then(handle);

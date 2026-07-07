@@ -30,6 +30,8 @@ function visualFields(body: any) {
     scrollbarColor: body?.scrollbarColor || null,
     darkMode: !!body?.darkMode,
     hideUpgrade: !!body?.hideUpgrade,
+    animateLoadIn: !!body?.animateLoadIn,
+    animateScroll: !!body?.animateScroll,
     menuLabelOverrides: body?.menuLabelOverrides,
     hiddenFeatures: body?.hiddenFeatures,
   };
@@ -50,6 +52,8 @@ function presetLookFields(body: any) {
     cornerRadius: typeof body?.cornerRadius === "number" ? body.cornerRadius : null,
     scrollbarColor: body?.scrollbarColor || null,
     darkMode: !!body?.darkMode,
+    animateLoadIn: !!body?.animateLoadIn,
+    animateScroll: !!body?.animateScroll,
   };
 }
 
@@ -149,6 +153,29 @@ adminRouter.put(
     });
 
     res.json(theme);
+  }
+);
+
+/**
+ * Reset a sub-account back to inheriting the agency default: delete its own
+ * ThemeConfig rows so the CSS bundle stops emitting location-scoped overrides
+ * for it (the global agency-default rules still apply to every sidebar).
+ */
+adminRouter.delete(
+  "/admin/api/:agencyInstallId/locations/:locationInstallId/theme",
+  async (req: Request, res: Response) => {
+    const agencyId = await requireAgency(req, res);
+    if (!agencyId) return;
+
+    const location = await prisma.locationInstall.findFirst({
+      where: { id: req.params.locationInstallId, agencyInstallId: agencyId },
+    });
+    if (!location) {
+      return res.status(403).json({ error: "Location does not belong to this agency install" });
+    }
+
+    await prisma.themeConfig.deleteMany({ where: { locationInstallId: location.id } });
+    res.json({ reset: true });
   }
 );
 
@@ -278,6 +305,8 @@ adminRouter.post(
             cornerRadius: preset.cornerRadius,
             scrollbarColor: preset.scrollbarColor,
             darkMode: preset.darkMode,
+            animateLoadIn: preset.animateLoadIn,
+            animateScroll: preset.animateScroll,
             version: (prev?.version ?? 0) + 1,
           },
         });

@@ -11,6 +11,8 @@ export interface Look {
   cornerRadius: number;
   scrollbarColor: string;
   darkMode: boolean;
+  animateLoadIn: boolean;
+  animateScroll: boolean;
 }
 
 export const GOOGLE_FONTS = [
@@ -161,6 +163,36 @@ export function LookFields({ value, onChange }: { value: Look; onChange: (patch:
         <div>
           <div className="look-color-label">Dark mode</div>
           <div className="look-color-hint">Darken the main content area and cards for this client.</div>
+        </div>
+      </div>
+
+      <div className="look-toggle-row">
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={value.animateLoadIn}
+            onChange={(e) => onChange({ animateLoadIn: e.target.checked })}
+          />
+          <span className="toggle-track" />
+        </label>
+        <div>
+          <div className="look-color-label">Load-in animation</div>
+          <div className="look-color-hint">Content gently fades up each time a page loads.</div>
+        </div>
+      </div>
+
+      <div className="look-toggle-row">
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={value.animateScroll}
+            onChange={(e) => onChange({ animateScroll: e.target.checked })}
+          />
+          <span className="toggle-track" />
+        </label>
+        <div>
+          <div className="look-color-label">Scroll-reveal animation</div>
+          <div className="look-color-hint">Cards fade in as they scroll into view.</div>
         </div>
       </div>
 

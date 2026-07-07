@@ -179,6 +179,7 @@ body {
   transition: background 0.12s ease;
 }
 .location-select { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; }
+.row-actions { display: flex; gap: 6px; align-items: center; }
 
 /* ---- Bulk apply bar ---- */
 .bulk-bar {
