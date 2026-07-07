@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   applyPreset,
   createPreset,
@@ -36,7 +36,8 @@ export function App() {
   const [showCssExport, setShowCssExport] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkPresetId, setBulkPresetId] = useState("");
-  const [applying, setApplying] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     if (!agencyId) {
@@ -52,6 +53,15 @@ export function App() {
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, [agencyId]);
+
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return locations;
+    return locations.filter((l) =>
+      (l.locationName ?? l.ghlLocationId).toLowerCase().includes(q) ||
+      l.ghlLocationId.toLowerCase().includes(q)
+    );
+  }, [locations, search]);
 
   if (!agencyId) {
     return (
@@ -102,9 +112,30 @@ export function App() {
     });
   }
 
+  function toggleSelectAll() {
+    setSelected((prev) => {
+      const allVisible = visible.every((l) => prev.has(l.id));
+      if (allVisible) return new Set();
+      return new Set(visible.map((l) => l.id));
+    });
+  }
+
+  async function bulkSetEnabled(enabled: boolean) {
+    if (selected.size === 0) return;
+    setBusy(true);
+    try {
+      await Promise.all([...selected].map((id) => setEnabled(agencyId!, id, enabled)));
+      setLocations((prev) => prev.map((l) => (selected.has(l.id) ? { ...l, enabled } : l)));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleBulkApply() {
     if (!bulkPresetId || selected.size === 0) return;
-    setApplying(true);
+    setBusy(true);
     try {
       await applyPreset(agencyId!, bulkPresetId, [...selected]);
       const fresh = await fetchLocations(agencyId!);
@@ -114,43 +145,83 @@ export function App() {
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setApplying(false);
+      setBusy(false);
     }
   }
 
+  const allVisibleSelected = visible.length > 0 && visible.every((l) => selected.has(l.id));
+
   return (
-    <div className="page">
-      <div className="topbar">
+    <div className="page cp">
+      {/* Top bar */}
+      <header className="cp-topbar">
         <div className="brand">
           <div className="brand-mark">
             <span /><span /><span /><span />
           </div>
           <div>
             <h1>Mosaic</h1>
-            <p>Give every sub-account its own brand.</p>
+            <p className="cp-topbar-sub">Control every sub-account's look from one place</p>
           </div>
         </div>
-        <div className="topbar-actions">
-          <button className="btn" onClick={() => setEditingDefault(true)}>
-            Agency default
-          </button>
+        <div className="cp-topbar-right">
+          <span className="cp-license">Agency workspace</span>
           <button className="btn btn-primary" onClick={() => setShowCssExport(true)}>
             Get embed code
           </button>
         </div>
+      </header>
+
+      {/* Hero + search */}
+      <section className="cp-hero">
+        <h2>Manage sub-account branding with ease</h2>
+        <p>A central control panel — colors, logo, fonts, alerts, and more, per client.</p>
+        <div className="cp-search">
+          <span className="cp-search-icon">⌕</span>
+          <input
+            placeholder="Search sub-accounts…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+      </section>
+
+      {/* Action buttons */}
+      <div className="cp-actions">
+        <button className="pill-btn" disabled={!selected.size || busy} onClick={() => bulkSetEnabled(true)}>
+          ✓ Enable selected
+        </button>
+        <button className="pill-btn" disabled={!selected.size || busy} onClick={() => bulkSetEnabled(false)}>
+          ✕ Disable selected
+        </button>
+        <button className="pill-btn" onClick={() => setEditingDefault(true)}>
+          ⚙ Agency default
+        </button>
+        <div className="pill-apply">
+          <select value={bulkPresetId} onChange={(e) => setBulkPresetId(e.target.value)} disabled={!presets.length}>
+            <option value="">{presets.length ? "Apply preset…" : "No presets yet"}</option>
+            {presets.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <button
+            className="pill-btn pill-btn-solid"
+            disabled={!bulkPresetId || !selected.size || busy}
+            onClick={handleBulkApply}
+          >
+            Apply to {selected.size || 0}
+          </button>
+        </div>
       </div>
 
-      {error && <div className="error-banner">Error: {error}</div>}
-
       {presets.length > 0 && (
-        <div className="presets-bar">
-          <span className="presets-label">Presets</span>
+        <div className="cp-presets">
+          <span className="presets-label">Saved presets</span>
           {presets.map((p) => (
             <span className="preset-chip" key={p.id}>
-              <span
-                className="preset-dot"
-                style={{ background: p.primaryColor ?? "#ccc" }}
-              />
+              <span className="preset-dot" style={{ background: p.primaryColor ?? "#ccc" }} />
               {p.name}
               <button className="preset-remove" onClick={() => removePreset(p.id)} title="Delete preset">
                 &times;
@@ -160,89 +231,111 @@ export function App() {
         </div>
       )}
 
-      <div className="card">
-        <div className="card-title">
-          Sub-accounts
-          <span className="card-subtitle">
-            {defaultTheme
-              ? "Each inherits your agency default unless given its own theme below."
-              : "Set an Agency default for a baseline look, or theme each individually."}
-          </span>
-        </div>
+      {error && <div className="error-banner">Error: {error}</div>}
 
+      {/* Table */}
+      <div className="card table-card">
         {loading && <div className="empty-state">Loading sub-accounts&hellip;</div>}
         {!loading && !error && locations.length === 0 && (
           <div className="empty-state">No sub-accounts found for this agency yet.</div>
         )}
-
-        {selected.size > 0 && (
-          <div className="bulk-bar">
-            <span className="bulk-count">{selected.size} selected</span>
-            <select value={bulkPresetId} onChange={(e) => setBulkPresetId(e.target.value)}>
-              <option value="" disabled>
-                {presets.length ? "Apply preset…" : "No presets saved yet"}
-              </option>
-              {presets.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            <button
-              className="btn btn-primary"
-              disabled={!bulkPresetId || applying}
-              onClick={handleBulkApply}
-            >
-              {applying ? "Applying…" : `Apply to ${selected.size}`}
-            </button>
-            <button className="btn btn-ghost" onClick={() => setSelected(new Set())}>
-              Clear
-            </button>
+        {!loading && locations.length > 0 && (
+          <div className="table-scroll">
+            <table className="accounts-table">
+              <thead>
+                <tr>
+                  <th className="col-check">
+                    <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} />
+                  </th>
+                  <th>Sub-account</th>
+                  <th className="col-center">Enabled</th>
+                  <th className="col-center">Theme</th>
+                  <th className="col-center">Logo</th>
+                  <th className="col-center">Alert</th>
+                  <th className="col-center">Colors</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((loc) => {
+                  const t = loc.theme;
+                  return (
+                    <tr key={loc.id} className={selected.has(loc.id) ? "row-selected" : ""}>
+                      <td className="col-check">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(loc.id)}
+                          onChange={() => toggleSelected(loc.id)}
+                        />
+                      </td>
+                      <td>
+                        <div className="acc-name">{loc.locationName ?? "Untitled"}</div>
+                        <div className="acc-id">{loc.ghlLocationId}</div>
+                      </td>
+                      <td className="col-center">
+                        <label className="toggle" title={loc.enabled ? "Enabled" : "Disabled"}>
+                          <input
+                            type="checkbox"
+                            checked={loc.enabled}
+                            onChange={(e) => handleToggle(loc.id, e.target.checked)}
+                          />
+                          <span className="toggle-track" />
+                        </label>
+                      </td>
+                      <td className="col-center">
+                        <button className="cell-btn" onClick={() => setEditingLocation(loc)}>
+                          <span className={`status-badge ${t ? "on" : "off"}`}>
+                            {t ? t.brandName || "Custom" : "Default"}
+                          </span>
+                          <span className="cell-gear">⚙</span>
+                        </button>
+                      </td>
+                      <td className="col-center">
+                        <button className="cell-btn" onClick={() => setEditingLocation(loc)}>
+                          {t?.logoUrl ? (
+                            <img className="logo-thumb" src={t.logoUrl} alt="logo" />
+                          ) : (
+                            <span className="cell-link">↥ Upload</span>
+                          )}
+                        </button>
+                      </td>
+                      <td className="col-center">
+                        <button className="cell-btn" onClick={() => setEditingLocation(loc)}>
+                          <span className={`status-badge ${t?.alertMessage ? "on" : "off"}`}>
+                            {t?.alertMessage ? "On" : "—"}
+                          </span>
+                        </button>
+                      </td>
+                      <td className="col-center">
+                        <div className="swatches">
+                          {[t?.primaryColor, t?.accentColor].filter(Boolean).map((c, i) => (
+                            <span key={i} className="swatch" style={{ background: c as string }} />
+                          ))}
+                          {!t && <span className="acc-muted">—</span>}
+                        </div>
+                      </td>
+                      <td className="col-actions">
+                        {t && (
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => handleReset(loc.id, loc.locationName ?? loc.ghlLocationId)}
+                            title="Reset to agency default"
+                          >
+                            Reset
+                          </button>
+                        )}
+                        <button className="btn btn-sm" onClick={() => setEditingLocation(loc)}>
+                          Edit
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {visible.length === 0 && <div className="empty-state">No sub-accounts match “{search}”.</div>}
           </div>
         )}
-
-        {locations.map((loc) => (
-          <div className="location-row" key={loc.id}>
-            <input
-              type="checkbox"
-              className="location-select"
-              checked={selected.has(loc.id)}
-              onChange={() => toggleSelected(loc.id)}
-              title="Select for bulk preset apply"
-            />
-            <div className="location-name">{loc.locationName ?? loc.ghlLocationId}</div>
-
-            <label className="toggle" title={loc.enabled ? "Enabled" : "Disabled"}>
-              <input type="checkbox" checked={loc.enabled} onChange={(e) => handleToggle(loc.id, e.target.checked)} />
-              <span className="toggle-track" />
-            </label>
-
-            <div className={`brand-name ${loc.theme ? "" : "unset"}`}>
-              {loc.theme ? loc.theme.brandName || "Custom theme" : "Inherits default"}
-            </div>
-
-            <div className="swatches">
-              {[loc.theme?.primaryColor, loc.theme?.accentColor].filter(Boolean).map((c, i) => (
-                <span key={i} className="swatch" style={{ background: c as string }} />
-              ))}
-            </div>
-
-            <div className="row-actions">
-              {loc.theme && (
-                <button
-                  className="btn btn-ghost"
-                  onClick={() => handleReset(loc.id, loc.locationName ?? loc.ghlLocationId)}
-                  title="Remove this sub-account's custom theme and inherit the agency default"
-                >
-                  Reset
-                </button>
-              )}
-              <button className="btn" onClick={() => setEditingLocation(loc)}>
-                Edit theme
-              </button>
-            </div>
-          </div>
-        ))}
       </div>
 
       {editingLocation && (
