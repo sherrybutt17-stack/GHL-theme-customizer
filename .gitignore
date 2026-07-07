@@ -7,3 +7,6 @@ build/
 .DS_Store
 apps/server/prisma/dev.db
 infra/pgdata/
+
+# TS build info
+*.tsbuildinfo

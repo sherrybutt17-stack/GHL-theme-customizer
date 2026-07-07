@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { prisma } from "../services/prisma";
 import { syncLocationsForAgency } from "../services/locationSync";
-import { ensureMenuLinkForAgency } from "../services/customMenuLink";
+import { ensureAgencyAdminMenuLink } from "../services/customMenuLink";
 
 async function main() {
   const agency = await prisma.agencyInstall.findFirstOrThrow();
@@ -9,8 +9,8 @@ async function main() {
   const count = await syncLocationsForAgency(agency.id);
   console.log("Synced", count, "locations");
 
-  console.log("Ensuring custom menu link...");
-  const menuLink = await ensureMenuLinkForAgency(agency.id, process.env.APP_PUBLIC_URL as string);
+  console.log("Ensuring agency-level admin menu link...");
+  const menuLink = await ensureAgencyAdminMenuLink(agency.id, process.env.APP_PUBLIC_URL as string);
   console.log("Menu link:", JSON.stringify(menuLink, null, 2));
 }
 

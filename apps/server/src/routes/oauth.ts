@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import { ghl, sessionStorage } from "../services/ghlClient";
 import { prisma } from "../services/prisma";
 import { syncLocationsForAgency } from "../services/locationSync";
-import { ensureMenuLinkForAgency } from "../services/customMenuLink";
+import { ensureAgencyAdminMenuLink } from "../services/customMenuLink";
 
 export const oauthRouter = Router();
 
@@ -38,7 +38,7 @@ oauthRouter.get("/authorize-handler", async (req: Request, res: Response) => {
     if (agency) {
       try {
         await syncLocationsForAgency(agency.id);
-        await ensureMenuLinkForAgency(agency.id, process.env.APP_PUBLIC_URL as string);
+        await ensureAgencyAdminMenuLink(agency.id, process.env.APP_PUBLIC_URL as string);
       } catch (setupError) {
         // Non-fatal: the install itself succeeded and tokens are safely stored.
         // Portal setup can be retried later (e.g. from the Phase 4 admin dashboard).

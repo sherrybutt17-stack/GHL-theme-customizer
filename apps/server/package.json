@@ -15,11 +15,13 @@
     "@prisma/client": "^6.9.0",
     "axios": "^1.7.9",
     "body-parser": "^1.20.3",
+    "cors": "^2.8.5",
     "crypto-js": "^4.2.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.17",
     "@types/crypto-js": "^4.2.2",
     "@types/express": "^4.17.21",
     "@types/node": "^22.10.7",

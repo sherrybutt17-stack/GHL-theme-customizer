@@ -12,19 +12,27 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   # Tunnels a public HTTPS URL to the server running on the host (apps/server, via `npm run dev:server`)
-  # so GHL's OAuth redirect and webhooks can reach it. Requires NGROK_AUTHTOKEN in ../.env
-  # (free account at ngrok.com -> your authtoken). Get the public URL from the inspector at
-  # http://localhost:4040 or `curl -s http://localhost:4040/api/tunnels`.
-  ngrok:
-    image: ngrok/ngrok:latest
+  # so GHL's OAuth redirect, webhooks, and Custom Menu Link iframe can reach it. Uses Cloudflare's
+  # free "trycloudflare" ephemeral tunnels - no account/login needed (switched from ngrok because
+  # ngrok's free tier shows an interstitial "browser warning" page to any normal browser request,
+  # which broke the Custom Menu Link iframe - GHL's browser navigation can't send the bypass header).
+  # Get the assigned *.trycloudflare.com URL from this container's logs: `docker compose logs cloudflared`
+  # --protocol http2 --ha-connections 1: this network blocks Cloudflare's secondary edge region
+  # entirely (both QUIC and HTTP/2 connectivity to "region2" fail in cloudflared's own
+  # pre-checks), which otherwise caused the tunnel to repeatedly drop and reconnect
+  # ("control stream encountered a failure while serving", exponential backoff). Forcing
+  # HTTP/2 and a single edge connection avoids ever touching the broken region.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    env_file:
-      - ../.env
-    ports:
-      - "4040:4040"
     command:
-      - "http"
-      - "host.docker.internal:${PORT:-3210}"
+      - "tunnel"
+      - "--protocol"
+      - "http2"
+      - "--ha-connections"
+      - "1"
+      - "--url"
+      - "http://host.docker.internal:${PORT:-3210}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

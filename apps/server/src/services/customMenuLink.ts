@@ -3,56 +3,52 @@ import { ghl } from "./ghlClient";
 import { prisma } from "./prisma";
 
 /**
- * GHL's Custom Menu Link API is company-scoped: one menu link entry targets a list
- * of locationIds (CreateCustomMenuDTO.locations), not one entry per location. So we
- * keep exactly one CustomMenuLinkRegistration per agency, and re-point its `locations`
- * array whenever the set of active sub-accounts changes. Which location is actually
- * being viewed is resolved at runtime inside the portal page via the SSO handshake.
+ * One agency-level Custom Menu Link per agency (showOnCompany: true, showOnLocation:
+ * false) - appears once in the agency's own nav, not duplicated per sub-account.
+ * The URL bakes in this agency's id directly (/admin-embed/:agencyInstallId) rather
+ * than resolving it at runtime via the SSO handshake - unlike the per-location
+ * portal (one link genuinely shared across many locations), we create exactly one
+ * menu link per agency, so there's no ambiguity to resolve at runtime. This also
+ * sidesteps a real bug: GHL's own SSO-context handler errors out when responding
+ * to the handshake from an agency-level (no-location) page.
  */
-export async function ensureMenuLinkForAgency(agencyInstallId: string, appBaseUrl: string) {
+export async function ensureAgencyAdminMenuLink(agencyInstallId: string, appBaseUrl: string) {
   const agency = await prisma.agencyInstall.findUniqueOrThrow({
     where: { id: agencyInstallId },
     include: { menuLink: true },
   });
-
-  const activeLocations = await prisma.locationInstall.findMany({
-    where: { agencyInstallId: agency.id, status: "active", enabled: true },
-    select: { ghlLocationId: true },
-  });
-  const locationIds = activeLocations.map((l) => l.ghlLocationId);
 
   // createCustomMenu/updateCustomMenu's request body has no companyId field, and only
   // declare Agency-Access (not Location-Access), so the resourceId must come from a
   // header - passed explicitly here, same underlying token-resolution quirk as
   // locationSync.ts's preferredTokenType fix.
   const companyHeader = { headers: { companyId: agency.ghlCompanyId } };
+  const url = `${appBaseUrl}/admin-embed/${agency.id}`;
 
   if (agency.menuLink) {
     await ghl.customMenus.updateCustomMenu(
       { customMenuId: agency.menuLink.ghlMenuLinkId },
-      { locations: locationIds, showToAllLocations: false },
+      { url, showOnCompany: true, showOnLocation: false, showToAllLocations: false, locations: [] },
       companyHeader
     );
-    await prisma.customMenuLinkRegistration.update({
+    return prisma.customMenuLinkRegistration.update({
       where: { id: agency.menuLink.id },
-      data: { targetLocationIds: locationIds },
+      data: { url, targetLocationIds: [] },
     });
-    return agency.menuLink;
   }
 
   const slug = randomBytes(16).toString("hex");
-  const url = `${appBaseUrl}/portal/${slug}`;
 
   const created = await ghl.customMenus.createCustomMenu(
     {
       title: "Mosaic",
       url,
       icon: { name: "grid", fontFamily: "fas" },
-      showOnCompany: false,
-      showOnLocation: true,
+      showOnCompany: true,
+      showOnLocation: false,
       showToAllLocations: false,
       openMode: "iframe",
-      locations: locationIds,
+      locations: [],
       userRole: "all",
       // Marked optional in the SDK's types, but the live API 422s without them.
       allowCamera: false,
@@ -74,7 +70,21 @@ export async function ensureMenuLinkForAgency(agencyInstallId: string, appBaseUr
       ghlMenuLinkId,
       slug,
       url,
-      targetLocationIds: locationIds,
+      targetLocationIds: [],
     },
   });
+}
+
+export async function deleteMenuLinkForAgency(agencyInstallId: string) {
+  const agency = await prisma.agencyInstall.findUniqueOrThrow({
+    where: { id: agencyInstallId },
+    include: { menuLink: true },
+  });
+  if (!agency.menuLink) return;
+
+  await ghl.customMenus.deleteCustomMenu(
+    { customMenuId: agency.menuLink.ghlMenuLinkId },
+    { headers: { companyId: agency.ghlCompanyId } }
+  );
+  await prisma.customMenuLinkRegistration.delete({ where: { id: agency.menuLink.id } });
 }
