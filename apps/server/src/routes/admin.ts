@@ -33,7 +33,11 @@ adminRouter.get("/admin/api/:agencyInstallId/embed", async (req: Request, res: R
   if (!agencyId) return;
 
   const publicUrl = process.env.APP_PUBLIC_URL ?? `${req.protocol}://${req.get("host")}`;
-  const importSnippet = `@import url("${publicUrl}/theme-css/${agencyId}");`;
+  // Cache-buster: a fresh ?v= each time this is copied forces the browser past any
+  // previously-cached copy of the stylesheet. Combined with the endpoint's no-store
+  // headers, one re-paste makes all future theme edits apply on the next reload.
+  const version = Date.now();
+  const importSnippet = `@import url("${publicUrl}/theme-css/${agencyId}?v=${version}");`;
   const fullCss = await generateThemeCssBundle(agencyId);
 
   res.json({ importSnippet, fullCss });

@@ -1,6 +1,18 @@
 import { prisma } from "./prisma";
 
 /**
+ * GHL sidebar logo, confirmed via live DOM inspection:
+ *   <div class="... agency-logo-container">
+ *     <img class="object-contain agency-logo" alt="agency logo" ...>
+ *   </div>
+ * We swap the logo by hiding the original <img> and painting the new logo as a
+ * background-image on its container. (`content: url()` on the <img> was tried
+ * first and did not visually apply in GHL's context.)
+ */
+const LOGO_CONTAINER_SELECTOR = ".agency-logo-container";
+const LOGO_IMG_SELECTOR = "img.agency-logo";
+
+/**
  * CSS-only per-location theming, using the modern :has() selector against the
  * location id embedded directly in every sidebar nav link's href
  * (/v2/location/{id}/...) - confirmed present via live DOM inspection. This
@@ -36,12 +48,28 @@ export async function generateThemeCssBundle(agencyInstallId: string): Promise<s
       `.hl_sidebar:has(a[href*="/location/${loc.ghlLocationId}/"])`,
     ];
 
-    blocks.push(
-      `/* ${loc.locationName ?? loc.ghlLocationId} */\n` +
-        `${bases.join(", ")} { background: ${primary} !important; }\n` +
-        `${bases.map((b) => `${b} a.active`).join(", ")}, ${bases.map((b) => `${b} .active`).join(", ")} { background: ${accent} !important; color: #fff !important; }\n` +
-        `${bases.map((b) => `${b} a i`).join(", ")} { color: ${accent} !important; }`
-    );
+    const rules = [
+      `${bases.join(", ")} { background: ${primary} !important; }`,
+      `${bases.map((b) => `${b} a.active`).join(", ")}, ${bases.map((b) => `${b} .active`).join(", ")} { background: ${accent} !important; color: #fff !important; }`,
+      `${bases.map((b) => `${b} a i`).join(", ")} { color: ${accent} !important; }`,
+    ];
+
+    // Per-location logo swap. Uses a DIFFERENT hook than the color rules above:
+    // the sidebar wrapper div carries the raw location id as a CSS class
+    // (confirmed in DOM: class="... sidebar-v2-location ... {locationId} ..."),
+    // targeted here via [class~="id"]. This avoids the ":has() + descendant"
+    // pattern, which (unlike a bare ":has() {}") did not apply in GHL's context.
+    // Paint the new logo as a container background and hide the original <img>
+    // with opacity:0 (keeps layout height so the background fills correctly).
+    if (theme.logoUrl) {
+      const wrapper = `[class~="${loc.ghlLocationId}"]`;
+      rules.push(
+        `${wrapper} ${LOGO_CONTAINER_SELECTOR} { background-image: url("${theme.logoUrl}") !important; background-size: contain !important; background-repeat: no-repeat !important; background-position: center !important; min-height: 40px !important; }`
+      );
+      rules.push(`${wrapper} ${LOGO_IMG_SELECTOR} { opacity: 0 !important; }`);
+    }
+
+    blocks.push(`/* ${loc.locationName ?? loc.ghlLocationId} */\n` + rules.join("\n"));
   }
 
   if (blocks.length === 0) {
