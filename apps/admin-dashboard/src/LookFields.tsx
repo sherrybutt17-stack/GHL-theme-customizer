@@ -1,3 +1,5 @@
+import { suggestGradients, suggestAccents } from "./colorUtils";
+
 /** The visual "look" a theme, agency-default, or preset can carry. */
 export interface Look {
   primaryColor: string;
@@ -74,6 +76,40 @@ export function LookFields({ value, onChange }: { value: Look; onChange: (patch:
         value={value.accentColor}
         onChange={(v) => onChange({ accentColor: v })}
       />
+
+      {/* Auto-suggestions derived from the primary color */}
+      <div className="color-suggest">
+        <div className="suggest-label">Suggested gradients — click to apply</div>
+        <div className="suggest-row">
+          {suggestGradients(value.primaryColor).map((g) => (
+            <button
+              key={g.label}
+              type="button"
+              className="suggest-grad"
+              title={`${g.label} (${g.from} → ${g.to})`}
+              style={{ background: `linear-gradient(${g.angle}deg, ${g.from}, ${g.to})` }}
+              onClick={() =>
+                onChange({ gradientEnabled: true, gradientColor: g.to, gradientAngle: g.angle })
+              }
+            >
+              <span>{g.label}</span>
+            </button>
+          ))}
+        </div>
+        <div className="suggest-label">Suggested accents — click to apply</div>
+        <div className="suggest-row">
+          {suggestAccents(value.primaryColor).map((c) => (
+            <button
+              key={c}
+              type="button"
+              className="suggest-swatch"
+              title={c}
+              style={{ background: c }}
+              onClick={() => onChange({ accentColor: c })}
+            />
+          ))}
+        </div>
+      </div>
 
       <div className="look-toggle-row">
         <label className="toggle">

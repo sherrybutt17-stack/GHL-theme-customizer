@@ -29,7 +29,15 @@ interface Props {
  * side, and return a compact data: URL. Embedding the logo as a data URL means
  * no external file hosting is needed - it rides along in the theme CSS.
  */
-function fileToDownscaledDataUrl(file: File, maxDim = 512): Promise<string> {
+interface UploadedImage {
+  dataUrl: string;
+  width: number;
+  height: number;
+  origWidth: number;
+  origHeight: number;
+}
+
+function fileToDownscaledDataUrl(file: File, maxDim = 512): Promise<UploadedImage> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error("Could not read file"));
@@ -46,7 +54,13 @@ function fileToDownscaledDataUrl(file: File, maxDim = 512): Promise<string> {
         const ctx = canvas.getContext("2d");
         if (!ctx) return reject(new Error("Canvas unsupported"));
         ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL("image/png"));
+        resolve({
+          dataUrl: canvas.toDataURL("image/png"),
+          width: w,
+          height: h,
+          origWidth: img.width,
+          origHeight: img.height,
+        });
       };
       img.src = reader.result as string;
     };
@@ -94,6 +108,7 @@ export function ThemeEditorModal({
   const [alertMessage, setAlertMessage] = useState(initial?.alertMessage ?? "");
   const [alertColor, setAlertColor] = useState(initial?.alertColor ?? "#4f46e5");
   const [logoErr, setLogoErr] = useState<string | null>(null);
+  const [logoDims, setLogoDims] = useState<{ w: number; h: number; ow: number; oh: number } | null>(null);
   const [features, setFeatures] = useState<SidebarFeature[]>([]);
   const [saving, setSaving] = useState(false);
 
@@ -107,8 +122,9 @@ export function ThemeEditorModal({
     if (!file) return;
     setLogoErr(null);
     try {
-      const dataUrl = await fileToDownscaledDataUrl(file);
-      setLogoUrl(dataUrl);
+      const img = await fileToDownscaledDataUrl(file);
+      setLogoUrl(img.dataUrl);
+      setLogoDims({ w: img.width, h: img.height, ow: img.origWidth, oh: img.origHeight });
     } catch (e) {
       setLogoErr((e as Error).message);
     }
@@ -265,6 +281,15 @@ export function ThemeEditorModal({
                   </label>
                   {logoUrl.startsWith("data:") && <span className="logo-uploaded">Uploaded image ✓</span>}
                 </div>
+                <p className="logo-hint">
+                  Recommended: a <strong>wide/horizontal</strong> logo around <strong>200×50&nbsp;px</strong>{" "}
+                  (or a transparent PNG). Larger images are automatically shrunk to fit 512&nbsp;px.
+                </p>
+                {logoDims && (
+                  <p className="logo-dims">
+                    Uploaded {logoDims.ow}×{logoDims.oh}px → stored at {logoDims.w}×{logoDims.h}px
+                  </p>
+                )}
                 {logoErr && <div className="field-error">{logoErr}</div>}
                 {logoUrl && (
                   <div className="logo-preview" style={{ marginTop: 8 }}>
