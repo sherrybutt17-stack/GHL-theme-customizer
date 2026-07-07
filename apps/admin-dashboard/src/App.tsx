@@ -1,102 +1,162 @@
 import { useEffect, useState } from "react";
-import { fetchLocations, saveTheme, setEnabled, type LocationRow, type ThemeInput } from "./api";
+import {
+  createPreset,
+  deletePreset,
+  fetchDefaultTheme,
+  fetchLocations,
+  fetchPresets,
+  saveDefaultTheme,
+  saveTheme,
+  setEnabled,
+  type AgencyDefaultTheme,
+  type LocationRow,
+  type ThemeInput,
+  type ThemePreset,
+} from "./api";
 import { ThemeEditorModal } from "./ThemeEditor";
 import { CssExportModal } from "./CssExportModal";
+import type { Look } from "./LookFields";
 
-function getAgencyInstallIdFromUrl(): string | null {
+function agencyIdFromUrl(): string | null {
   const path = window.location.pathname.replace(/^\/+/, "");
   return path.length > 0 ? path : null;
 }
 
 export function App() {
-  const agencyInstallId = getAgencyInstallIdFromUrl();
+  const agencyId = agencyIdFromUrl();
   const [locations, setLocations] = useState<LocationRow[]>([]);
+  const [defaultTheme, setDefaultTheme] = useState<AgencyDefaultTheme | null>(null);
+  const [presets, setPresets] = useState<ThemePreset[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editingLocation, setEditingLocation] = useState<LocationRow | null>(null);
+  const [editingDefault, setEditingDefault] = useState(false);
   const [showCssExport, setShowCssExport] = useState(false);
 
   useEffect(() => {
-    if (!agencyInstallId) {
+    if (!agencyId) {
       setLoading(false);
       return;
     }
-    fetchLocations(agencyInstallId)
-      .then(setLocations)
+    Promise.all([fetchLocations(agencyId), fetchDefaultTheme(agencyId), fetchPresets(agencyId)])
+      .then(([locs, def, pre]) => {
+        setLocations(locs);
+        setDefaultTheme(def);
+        setPresets(pre);
+      })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [agencyInstallId]);
+  }, [agencyId]);
 
-  if (!agencyInstallId) {
+  if (!agencyId) {
     return (
       <div className="page">
-        <div className="error-banner">
-          Missing agency install id in the URL. Expected something like{" "}
-          <code>http://localhost:5173/&lt;agencyInstallId&gt;</code>.
-        </div>
+        <div className="error-banner">Missing agency id in the URL.</div>
       </div>
     );
   }
 
-  async function handleSaveTheme(locationInstallId: string, theme: ThemeInput) {
-    const updated = await saveTheme(agencyInstallId!, locationInstallId, theme);
-    setLocations((prev) =>
-      prev.map((loc) => (loc.id === locationInstallId ? { ...loc, theme: updated } : loc))
-    );
+  async function saveAsPreset(name: string, look: Look) {
+    const p = await createPreset(agencyId!, { name, ...look });
+    setPresets((prev) => [...prev, p]);
+  }
+
+  async function handleSaveLocation(locId: string, theme: ThemeInput) {
+    const updated = await saveTheme(agencyId!, locId, theme);
+    setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, theme: updated } : l)));
     setEditingLocation(null);
   }
 
-  async function handleToggleEnabled(locationInstallId: string, enabled: boolean) {
-    setLocations((prev) =>
-      prev.map((loc) => (loc.id === locationInstallId ? { ...loc, enabled } : loc))
-    );
-    await setEnabled(agencyInstallId!, locationInstallId, enabled);
+  async function handleSaveDefault(theme: ThemeInput) {
+    const updated = await saveDefaultTheme(agencyId!, theme);
+    setDefaultTheme(updated);
+    setEditingDefault(false);
+  }
+
+  async function handleToggle(locId: string, enabled: boolean) {
+    setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, enabled } : l)));
+    await setEnabled(agencyId!, locId, enabled);
+  }
+
+  async function removePreset(id: string) {
+    await deletePreset(agencyId!, id);
+    setPresets((prev) => prev.filter((p) => p.id !== id));
   }
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div>
-          <h1>Mosaic</h1>
-          <p>Give every sub-account its own brand — logo, colors, and name.</p>
+      <div className="topbar">
+        <div className="brand">
+          <div className="brand-mark">
+            <span /><span /><span /><span />
+          </div>
+          <div>
+            <h1>Mosaic</h1>
+            <p>Give every sub-account its own brand.</p>
+          </div>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowCssExport(true)}>
-          Get embed CSS
-        </button>
+        <div className="topbar-actions">
+          <button className="btn" onClick={() => setEditingDefault(true)}>
+            Agency default
+          </button>
+          <button className="btn btn-primary" onClick={() => setShowCssExport(true)}>
+            Get embed code
+          </button>
+        </div>
       </div>
 
       {error && <div className="error-banner">Error: {error}</div>}
 
+      {presets.length > 0 && (
+        <div className="presets-bar">
+          <span className="presets-label">Presets</span>
+          {presets.map((p) => (
+            <span className="preset-chip" key={p.id}>
+              <span
+                className="preset-dot"
+                style={{ background: p.primaryColor ?? "#ccc" }}
+              />
+              {p.name}
+              <button className="preset-remove" onClick={() => removePreset(p.id)} title="Delete preset">
+                &times;
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="card">
+        <div className="card-title">
+          Sub-accounts
+          <span className="card-subtitle">
+            {defaultTheme
+              ? "Each inherits your agency default unless given its own theme below."
+              : "Set an Agency default for a baseline look, or theme each individually."}
+          </span>
+        </div>
+
         {loading && <div className="empty-state">Loading sub-accounts&hellip;</div>}
         {!loading && !error && locations.length === 0 && (
           <div className="empty-state">No sub-accounts found for this agency yet.</div>
         )}
+
         {locations.map((loc) => (
           <div className="location-row" key={loc.id}>
-            <div>
-              <div className="location-name">{loc.locationName ?? loc.ghlLocationId}</div>
-            </div>
+            <div className="location-name">{loc.locationName ?? loc.ghlLocationId}</div>
 
             <label className="toggle" title={loc.enabled ? "Enabled" : "Disabled"}>
-              <input
-                type="checkbox"
-                checked={loc.enabled}
-                onChange={(e) => handleToggleEnabled(loc.id, e.target.checked)}
-              />
+              <input type="checkbox" checked={loc.enabled} onChange={(e) => handleToggle(loc.id, e.target.checked)} />
               <span className="toggle-track" />
             </label>
 
-            <div className={`brand-name ${loc.theme?.brandName ? "" : "unset"}`}>
-              {loc.theme?.brandName || "not set"}
+            <div className={`brand-name ${loc.theme ? "" : "unset"}`}>
+              {loc.theme ? loc.theme.brandName || "Custom theme" : "Inherits default"}
             </div>
 
             <div className="swatches">
-              {[loc.theme?.primaryColor, loc.theme?.secondaryColor, loc.theme?.accentColor]
-                .filter(Boolean)
-                .map((c, i) => (
-                  <span key={i} className="swatch" style={{ background: c as string }} />
-                ))}
+              {[loc.theme?.primaryColor, loc.theme?.accentColor].filter(Boolean).map((c, i) => (
+                <span key={i} className="swatch" style={{ background: c as string }} />
+              ))}
             </div>
 
             <button className="btn" onClick={() => setEditingLocation(loc)}>
@@ -108,16 +168,29 @@ export function App() {
 
       {editingLocation && (
         <ThemeEditorModal
-          locationName={editingLocation.locationName ?? editingLocation.ghlLocationId}
+          title={`Theme — ${editingLocation.locationName ?? editingLocation.ghlLocationId}`}
           initial={editingLocation.theme}
+          showBrandName
+          presets={presets}
+          onSave={(t) => handleSaveLocation(editingLocation.id, t)}
+          onSaveAsPreset={saveAsPreset}
           onCancel={() => setEditingLocation(null)}
-          onSave={(theme) => handleSaveTheme(editingLocation.id, theme)}
         />
       )}
 
-      {showCssExport && (
-        <CssExportModal agencyInstallId={agencyInstallId} onClose={() => setShowCssExport(false)} />
+      {editingDefault && (
+        <ThemeEditorModal
+          title="Agency default theme"
+          initial={defaultTheme}
+          showBrandName={false}
+          presets={presets}
+          onSave={handleSaveDefault}
+          onSaveAsPreset={saveAsPreset}
+          onCancel={() => setEditingDefault(false)}
+        />
       )}
+
+      {showCssExport && <CssExportModal agencyInstallId={agencyId} onClose={() => setShowCssExport(false)} />}
     </div>
   );
 }

@@ -35,6 +35,8 @@ model AgencyInstall {
 
   locations         LocationInstall[]
   menuLink          CustomMenuLinkRegistration?
+  defaultTheme      AgencyDefaultTheme?
+  presets           ThemePreset[]
 
   @@index([status])
 }
@@ -74,6 +76,12 @@ model ThemeConfig {
   primaryColor        String?
   secondaryColor      String?
   accentColor         String?
+  // New visual fields (also present on AgencyDefaultTheme / ThemePreset)
+  fontFamily          String?
+  gradientEnabled     Boolean   @default(false)
+  gradientColor       String?
+  gradientAngle       Int       @default(135)
+  topBarColor         String?
   menuLabelOverrides  Json?
   hiddenFeatures      Json?
   customCssOverride   String?
@@ -83,6 +91,50 @@ model ThemeConfig {
   createdAt           DateTime  @default(now())
 
   @@index([locationInstallId])
+}
+
+// One agency-wide default look. Applied to every sub-account UNLESS that
+// sub-account has its own ThemeConfig, which overrides (enforced in CSS by
+// specificity: agency default = unscoped sidebar selector, location = scoped).
+model AgencyDefaultTheme {
+  id                  String    @id @default(cuid())
+  agencyInstallId     String    @unique
+  agencyInstall       AgencyInstall @relation(fields: [agencyInstallId], references: [id])
+  logoUrl             String?
+  faviconUrl          String?
+  primaryColor        String?
+  secondaryColor      String?
+  accentColor         String?
+  fontFamily          String?
+  gradientEnabled     Boolean   @default(false)
+  gradientColor       String?
+  gradientAngle       Int       @default(135)
+  topBarColor         String?
+  menuLabelOverrides  Json?
+  hiddenFeatures      Json?
+  updatedAt           DateTime  @updatedAt
+  createdAt           DateTime  @default(now())
+}
+
+// A saved, named look ("Dark Gold") the agency can apply to many sub-accounts.
+// Holds the visual look only - not client identity (logo/brand name), which
+// stays per sub-account.
+model ThemePreset {
+  id                  String    @id @default(cuid())
+  agencyInstallId     String
+  agencyInstall       AgencyInstall @relation(fields: [agencyInstallId], references: [id])
+  name                String
+  primaryColor        String?
+  secondaryColor      String?
+  accentColor         String?
+  fontFamily          String?
+  gradientEnabled     Boolean   @default(false)
+  gradientColor       String?
+  gradientAngle       Int       @default(135)
+  topBarColor         String?
+  createdAt           DateTime  @default(now())
+
+  @@index([agencyInstallId])
 }
 
 model CustomMenuLinkRegistration {

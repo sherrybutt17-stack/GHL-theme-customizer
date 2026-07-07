@@ -1,43 +1,48 @@
 import { useEffect, useState } from "react";
-import { fetchSidebarFeatures, type SidebarFeature, type ThemeConfig, type ThemeInput } from "./api";
+import {
+  fetchSidebarFeatures,
+  type SidebarFeature,
+  type ThemeInput,
+  type ThemePreset,
+  type VisualTheme,
+} from "./api";
+import { LookFields, type Look } from "./LookFields";
 
 interface Props {
-  locationName: string;
-  initial: ThemeConfig | null;
+  title: string;
+  initial: (Partial<VisualTheme> & { brandName?: string | null }) | null;
+  showBrandName: boolean;
+  presets: ThemePreset[];
   onSave: (theme: ThemeInput) => Promise<void>;
+  onSaveAsPreset: (name: string, look: Look) => Promise<void>;
   onCancel: () => void;
 }
 
-function ColorField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className="color-field">
-      <label>{label}</label>
-      <input
-        type="color"
-        className="color-swatch-input"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      />
-      <div className="color-hex">{value}</div>
-    </div>
-  );
+function lookFrom(initial: Props["initial"]): Look {
+  return {
+    primaryColor: initial?.primaryColor ?? "#4f46e5",
+    accentColor: initial?.accentColor ?? "#f59e0b",
+    fontFamily: initial?.fontFamily ?? "",
+    gradientEnabled: initial?.gradientEnabled ?? false,
+    gradientColor: initial?.gradientColor ?? "#1e293b",
+    gradientAngle: initial?.gradientAngle ?? 135,
+    topBarColor: initial?.topBarColor ?? "#ffffff",
+  };
 }
 
-export function ThemeEditorModal({ locationName, initial, onSave, onCancel }: Props) {
+export function ThemeEditorModal({
+  title,
+  initial,
+  showBrandName,
+  presets,
+  onSave,
+  onSaveAsPreset,
+  onCancel,
+}: Props) {
   const [tab, setTab] = useState<"branding" | "features">("branding");
   const [brandName, setBrandName] = useState(initial?.brandName ?? "");
   const [logoUrl, setLogoUrl] = useState(initial?.logoUrl ?? "");
-  const [primaryColor, setPrimaryColor] = useState(initial?.primaryColor ?? "#4f46e5");
-  const [secondaryColor, setSecondaryColor] = useState(initial?.secondaryColor ?? "#64748b");
-  const [accentColor, setAccentColor] = useState(initial?.accentColor ?? "#f59e0b");
+  const [look, setLook] = useState<Look>(lookFrom(initial));
   const [hidden, setHidden] = useState<Set<string>>(new Set(initial?.hiddenFeatures ?? []));
   const [labels, setLabels] = useState<Record<string, string>>(initial?.menuLabelOverrides ?? {});
   const [features, setFeatures] = useState<SidebarFeature[]>([]);
@@ -46,6 +51,22 @@ export function ThemeEditorModal({ locationName, initial, onSave, onCancel }: Pr
   useEffect(() => {
     fetchSidebarFeatures().then(setFeatures);
   }, []);
+
+  const patchLook = (p: Partial<Look>) => setLook((l) => ({ ...l, ...p }));
+
+  function applyPreset(id: string) {
+    const p = presets.find((x) => x.id === id);
+    if (!p) return;
+    setLook({
+      primaryColor: p.primaryColor ?? look.primaryColor,
+      accentColor: p.accentColor ?? look.accentColor,
+      fontFamily: p.fontFamily ?? "",
+      gradientEnabled: p.gradientEnabled,
+      gradientColor: p.gradientColor ?? "#1e293b",
+      gradientAngle: p.gradientAngle,
+      topBarColor: p.topBarColor ?? "#ffffff",
+    });
+  }
 
   function toggleHidden(key: string) {
     setHidden((prev) => {
@@ -62,11 +83,16 @@ export function ThemeEditorModal({ locationName, initial, onSave, onCancel }: Pr
         Object.entries(labels).filter(([, v]) => v && v.trim())
       );
       await onSave({
-        brandName,
+        ...(showBrandName ? { brandName } : {}),
         logoUrl,
-        primaryColor,
-        secondaryColor,
-        accentColor,
+        primaryColor: look.primaryColor,
+        secondaryColor: look.primaryColor,
+        accentColor: look.accentColor,
+        fontFamily: look.fontFamily,
+        gradientEnabled: look.gradientEnabled,
+        gradientColor: look.gradientColor,
+        gradientAngle: look.gradientAngle,
+        topBarColor: look.topBarColor === "#ffffff" ? "" : look.topBarColor,
         hiddenFeatures: [...hidden],
         menuLabelOverrides: cleanedLabels,
       });
@@ -75,27 +101,27 @@ export function ThemeEditorModal({ locationName, initial, onSave, onCancel }: Pr
     }
   }
 
+  async function handleSaveAsPreset() {
+    const name = prompt("Name this preset (e.g. “Dark Gold”):");
+    if (!name) return;
+    await onSaveAsPreset(name, look);
+  }
+
   return (
     <div className="modal-overlay" onClick={onCancel}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal modal-lg" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>Edit theme &mdash; {locationName}</h2>
+          <h2>{title}</h2>
           <button className="btn btn-ghost" onClick={onCancel} aria-label="Close">
             &times;
           </button>
         </div>
 
         <div className="tabs">
-          <button
-            className={`tab ${tab === "branding" ? "active" : ""}`}
-            onClick={() => setTab("branding")}
-          >
-            Branding
+          <button className={`tab ${tab === "branding" ? "active" : ""}`} onClick={() => setTab("branding")}>
+            Branding &amp; colors
           </button>
-          <button
-            className={`tab ${tab === "features" ? "active" : ""}`}
-            onClick={() => setTab("features")}
-          >
+          <button className={`tab ${tab === "features" ? "active" : ""}`} onClick={() => setTab("features")}>
             Menu &amp; features
           </button>
         </div>
@@ -103,15 +129,40 @@ export function ThemeEditorModal({ locationName, initial, onSave, onCancel }: Pr
         <div className="modal-body">
           {tab === "branding" && (
             <>
-              <div className="field">
-                <label>Brand name</label>
-                <input
-                  type="text"
-                  value={brandName}
-                  onChange={(e) => setBrandName(e.target.value)}
-                  placeholder="e.g. Acme Marketing"
-                />
-              </div>
+              {presets.length > 0 && (
+                <div className="preset-apply">
+                  <label>Start from a preset</label>
+                  <select
+                    defaultValue=""
+                    onChange={(e) => {
+                      applyPreset(e.target.value);
+                      e.target.value = "";
+                    }}
+                  >
+                    <option value="" disabled>
+                      Choose a preset…
+                    </option>
+                    {presets.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {showBrandName && (
+                <div className="field">
+                  <label>Brand name</label>
+                  <input
+                    type="text"
+                    value={brandName}
+                    onChange={(e) => setBrandName(e.target.value)}
+                    placeholder="e.g. Acme Marketing"
+                  />
+                </div>
+              )}
+
               <div className="field">
                 <label>Logo URL</label>
                 <input
@@ -127,14 +178,12 @@ export function ThemeEditorModal({ locationName, initial, onSave, onCancel }: Pr
                   </div>
                 )}
               </div>
-              <div className="field">
-                <label>Colors</label>
-                <div className="color-fields">
-                  <ColorField label="Primary" value={primaryColor} onChange={setPrimaryColor} />
-                  <ColorField label="Secondary" value={secondaryColor} onChange={setSecondaryColor} />
-                  <ColorField label="Accent" value={accentColor} onChange={setAccentColor} />
-                </div>
-              </div>
+
+              <LookFields value={look} onChange={patchLook} />
+
+              <button className="btn btn-ghost" style={{ marginTop: 4 }} onClick={handleSaveAsPreset}>
+                + Save this look as a preset
+              </button>
             </>
           )}
 

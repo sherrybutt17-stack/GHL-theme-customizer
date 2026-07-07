@@ -10,6 +10,24 @@ adminRouter.get("/admin/api/sidebar-features", (_req: Request, res: Response) =>
   res.json(GHL_SIDEBAR_FEATURES);
 });
 
+/** Pull the shared visual theme fields out of a request body (whitelist). */
+function visualFields(body: any) {
+  return {
+    logoUrl: body?.logoUrl,
+    faviconUrl: body?.faviconUrl,
+    primaryColor: body?.primaryColor,
+    secondaryColor: body?.secondaryColor,
+    accentColor: body?.accentColor,
+    fontFamily: body?.fontFamily || null,
+    gradientEnabled: !!body?.gradientEnabled,
+    gradientColor: body?.gradientColor || null,
+    gradientAngle: typeof body?.gradientAngle === "number" ? body.gradientAngle : 135,
+    topBarColor: body?.topBarColor || null,
+    menuLabelOverrides: body?.menuLabelOverrides,
+    hiddenFeatures: body?.hiddenFeatures,
+  };
+}
+
 /**
  * Every route here is scoped by :agencyInstallId in the path. This is the same
  * "link carries the tenant" pattern as the onboarding page (no separate login
@@ -86,29 +104,12 @@ adminRouter.put(
       return res.status(403).json({ error: "Location does not belong to this agency install" });
     }
 
-    const {
-      brandName,
-      logoUrl,
-      faviconUrl,
-      primaryColor,
-      secondaryColor,
-      accentColor,
-      menuLabelOverrides,
-      hiddenFeatures,
-    } = req.body ?? {};
-
     const nextVersion = (location.themeConfigs[0]?.version ?? 0) + 1;
     const theme = await prisma.themeConfig.create({
       data: {
         locationInstallId: location.id,
-        brandName,
-        logoUrl,
-        faviconUrl,
-        primaryColor,
-        secondaryColor,
-        accentColor,
-        menuLabelOverrides,
-        hiddenFeatures,
+        brandName: req.body?.brandName,
+        ...visualFields(req.body),
         version: nextVersion,
       },
     });
@@ -137,5 +138,76 @@ adminRouter.put(
     });
 
     res.json({ id: updated.id, enabled: updated.enabled });
+  }
+);
+
+// --- Agency default theme (the baseline every sub-account inherits) ---
+
+adminRouter.get("/admin/api/:agencyInstallId/default-theme", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+  const theme = await prisma.agencyDefaultTheme.findUnique({ where: { agencyInstallId: agencyId } });
+  res.json(theme);
+});
+
+adminRouter.put("/admin/api/:agencyInstallId/default-theme", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+  const fields = visualFields(req.body);
+  const theme = await prisma.agencyDefaultTheme.upsert({
+    where: { agencyInstallId: agencyId },
+    update: fields,
+    create: { agencyInstallId: agencyId, ...fields },
+  });
+  res.json(theme);
+});
+
+// --- Theme presets (named looks the agency can apply to many sub-accounts) ---
+
+adminRouter.get("/admin/api/:agencyInstallId/presets", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+  const presets = await prisma.themePreset.findMany({
+    where: { agencyInstallId: agencyId },
+    orderBy: { createdAt: "asc" },
+  });
+  res.json(presets);
+});
+
+adminRouter.post("/admin/api/:agencyInstallId/presets", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+  const { name } = req.body ?? {};
+  if (!name || typeof name !== "string") {
+    return res.status(400).json({ error: "Preset name is required" });
+  }
+  const preset = await prisma.themePreset.create({
+    data: {
+      agencyInstallId: agencyId,
+      name,
+      primaryColor: req.body?.primaryColor || null,
+      secondaryColor: req.body?.secondaryColor || null,
+      accentColor: req.body?.accentColor || null,
+      fontFamily: req.body?.fontFamily || null,
+      gradientEnabled: !!req.body?.gradientEnabled,
+      gradientColor: req.body?.gradientColor || null,
+      gradientAngle: typeof req.body?.gradientAngle === "number" ? req.body.gradientAngle : 135,
+      topBarColor: req.body?.topBarColor || null,
+    },
+  });
+  res.json(preset);
+});
+
+adminRouter.delete(
+  "/admin/api/:agencyInstallId/presets/:presetId",
+  async (req: Request, res: Response) => {
+    const agencyId = await requireAgency(req, res);
+    if (!agencyId) return;
+    // Scope the delete to this agency (don't let a preset id from another tenant be deleted).
+    const result = await prisma.themePreset.deleteMany({
+      where: { id: req.params.presetId, agencyInstallId: agencyId },
+    });
+    if (result.count === 0) return res.status(404).json({ error: "Preset not found" });
+    res.json({ deleted: true });
   }
 );
