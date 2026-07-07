@@ -243,22 +243,38 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
   // Top navigation: reflow the layout so the sidebar sits across the top as a
   // horizontal bar instead of down the left side.
   if (theme.topNav) {
-    // 1. Flip the wrapper (that holds sidebar + content) from a row to a column.
-    //    The wrapper carries the location id class, so scope.prefix IS the
-    //    wrapper for a location; ".sidebar-v2-location" covers all locations.
+    // Sidebar internals, confirmed via live DOM inspection:
+    //   #sidebar-v2 > div.relative.flex.flex-col.h-screen.w-14   (main column)
+    //     > div.flex.flex-col...lead-connector
+    //       > div...hl_nav-header (scroll area)
+    //         > nav.flex-1.w-full
+    //           > a.w-full...        (w-full = each link stretches full width)
+    // So: flip the wrapper to a column, flatten the sidebar's flex-col stacks
+    // into rows, drop the h-screen/w-14 sizing, and stop links being full-width.
     const wrapper = scope.prefix || LAYOUT_WRAPPER_GLOBAL;
+    const sb = scope.prefix ? `${scope.prefix} #sidebar-v2` : "#sidebar-v2";
+
+    // 1. Stack sidebar above content.
     rules.push(`${wrapper} { flex-direction: column !important; }`);
-    // 2. Turn the sidebar into a full-width, short, horizontally-scrolling bar.
+    // 2. Sidebar becomes a full-width, auto-height strip.
     rules.push(
-      `${scope.bases.join(", ")} { width: 100% !important; max-width: 100% !important; min-width: 0 !important; height: auto !important; min-height: 0 !important; flex-direction: row !important; align-items: center !important; overflow-x: auto !important; overflow-y: hidden !important; }`
+      `${sb} { width: 100% !important; max-width: 100% !important; height: auto !important; min-height: 0 !important; }`
     );
-    // 3. Lay the nav list + items out horizontally.
-    const navSel = scope.bases
-      .flatMap((b) => [`${b} nav`, `${b} .nav`, `${b} ul`])
-      .join(", ");
-    rules.push(`${navSel} { flex-direction: row !important; width: auto !important; height: auto !important; }`);
-    const itemSel = scope.bases.flatMap((b) => [`${b} a`, `${b} li`]).join(", ");
-    rules.push(`${itemSel} { white-space: nowrap !important; }`);
+    // 3. Every vertical flex-col stack inside the sidebar becomes a row.
+    rules.push(
+      `${sb} .flex.flex-col { flex-direction: row !important; height: auto !important; min-height: 0 !important; align-items: center !important; }`
+    );
+    // 4. Undo the full-viewport-height and fixed-narrow-width utilities.
+    rules.push(`${sb} .h-screen { height: auto !important; min-height: 0 !important; }`);
+    rules.push(`${sb} .w-14 { width: 100% !important; }`);
+    // 5. Nav areas scroll sideways instead of down.
+    rules.push(
+      `${sb} .hl_nav-header, ${sb} nav { width: 100% !important; overflow-x: auto !important; overflow-y: hidden !important; }`
+    );
+    // 6. Links size to their content instead of stretching full-width.
+    rules.push(
+      `${sb} a.w-full, ${sb} nav a { width: auto !important; flex: 0 0 auto !important; white-space: nowrap !important; }`
+    );
   }
 
   // Logo swap
