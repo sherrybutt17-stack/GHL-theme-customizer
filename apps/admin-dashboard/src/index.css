@@ -262,7 +262,14 @@ body {
 .col-center { text-align: center; }
 .col-center .toggle { display: inline-block; }
 .col-actions { text-align: right; white-space: nowrap; }
-.acc-name { font-weight: 600; color: var(--text); }
+.acc-name { font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 8px; }
+.acc-open {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 6px; font-size: 13px;
+  color: var(--primary); background: var(--primary-soft); text-decoration: none;
+  transition: all 0.12s ease;
+}
+.acc-open:hover { background: var(--primary); color: #fff; }
 .acc-id { font-size: 11px; color: var(--text-muted); font-family: ui-monospace, monospace; }
 .acc-muted { color: var(--text-muted); }
 

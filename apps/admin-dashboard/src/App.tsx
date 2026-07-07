@@ -24,6 +24,21 @@ function agencyIdFromUrl(): string | null {
   return path.length > 0 ? path : null;
 }
 
+/**
+ * Base URL of the GHL app for building "open this sub-account" links. Tries the
+ * referring GHL page's origin (works with white-label domains); falls back to
+ * the default GHL host.
+ */
+function ghlBaseUrl(): string {
+  try {
+    if (document.referrer) return new URL(document.referrer).origin;
+  } catch {
+    /* ignore */
+  }
+  return "https://app.gohighlevel.com";
+}
+const GHL_BASE = ghlBaseUrl();
+
 export function App() {
   const agencyId = agencyIdFromUrl();
   const [locations, setLocations] = useState<LocationRow[]>([]);
@@ -269,7 +284,18 @@ export function App() {
                         />
                       </td>
                       <td>
-                        <div className="acc-name">{loc.locationName ?? "Untitled"}</div>
+                        <div className="acc-name">
+                          {loc.locationName ?? "Untitled"}
+                          <a
+                            className="acc-open"
+                            href={`${GHL_BASE}/v2/location/${loc.ghlLocationId}/dashboard`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open this sub-account in GHL"
+                          >
+                            ↗
+                          </a>
+                        </div>
                         <div className="acc-id">{loc.ghlLocationId}</div>
                       </td>
                       <td className="col-center">
