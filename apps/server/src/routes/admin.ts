@@ -32,6 +32,7 @@ function visualFields(body: any) {
     hideUpgrade: !!body?.hideUpgrade,
     animateLoadIn: !!body?.animateLoadIn,
     animateScroll: !!body?.animateScroll,
+    topNav: !!body?.topNav,
     menuLabelOverrides: body?.menuLabelOverrides,
     hiddenFeatures: body?.hiddenFeatures,
   };
@@ -54,6 +55,7 @@ function presetLookFields(body: any) {
     darkMode: !!body?.darkMode,
     animateLoadIn: !!body?.animateLoadIn,
     animateScroll: !!body?.animateScroll,
+    topNav: !!body?.topNav,
   };
 }
 
@@ -307,6 +309,7 @@ adminRouter.post(
             darkMode: preset.darkMode,
             animateLoadIn: preset.animateLoadIn,
             animateScroll: preset.animateScroll,
+            topNav: preset.topNav,
             version: (prev?.version ?? 0) + 1,
           },
         });

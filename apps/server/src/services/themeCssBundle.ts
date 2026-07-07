@@ -37,6 +37,7 @@ interface VisualTheme {
   hideUpgrade?: boolean | null;
   animateLoadIn?: boolean | null;
   animateScroll?: boolean | null;
+  topNav?: boolean | null;
   menuLabelOverrides?: unknown;
   hiddenFeatures?: unknown;
   // Raw power-user CSS. ThemeConfig stores it as customCssOverride, the agency
@@ -75,22 +76,32 @@ const ANIMATION_KEYFRAMES =
 interface Scope {
   bases: string[];
   prefix: string;
+  // `:has(...)` fragment that lets us select the layout WRAPPER (an ancestor of
+  // the sidebar) for just this location - needed for top-nav layout reflow.
+  // Empty for the global/agency-default scope (applies to all).
+  wrap: string;
 }
 
 function globalScope(): Scope {
-  return { bases: ["#sidebar-v2", ".hl_sidebar"], prefix: "" };
+  return { bases: ["#sidebar-v2", ".hl_sidebar"], prefix: "", wrap: "" };
 }
 
 function locationScope(locationId: string): Scope {
+  const has = `:has(a[href*="/location/${locationId}/"])`;
   return {
-    bases: [
-      `#sidebar-v2:has(a[href*="/location/${locationId}/"])`,
-      `.hl_sidebar:has(a[href*="/location/${locationId}/"])`,
-    ],
+    bases: [`#sidebar-v2${has}`, `.hl_sidebar${has}`],
     // The sidebar wrapper div carries the raw location id as a CSS class.
     prefix: `[class~="${locationId}"]`,
+    wrap: has,
   };
 }
+
+/**
+ * Selectors for the flex container that holds the sidebar + content side by
+ * side. Best-effort (needs live DOM confirmation) - top-nav flips these to
+ * stack vertically so the sidebar sits on top.
+ */
+const LAYOUT_WRAPPER_SELECTORS = ["#app", ".hl_wrapper", ".hl_wrapper--inner"];
 
 /** Scope a comma-separated descendant selector list under the scope's prefix. */
 function scoped(scope: Scope, selectorList: string): string {
@@ -223,6 +234,25 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     rules.push(
       `${scoped(scope, SCROLL_REVEAL_SELECTOR)} { animation: mosaic-fade-in linear both !important; animation-timeline: view() !important; animation-range: entry 0% cover 25% !important; }`
     );
+  }
+
+  // Top navigation: reflow the layout so the sidebar sits across the top as a
+  // horizontal bar instead of down the left side.
+  if (theme.topNav) {
+    // 1. Flip the wrapper (that holds sidebar + content) from a row to a column.
+    const wrappers = LAYOUT_WRAPPER_SELECTORS.map((w) => `${w}${scope.wrap}`).join(", ");
+    rules.push(`${wrappers} { flex-direction: column !important; }`);
+    // 2. Turn the sidebar into a full-width, short, horizontally-scrolling bar.
+    rules.push(
+      `${scope.bases.join(", ")} { width: 100% !important; max-width: 100% !important; min-width: 0 !important; height: auto !important; min-height: 0 !important; flex-direction: row !important; align-items: center !important; overflow-x: auto !important; overflow-y: hidden !important; }`
+    );
+    // 3. Lay the nav list + items out horizontally.
+    const navSel = scope.bases
+      .flatMap((b) => [`${b} nav`, `${b} .nav`, `${b} ul`])
+      .join(", ");
+    rules.push(`${navSel} { flex-direction: row !important; width: auto !important; height: auto !important; }`);
+    const itemSel = scope.bases.flatMap((b) => [`${b} a`, `${b} li`]).join(", ");
+    rules.push(`${itemSel} { white-space: nowrap !important; }`);
   }
 
   // Logo swap

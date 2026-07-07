@@ -91,6 +91,7 @@ model ThemeConfig {
   hideUpgrade         Boolean   @default(false)
   animateLoadIn       Boolean   @default(false)
   animateScroll       Boolean   @default(false)
+  topNav              Boolean   @default(false)
   menuLabelOverrides  Json?
   hiddenFeatures      Json?
   customCssOverride   String?
@@ -127,6 +128,7 @@ model AgencyDefaultTheme {
   hideUpgrade         Boolean   @default(false)
   animateLoadIn       Boolean   @default(false)
   animateScroll       Boolean   @default(false)
+  topNav              Boolean   @default(false)
   customCss           String?
   menuLabelOverrides  Json?
   hiddenFeatures      Json?
@@ -156,6 +158,7 @@ model ThemePreset {
   darkMode            Boolean   @default(false)
   animateLoadIn       Boolean   @default(false)
   animateScroll       Boolean   @default(false)
+  topNav              Boolean   @default(false)
   createdAt           DateTime  @default(now())
 
   @@index([agencyInstallId])

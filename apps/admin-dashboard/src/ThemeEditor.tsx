@@ -39,6 +39,7 @@ function lookFrom(initial: Props["initial"]): Look {
     darkMode: initial?.darkMode ?? false,
     animateLoadIn: initial?.animateLoadIn ?? false,
     animateScroll: initial?.animateScroll ?? false,
+    topNav: initial?.topNav ?? false,
   };
 }
 
@@ -86,6 +87,7 @@ export function ThemeEditorModal({
       darkMode: p.darkMode,
       animateLoadIn: p.animateLoadIn,
       animateScroll: p.animateScroll,
+      topNav: p.topNav,
     });
   }
 
@@ -120,6 +122,7 @@ export function ThemeEditorModal({
         darkMode: look.darkMode,
         animateLoadIn: look.animateLoadIn,
         animateScroll: look.animateScroll,
+        topNav: look.topNav,
         sidebarImageUrl,
         hideUpgrade,
         customCss,

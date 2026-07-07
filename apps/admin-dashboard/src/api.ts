@@ -37,6 +37,7 @@ export interface VisualTheme {
   hideUpgrade: boolean;
   animateLoadIn: boolean;
   animateScroll: boolean;
+  topNav: boolean;
   menuLabelOverrides: Record<string, string> | null;
   hiddenFeatures: string[] | null;
 }
@@ -70,6 +71,7 @@ export interface ThemePreset {
   darkMode: boolean;
   animateLoadIn: boolean;
   animateScroll: boolean;
+  topNav: boolean;
 }
 
 export interface LocationRow {
@@ -105,6 +107,7 @@ export interface ThemeInput {
   hideUpgrade: boolean;
   animateLoadIn: boolean;
   animateScroll: boolean;
+  topNav: boolean;
   customCss: string;
   menuLabelOverrides: Record<string, string>;
   hiddenFeatures: string[];

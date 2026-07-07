@@ -13,6 +13,7 @@ export interface Look {
   darkMode: boolean;
   animateLoadIn: boolean;
   animateScroll: boolean;
+  topNav: boolean;
 }
 
 export const GOOGLE_FONTS = [
@@ -193,6 +194,21 @@ export function LookFields({ value, onChange }: { value: Look; onChange: (patch:
         <div>
           <div className="look-color-label">Scroll-reveal animation</div>
           <div className="look-color-hint">Cards fade in as they scroll into view.</div>
+        </div>
+      </div>
+
+      <div className="look-toggle-row">
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={value.topNav}
+            onChange={(e) => onChange({ topNav: e.target.checked })}
+          />
+          <span className="toggle-track" />
+        </label>
+        <div>
+          <div className="look-color-label">Top navigation <span className="beta-tag">experimental</span></div>
+          <div className="look-color-hint">Move the sidebar to a horizontal bar across the top.</div>
         </div>
       </div>
 
