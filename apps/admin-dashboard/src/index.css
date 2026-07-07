@@ -171,12 +171,45 @@ body {
 
 .location-row {
   display: grid;
-  grid-template-columns: 1fr auto auto auto auto;
+  grid-template-columns: auto 1fr auto auto auto auto;
   align-items: center;
   gap: 18px;
   padding: 15px 22px;
   border-bottom: 1px solid var(--border);
   transition: background 0.12s ease;
+}
+.location-select { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; }
+
+/* ---- Bulk apply bar ---- */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 22px;
+  background: var(--primary-soft);
+  border-bottom: 1px solid var(--border);
+}
+.bulk-count { font-weight: 600; font-size: 13px; color: var(--primary); }
+.bulk-bar select {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  font-size: 13px;
+}
+
+/* ---- Custom CSS textarea ---- */
+.custom-css {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #0f172a;
+  color: #e2e8f0;
+  resize: vertical;
 }
 .location-row:last-child { border-bottom: none; }
 .location-row:hover { background: #fbfcfe; }

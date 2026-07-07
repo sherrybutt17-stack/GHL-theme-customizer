@@ -7,6 +7,10 @@ export interface Look {
   gradientColor: string;
   gradientAngle: number;
   topBarColor: string;
+  buttonColor: string;
+  cornerRadius: number;
+  scrollbarColor: string;
+  darkMode: boolean;
 }
 
 export const GOOGLE_FONTS = [
@@ -118,6 +122,47 @@ export function LookFields({ value, onChange }: { value: Look; onChange: (patch:
         value={value.topBarColor || "#ffffff"}
         onChange={(v) => onChange({ topBarColor: v })}
       />
+
+      <ColorRow
+        label="Buttons — primary action color"
+        hint="Save / Add / primary buttons throughout the UI."
+        value={value.buttonColor || "#4f46e5"}
+        onChange={(v) => onChange({ buttonColor: v })}
+      />
+
+      <ColorRow
+        label="Scrollbar"
+        hint="The draggable scrollbar thumb color."
+        value={value.scrollbarColor || "#94a3b8"}
+        onChange={(v) => onChange({ scrollbarColor: v })}
+      />
+
+      <div className="look-angle">
+        <label>Corner radius: {value.cornerRadius}px</label>
+        <input
+          type="range"
+          min={0}
+          max={24}
+          value={value.cornerRadius}
+          onChange={(e) => onChange({ cornerRadius: Number(e.target.value) })}
+        />
+        <div className="look-color-hint">Roundness of buttons, cards, and inputs. 0 = sharp corners.</div>
+      </div>
+
+      <div className="look-toggle-row">
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={value.darkMode}
+            onChange={(e) => onChange({ darkMode: e.target.checked })}
+          />
+          <span className="toggle-track" />
+        </label>
+        <div>
+          <div className="look-color-label">Dark mode</div>
+          <div className="look-color-hint">Darken the main content area and cards for this client.</div>
+        </div>
+      </div>
 
       <div className="field">
         <label>Font</label>

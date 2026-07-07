@@ -29,6 +29,12 @@ export interface VisualTheme {
   gradientColor: string | null;
   gradientAngle: number;
   topBarColor: string | null;
+  buttonColor: string | null;
+  cornerRadius: number | null;
+  sidebarImageUrl: string | null;
+  scrollbarColor: string | null;
+  darkMode: boolean;
+  hideUpgrade: boolean;
   menuLabelOverrides: Record<string, string> | null;
   hiddenFeatures: string[] | null;
 }
@@ -36,11 +42,13 @@ export interface VisualTheme {
 export interface ThemeConfig extends VisualTheme {
   id: string;
   brandName: string | null;
+  customCssOverride: string | null;
   version: number;
 }
 
 export interface AgencyDefaultTheme extends VisualTheme {
   id: string;
+  customCss: string | null;
 }
 
 export interface ThemePreset {
@@ -54,6 +62,10 @@ export interface ThemePreset {
   gradientColor: string | null;
   gradientAngle: number;
   topBarColor: string | null;
+  buttonColor: string | null;
+  cornerRadius: number | null;
+  scrollbarColor: string | null;
+  darkMode: boolean;
 }
 
 export interface LocationRow {
@@ -81,6 +93,13 @@ export interface ThemeInput {
   gradientColor: string;
   gradientAngle: number;
   topBarColor: string;
+  buttonColor: string;
+  cornerRadius: number | null;
+  sidebarImageUrl: string;
+  scrollbarColor: string;
+  darkMode: boolean;
+  hideUpgrade: boolean;
+  customCss: string;
   menuLabelOverrides: Record<string, string>;
   hiddenFeatures: string[];
 }
@@ -128,6 +147,15 @@ export const createPreset = (a: string, preset: Partial<ThemePreset> & { name: s
 
 export const deletePreset = (a: string, id: string) =>
   fetch(`${API_BASE}/admin/api/${a}/presets/${id}`, j("DELETE")).then(handle);
+
+export const applyPreset = (
+  a: string,
+  presetId: string,
+  locationInstallIds: string[]
+): Promise<{ applied: number }> =>
+  fetch(`${API_BASE}/admin/api/${a}/presets/${presetId}/apply`, j("POST", { locationInstallIds })).then(
+    handle
+  );
 
 export interface EmbedInfo {
   importSnippet: string;

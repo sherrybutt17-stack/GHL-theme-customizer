@@ -29,9 +29,33 @@ interface VisualTheme {
   gradientColor?: string | null;
   gradientAngle?: number | null;
   topBarColor?: string | null;
+  buttonColor?: string | null;
+  cornerRadius?: number | null;
+  sidebarImageUrl?: string | null;
+  scrollbarColor?: string | null;
+  darkMode?: boolean | null;
+  hideUpgrade?: boolean | null;
   menuLabelOverrides?: unknown;
   hiddenFeatures?: unknown;
+  // Raw power-user CSS. ThemeConfig stores it as customCssOverride, the agency
+  // default as customCss - renderRules reads whichever is present.
+  customCss?: string | null;
+  customCssOverride?: string | null;
 }
+
+/**
+ * Primary-button / card / upgrade-prompt selectors are best-effort guesses at
+ * GHL's current markup (unlike the sidebar/top-bar/logo selectors, which were
+ * confirmed by live DOM inspection). If any prove off, the per-client Custom CSS
+ * escape hatch lets the agency drop in the exact selector without a code change.
+ */
+const PRIMARY_BUTTON_SELECTOR =
+  ".hl-btn.primary, .hl-btn--primary, .btn-primary, button[class*='--primary'], .n-button--primary-type";
+const RADIUS_SELECTOR = ".hl-btn, button, .card, .hl-card, input, select, textarea, .modal";
+const DARK_SURFACE_SELECTOR = ".hl_wrapper, .hl_wrapper--inner, .hl-main, main";
+const DARK_CARD_SELECTOR = ".card, .hl-card";
+const UPGRADE_SELECTOR =
+  "[class*='upgrade'], [href*='upgrade'], [href*='billing'], .upgrade-banner, [data-testid*='upgrade']";
 
 /**
  * A scope determines whether rules apply globally (agency default) or only to
@@ -77,6 +101,37 @@ function sidebarBackground(primary: string, theme: VisualTheme): string {
   return primary;
 }
 
+/**
+ * Prefix each top-level selector in a block of raw CSS so a location's custom
+ * rules only apply within that sub-account's wrapper. Deliberately simple: it
+ * handles flat rules (the common case for the escape hatch) and passes at-rules
+ * (@media/@keyframes) through untouched. Agency-default custom CSS uses an empty
+ * prefix and is emitted verbatim, so nested/at-rules work fully there.
+ */
+function scopeCustomCss(css: string, prefix: string): string {
+  if (!prefix.trim()) return css.trim();
+  const flatRule = /([^{}]+)\{([^{}]*)\}/g;
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  let matched = false;
+  while ((m = flatRule.exec(css)) !== null) {
+    matched = true;
+    const sel = m[1].trim();
+    const body = m[2].trim();
+    if (!sel || sel.startsWith("@")) {
+      out.push(`${sel} { ${body} }`);
+      continue;
+    }
+    const scopedSel = sel
+      .split(",")
+      .map((s) => `${prefix} ${s.trim()}`)
+      .join(", ");
+    out.push(`${scopedSel} { ${body} }`);
+  }
+  // Fallback for input that isn't a full rule (bare declarations): wrap it.
+  return matched ? out.join("\n") : `${prefix} { ${css.trim()} }`;
+}
+
 /** Render the CSS rules for one theme under one scope. */
 function renderRules(scope: Scope, theme: VisualTheme): string[] {
   const rules: string[] = [];
@@ -109,6 +164,46 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     rules.push(`${scoped(scope, TOP_BAR_SELECTOR)} { background: ${theme.topBarColor} !important; }`);
   }
 
+  // Sidebar background image (painted over the color/gradient)
+  if (theme.sidebarImageUrl) {
+    rules.push(
+      `${scope.bases.join(", ")} { background-image: url("${theme.sidebarImageUrl}") !important; background-size: cover !important; background-position: center !important; background-repeat: no-repeat !important; }`
+    );
+  }
+
+  // Primary buttons
+  if (theme.buttonColor) {
+    rules.push(
+      `${scoped(scope, PRIMARY_BUTTON_SELECTOR)} { background-color: ${theme.buttonColor} !important; border-color: ${theme.buttonColor} !important; }`
+    );
+  }
+
+  // Corner radius (buttons, cards, inputs)
+  if (typeof theme.cornerRadius === "number") {
+    rules.push(`${scoped(scope, RADIUS_SELECTOR)} { border-radius: ${theme.cornerRadius}px !important; }`);
+  }
+
+  // Scrollbar color. WebKit scrollbar pseudo-elements can't hang off a :has()
+  // base, so we scope by the location wrapper prefix (or body for the default).
+  if (theme.scrollbarColor) {
+    const sbBase = scope.prefix || "body";
+    rules.push(`${sbBase} ::-webkit-scrollbar { width: 10px !important; height: 10px !important; }`);
+    rules.push(
+      `${sbBase} ::-webkit-scrollbar-thumb { background: ${theme.scrollbarColor} !important; border-radius: 8px !important; }`
+    );
+  }
+
+  // Dark mode (content area + cards)
+  if (theme.darkMode) {
+    rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)} { background: #0f172a !important; color: #e2e8f0 !important; }`);
+    rules.push(`${scoped(scope, DARK_CARD_SELECTOR)} { background: #1e293b !important; color: #e2e8f0 !important; }`);
+  }
+
+  // Hide upgrade / billing prompts (white-label clean-up)
+  if (theme.hideUpgrade) {
+    rules.push(`${scoped(scope, UPGRADE_SELECTOR)} { display: none !important; }`);
+  }
+
   // Logo swap
   if (theme.logoUrl) {
     rules.push(
@@ -138,6 +233,12 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     rules.push(
       `${parts.map((p) => `${p}::after`).join(", ")} { content: "${safe}" !important; font-size: 14px !important; }`
     );
+  }
+
+  // Power-user raw CSS (scoped to the location for overrides, verbatim for default)
+  const custom = theme.customCss ?? theme.customCssOverride;
+  if (custom && custom.trim()) {
+    rules.push(`/* custom css */\n${scopeCustomCss(custom, scope.prefix)}`);
   }
 
   return rules;

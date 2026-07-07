@@ -82,6 +82,13 @@ model ThemeConfig {
   gradientColor       String?
   gradientAngle       Int       @default(135)
   topBarColor         String?
+  // Advanced look/policy (also on AgencyDefaultTheme)
+  buttonColor         String?
+  cornerRadius        Int?
+  sidebarImageUrl     String?
+  scrollbarColor      String?
+  darkMode            Boolean   @default(false)
+  hideUpgrade         Boolean   @default(false)
   menuLabelOverrides  Json?
   hiddenFeatures      Json?
   customCssOverride   String?
@@ -110,6 +117,13 @@ model AgencyDefaultTheme {
   gradientColor       String?
   gradientAngle       Int       @default(135)
   topBarColor         String?
+  buttonColor         String?
+  cornerRadius        Int?
+  sidebarImageUrl     String?
+  scrollbarColor      String?
+  darkMode            Boolean   @default(false)
+  hideUpgrade         Boolean   @default(false)
+  customCss           String?
   menuLabelOverrides  Json?
   hiddenFeatures      Json?
   updatedAt           DateTime  @updatedAt
@@ -132,6 +146,10 @@ model ThemePreset {
   gradientColor       String?
   gradientAngle       Int       @default(135)
   topBarColor         String?
+  buttonColor         String?
+  cornerRadius        Int?
+  scrollbarColor      String?
+  darkMode            Boolean   @default(false)
   createdAt           DateTime  @default(now())
 
   @@index([agencyInstallId])

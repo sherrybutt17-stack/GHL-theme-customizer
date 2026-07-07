@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  applyPreset,
   createPreset,
   deletePreset,
   fetchDefaultTheme,
@@ -32,6 +33,9 @@ export function App() {
   const [editingLocation, setEditingLocation] = useState<LocationRow | null>(null);
   const [editingDefault, setEditingDefault] = useState(false);
   const [showCssExport, setShowCssExport] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkPresetId, setBulkPresetId] = useState("");
+  const [applying, setApplying] = useState(false);
 
   useEffect(() => {
     if (!agencyId) {
@@ -81,6 +85,30 @@ export function App() {
   async function removePreset(id: string) {
     await deletePreset(agencyId!, id);
     setPresets((prev) => prev.filter((p) => p.id !== id));
+  }
+
+  function toggleSelected(locId: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(locId) ? next.delete(locId) : next.add(locId);
+      return next;
+    });
+  }
+
+  async function handleBulkApply() {
+    if (!bulkPresetId || selected.size === 0) return;
+    setApplying(true);
+    try {
+      await applyPreset(agencyId!, bulkPresetId, [...selected]);
+      const fresh = await fetchLocations(agencyId!);
+      setLocations(fresh);
+      setSelected(new Set());
+      setBulkPresetId("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setApplying(false);
+    }
   }
 
   return (
@@ -140,8 +168,41 @@ export function App() {
           <div className="empty-state">No sub-accounts found for this agency yet.</div>
         )}
 
+        {selected.size > 0 && (
+          <div className="bulk-bar">
+            <span className="bulk-count">{selected.size} selected</span>
+            <select value={bulkPresetId} onChange={(e) => setBulkPresetId(e.target.value)}>
+              <option value="" disabled>
+                {presets.length ? "Apply preset…" : "No presets saved yet"}
+              </option>
+              {presets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <button
+              className="btn btn-primary"
+              disabled={!bulkPresetId || applying}
+              onClick={handleBulkApply}
+            >
+              {applying ? "Applying…" : `Apply to ${selected.size}`}
+            </button>
+            <button className="btn btn-ghost" onClick={() => setSelected(new Set())}>
+              Clear
+            </button>
+          </div>
+        )}
+
         {locations.map((loc) => (
           <div className="location-row" key={loc.id}>
+            <input
+              type="checkbox"
+              className="location-select"
+              checked={selected.has(loc.id)}
+              onChange={() => toggleSelected(loc.id)}
+              title="Select for bulk preset apply"
+            />
             <div className="location-name">{loc.locationName ?? loc.ghlLocationId}</div>
 
             <label className="toggle" title={loc.enabled ? "Enabled" : "Disabled"}>

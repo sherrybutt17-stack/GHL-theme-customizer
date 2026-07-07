@@ -10,7 +10,13 @@ import { LookFields, type Look } from "./LookFields";
 
 interface Props {
   title: string;
-  initial: (Partial<VisualTheme> & { brandName?: string | null }) | null;
+  initial:
+    | (Partial<VisualTheme> & {
+        brandName?: string | null;
+        customCss?: string | null;
+        customCssOverride?: string | null;
+      })
+    | null;
   showBrandName: boolean;
   presets: ThemePreset[];
   onSave: (theme: ThemeInput) => Promise<void>;
@@ -27,6 +33,10 @@ function lookFrom(initial: Props["initial"]): Look {
     gradientColor: initial?.gradientColor ?? "#1e293b",
     gradientAngle: initial?.gradientAngle ?? 135,
     topBarColor: initial?.topBarColor ?? "#ffffff",
+    buttonColor: initial?.buttonColor ?? "#4f46e5",
+    cornerRadius: initial?.cornerRadius ?? 8,
+    scrollbarColor: initial?.scrollbarColor ?? "#94a3b8",
+    darkMode: initial?.darkMode ?? false,
   };
 }
 
@@ -39,12 +49,15 @@ export function ThemeEditorModal({
   onSaveAsPreset,
   onCancel,
 }: Props) {
-  const [tab, setTab] = useState<"branding" | "features">("branding");
+  const [tab, setTab] = useState<"branding" | "features" | "advanced">("branding");
   const [brandName, setBrandName] = useState(initial?.brandName ?? "");
   const [logoUrl, setLogoUrl] = useState(initial?.logoUrl ?? "");
   const [look, setLook] = useState<Look>(lookFrom(initial));
   const [hidden, setHidden] = useState<Set<string>>(new Set(initial?.hiddenFeatures ?? []));
   const [labels, setLabels] = useState<Record<string, string>>(initial?.menuLabelOverrides ?? {});
+  const [sidebarImageUrl, setSidebarImageUrl] = useState(initial?.sidebarImageUrl ?? "");
+  const [hideUpgrade, setHideUpgrade] = useState(initial?.hideUpgrade ?? false);
+  const [customCss, setCustomCss] = useState(initial?.customCssOverride ?? initial?.customCss ?? "");
   const [features, setFeatures] = useState<SidebarFeature[]>([]);
   const [saving, setSaving] = useState(false);
 
@@ -65,6 +78,10 @@ export function ThemeEditorModal({
       gradientColor: p.gradientColor ?? "#1e293b",
       gradientAngle: p.gradientAngle,
       topBarColor: p.topBarColor ?? "#ffffff",
+      buttonColor: p.buttonColor ?? look.buttonColor,
+      cornerRadius: p.cornerRadius ?? look.cornerRadius,
+      scrollbarColor: p.scrollbarColor ?? look.scrollbarColor,
+      darkMode: p.darkMode,
     });
   }
 
@@ -93,6 +110,13 @@ export function ThemeEditorModal({
         gradientColor: look.gradientColor,
         gradientAngle: look.gradientAngle,
         topBarColor: look.topBarColor === "#ffffff" ? "" : look.topBarColor,
+        buttonColor: look.buttonColor,
+        cornerRadius: look.cornerRadius,
+        scrollbarColor: look.scrollbarColor,
+        darkMode: look.darkMode,
+        sidebarImageUrl,
+        hideUpgrade,
+        customCss,
         hiddenFeatures: [...hidden],
         menuLabelOverrides: cleanedLabels,
       });
@@ -123,6 +147,9 @@ export function ThemeEditorModal({
           </button>
           <button className={`tab ${tab === "features" ? "active" : ""}`} onClick={() => setTab("features")}>
             Menu &amp; features
+          </button>
+          <button className={`tab ${tab === "advanced" ? "active" : ""}`} onClick={() => setTab("advanced")}>
+            Advanced
           </button>
         </div>
 
@@ -218,6 +245,54 @@ export function ThemeEditorModal({
                 })}
               </div>
             </div>
+          )}
+
+          {tab === "advanced" && (
+            <>
+              <div className="field">
+                <label>Sidebar background image URL</label>
+                <input
+                  type="url"
+                  value={sidebarImageUrl}
+                  onChange={(e) => setSidebarImageUrl(e.target.value)}
+                  placeholder="https://… (optional, layered over the sidebar color)"
+                />
+              </div>
+
+              <div className="look-toggle-row">
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={hideUpgrade}
+                    onChange={(e) => setHideUpgrade(e.target.checked)}
+                  />
+                  <span className="toggle-track" />
+                </label>
+                <div>
+                  <div className="look-color-label">Hide upgrade &amp; billing prompts</div>
+                  <div className="look-color-hint">
+                    Removes “Upgrade”/billing banners for a cleaner white-labeled client view.
+                  </div>
+                </div>
+              </div>
+
+              <div className="field">
+                <label>Custom CSS (advanced)</label>
+                <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 8px" }}>
+                  Raw CSS applied {showBrandName ? "to this sub-account only" : "agency-wide"}. Use for
+                  anything the controls above don’t cover — your rules are auto-scoped to this client.
+                  Keep to flat rules (no <code>@media</code>) when scoping to one sub-account.
+                </p>
+                <textarea
+                  className="custom-css"
+                  rows={8}
+                  spellCheck={false}
+                  value={customCss}
+                  onChange={(e) => setCustomCss(e.target.value)}
+                  placeholder=".some-ghl-class { color: red !important; }"
+                />
+              </div>
+            </>
           )}
         </div>
 

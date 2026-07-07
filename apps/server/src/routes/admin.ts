@@ -24,8 +24,32 @@ function visualFields(body: any) {
     gradientColor: body?.gradientColor || null,
     gradientAngle: typeof body?.gradientAngle === "number" ? body.gradientAngle : 135,
     topBarColor: body?.topBarColor || null,
+    buttonColor: body?.buttonColor || null,
+    cornerRadius: typeof body?.cornerRadius === "number" ? body.cornerRadius : null,
+    sidebarImageUrl: body?.sidebarImageUrl || null,
+    scrollbarColor: body?.scrollbarColor || null,
+    darkMode: !!body?.darkMode,
+    hideUpgrade: !!body?.hideUpgrade,
     menuLabelOverrides: body?.menuLabelOverrides,
     hiddenFeatures: body?.hiddenFeatures,
+  };
+}
+
+/** The look-only fields a preset carries (no client identity/policy). */
+function presetLookFields(body: any) {
+  return {
+    primaryColor: body?.primaryColor || null,
+    secondaryColor: body?.secondaryColor || null,
+    accentColor: body?.accentColor || null,
+    fontFamily: body?.fontFamily || null,
+    gradientEnabled: !!body?.gradientEnabled,
+    gradientColor: body?.gradientColor || null,
+    gradientAngle: typeof body?.gradientAngle === "number" ? body.gradientAngle : 135,
+    topBarColor: body?.topBarColor || null,
+    buttonColor: body?.buttonColor || null,
+    cornerRadius: typeof body?.cornerRadius === "number" ? body.cornerRadius : null,
+    scrollbarColor: body?.scrollbarColor || null,
+    darkMode: !!body?.darkMode,
   };
 }
 
@@ -119,6 +143,7 @@ adminRouter.put(
         locationInstallId: location.id,
         brandName: req.body?.brandName,
         ...visualFields(req.body),
+        customCssOverride: req.body?.customCss || null,
         version: nextVersion,
       },
     });
@@ -162,7 +187,7 @@ adminRouter.get("/admin/api/:agencyInstallId/default-theme", async (req: Request
 adminRouter.put("/admin/api/:agencyInstallId/default-theme", async (req: Request, res: Response) => {
   const agencyId = await requireAgency(req, res);
   if (!agencyId) return;
-  const fields = visualFields(req.body);
+  const fields = { ...visualFields(req.body), customCss: req.body?.customCss || null };
   const theme = await prisma.agencyDefaultTheme.upsert({
     where: { agencyInstallId: agencyId },
     update: fields,
@@ -194,18 +219,76 @@ adminRouter.post("/admin/api/:agencyInstallId/presets", async (req: Request, res
     data: {
       agencyInstallId: agencyId,
       name,
-      primaryColor: req.body?.primaryColor || null,
-      secondaryColor: req.body?.secondaryColor || null,
-      accentColor: req.body?.accentColor || null,
-      fontFamily: req.body?.fontFamily || null,
-      gradientEnabled: !!req.body?.gradientEnabled,
-      gradientColor: req.body?.gradientColor || null,
-      gradientAngle: typeof req.body?.gradientAngle === "number" ? req.body.gradientAngle : 135,
-      topBarColor: req.body?.topBarColor || null,
+      ...presetLookFields(req.body),
     },
   });
   res.json(preset);
 });
+
+/**
+ * Apply one preset's look to many sub-accounts at once. For each location we
+ * create a new ThemeConfig version that keeps the client's identity (brand name,
+ * logo, hidden/renamed menu items, custom CSS) and overlays the preset's look,
+ * then enable the location so the look actually renders. Scoped to this agency.
+ */
+adminRouter.post(
+  "/admin/api/:agencyInstallId/presets/:presetId/apply",
+  async (req: Request, res: Response) => {
+    const agencyId = await requireAgency(req, res);
+    if (!agencyId) return;
+
+    const preset = await prisma.themePreset.findFirst({
+      where: { id: req.params.presetId, agencyInstallId: agencyId },
+    });
+    if (!preset) return res.status(404).json({ error: "Preset not found" });
+
+    const ids: string[] = Array.isArray(req.body?.locationInstallIds) ? req.body.locationInstallIds : [];
+    if (ids.length === 0) return res.status(400).json({ error: "No sub-accounts selected" });
+
+    const locations = await prisma.locationInstall.findMany({
+      where: { id: { in: ids }, agencyInstallId: agencyId },
+      include: { themeConfigs: { orderBy: { version: "desc" }, take: 1 } },
+    });
+
+    const updated = await Promise.all(
+      locations.map(async (loc) => {
+        const prev = loc.themeConfigs[0];
+        const theme = await prisma.themeConfig.create({
+          data: {
+            locationInstallId: loc.id,
+            // Preserve client identity + policy from the prior version.
+            brandName: prev?.brandName ?? null,
+            logoUrl: prev?.logoUrl ?? null,
+            faviconUrl: prev?.faviconUrl ?? null,
+            sidebarImageUrl: prev?.sidebarImageUrl ?? null,
+            hideUpgrade: prev?.hideUpgrade ?? false,
+            menuLabelOverrides: prev?.menuLabelOverrides ?? undefined,
+            hiddenFeatures: prev?.hiddenFeatures ?? undefined,
+            customCssOverride: prev?.customCssOverride ?? null,
+            // Overlay the preset look.
+            primaryColor: preset.primaryColor,
+            secondaryColor: preset.secondaryColor,
+            accentColor: preset.accentColor,
+            fontFamily: preset.fontFamily,
+            gradientEnabled: preset.gradientEnabled,
+            gradientColor: preset.gradientColor,
+            gradientAngle: preset.gradientAngle,
+            topBarColor: preset.topBarColor,
+            buttonColor: preset.buttonColor,
+            cornerRadius: preset.cornerRadius,
+            scrollbarColor: preset.scrollbarColor,
+            darkMode: preset.darkMode,
+            version: (prev?.version ?? 0) + 1,
+          },
+        });
+        await prisma.locationInstall.update({ where: { id: loc.id }, data: { enabled: true } });
+        return { locationInstallId: loc.id, theme };
+      })
+    );
+
+    res.json({ applied: updated.length, results: updated });
+  }
+);
 
 adminRouter.delete(
   "/admin/api/:agencyInstallId/presets/:presetId",
