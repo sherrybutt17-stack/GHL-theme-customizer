@@ -1,0 +1,71 @@
+# Render Blueprint for Mosaic (GHL Theme Builder)
+# Brings up: Postgres, the API server, and the admin-dashboard static site.
+# Deploy: push to the repo, then in Render -> "New +" -> "Blueprint" -> pick this repo.
+#
+# After the first deploy, set the three sync:false URL values (they depend on the
+# generated .onrender.com hostnames) and the GHL app credentials. See the notes at
+# the bottom of this file.
+
+databases:
+  - name: mosaic-db
+    plan: basic-256mb # non-expiring paid Postgres; bump in the dashboard if needed
+    databaseName: mosaic
+    user: mosaic
+
+services:
+  # --- API server (long-running Node process: OAuth, webhooks, token refresh interval) ---
+  - type: web
+    name: mosaic-server
+    runtime: node
+    plan: starter
+    rootDir: .
+    buildCommand: npm ci && npm --workspace @ghl-theme-builder/server run prisma:generate && npm --workspace @ghl-theme-builder/server run build
+    # Runs once per deploy, before the new instance goes live (paid-plan feature):
+    preDeployCommand: npm --workspace @ghl-theme-builder/server run prisma:migrate:deploy
+    startCommand: npm --workspace @ghl-theme-builder/server run start
+    healthCheckPath: /
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: mosaic-db
+          property: connectionString
+      # Strong, host-managed secrets — generated once by Render, never in the repo:
+      - key: TOKEN_ENCRYPTION_KEY
+        generateValue: true
+      - key: DASHBOARD_TOKEN_SECRET
+        generateValue: true
+      # Dashboard session auth ON in production (verified server-side on /admin/api):
+      - key: DASHBOARD_AUTH_ENABLED
+        value: "true"
+      - key: GHL_SDK_LOG_LEVEL
+        value: warn
+      # --- Set these in the Render dashboard after the first deploy ---
+      - key: APP_PUBLIC_URL # = https://mosaic-server.onrender.com (this service's own URL)
+        sync: false
+      - key: ADMIN_DASHBOARD_URL # = the mosaic-dashboard static site URL (for CORS)
+        sync: false
+      - key: GHL_APP_CLIENT_ID
+        sync: false
+      - key: GHL_APP_CLIENT_SECRET
+        sync: false
+      - key: GHL_APP_SHARED_SECRET
+        sync: false
+      - key: WEBHOOK_SIGNATURE_PUBLIC_KEY
+        sync: false
+      - key: WEBHOOK_PUBLIC_KEY # legacy fallback; optional
+        sync: false
+
+  # --- Admin dashboard (Vite static build) ---
+  - type: web
+    name: mosaic-dashboard
+    runtime: static
+    rootDir: .
+    buildCommand: npm ci && npm --workspace @ghl-theme-builder/admin-dashboard run build
+    staticPublishPath: apps/admin-dashboard/dist
+    envVars:
+      - key: VITE_API_BASE_URL # = https://mosaic-server.onrender.com (the API server URL)
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
