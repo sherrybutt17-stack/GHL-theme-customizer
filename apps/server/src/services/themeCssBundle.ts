@@ -92,10 +92,25 @@ function scoped(scope: Scope, selectorList: string): string {
     .join(", ");
 }
 
+/**
+ * Strip characters that could terminate a CSS value or rule (`; { } < >` and
+ * newlines). Valid colors never contain these, so this can't affect legitimate
+ * input - it just stops a malformed/hostile color field from corrupting the whole
+ * stylesheet. Raw power-user CSS still goes through the dedicated customCss path.
+ */
+function cssColor(value: string): string {
+  return value.replace(/[;{}<>\\]/g, "").replace(/[\r\n]+/g, " ").trim();
+}
+
+/** Same idea for values dropped inside url("..."): also strip quotes and parens. */
+function cssUrl(value: string): string {
+  return value.replace(/[;{}<>\\"'()]/g, "").replace(/[\r\n]+/g, " ").trim();
+}
+
 function sidebarBackground(primary: string, theme: VisualTheme): string {
   if (theme.gradientEnabled && theme.gradientColor) {
-    const angle = theme.gradientAngle ?? 135;
-    return `linear-gradient(${angle}deg, ${primary}, ${theme.gradientColor})`;
+    const angle = typeof theme.gradientAngle === "number" ? theme.gradientAngle : 135;
+    return `linear-gradient(${angle}deg, ${primary}, ${cssColor(theme.gradientColor)})`;
   }
   return primary;
 }
@@ -134,8 +149,8 @@ function scopeCustomCss(css: string, prefix: string): string {
 /** Render the CSS rules for one theme under one scope. */
 function renderRules(scope: Scope, theme: VisualTheme): string[] {
   const rules: string[] = [];
-  const primary = theme.primaryColor || "#4f46e5";
-  const accent = theme.accentColor || primary;
+  const primary = cssColor(theme.primaryColor || "#4f46e5");
+  const accent = cssColor(theme.accentColor || theme.primaryColor || "#4f46e5");
 
   // Sidebar background (solid or gradient)
   rules.push(`${scope.bases.join(", ")} { background: ${sidebarBackground(primary, theme)} !important; }`);
@@ -160,20 +175,21 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
 
   // Top bar color
   if (theme.topBarColor) {
-    rules.push(`${scoped(scope, TOP_BAR_SELECTOR)} { background: ${theme.topBarColor} !important; }`);
+    rules.push(`${scoped(scope, TOP_BAR_SELECTOR)} { background: ${cssColor(theme.topBarColor)} !important; }`);
   }
 
   // Sidebar background image (painted over the color/gradient)
   if (theme.sidebarImageUrl) {
     rules.push(
-      `${scope.bases.join(", ")} { background-image: url("${theme.sidebarImageUrl}") !important; background-size: cover !important; background-position: center !important; background-repeat: no-repeat !important; }`
+      `${scope.bases.join(", ")} { background-image: url("${cssUrl(theme.sidebarImageUrl)}") !important; background-size: cover !important; background-position: center !important; background-repeat: no-repeat !important; }`
     );
   }
 
   // Primary buttons
   if (theme.buttonColor) {
+    const btn = cssColor(theme.buttonColor);
     rules.push(
-      `${scoped(scope, PRIMARY_BUTTON_SELECTOR)} { background-color: ${theme.buttonColor} !important; border-color: ${theme.buttonColor} !important; }`
+      `${scoped(scope, PRIMARY_BUTTON_SELECTOR)} { background-color: ${btn} !important; border-color: ${btn} !important; }`
     );
   }
 
@@ -188,7 +204,7 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     const sbBase = scope.prefix || "body";
     rules.push(`${sbBase} ::-webkit-scrollbar { width: 10px !important; height: 10px !important; }`);
     rules.push(
-      `${sbBase} ::-webkit-scrollbar-thumb { background: ${theme.scrollbarColor} !important; border-radius: 8px !important; }`
+      `${sbBase} ::-webkit-scrollbar-thumb { background: ${cssColor(theme.scrollbarColor)} !important; border-radius: 8px !important; }`
     );
   }
 
@@ -206,7 +222,7 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
   // Logo swap
   if (theme.logoUrl) {
     rules.push(
-      `${scoped(scope, LOGO_CONTAINER_SELECTOR)} { background-image: url("${theme.logoUrl}") !important; background-size: contain !important; background-repeat: no-repeat !important; background-position: center !important; min-height: 40px !important; }`
+      `${scoped(scope, LOGO_CONTAINER_SELECTOR)} { background-image: url("${cssUrl(theme.logoUrl)}") !important; background-size: contain !important; background-repeat: no-repeat !important; background-position: center !important; min-height: 40px !important; }`
     );
     rules.push(`${scoped(scope, LOGO_IMG_SELECTOR)} { opacity: 0 !important; }`);
   }
@@ -224,7 +240,7 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
       : {};
   for (const [key, label] of Object.entries(labels)) {
     if (!label) continue;
-    const safe = label.replace(/"/g, '\\"');
+    const safe = label.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]+/g, " ");
     const parts = featureSelector(key)
       .split(",")
       .map((s) => scoped(scope, `${s.trim()} .nav-title`));
@@ -244,7 +260,7 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     // Scope to the location via :has() - the banner shows only on pages that
     // contain that sub-account's wrapper element.
     const target = scope.prefix ? `html:has(${scope.prefix})` : "body";
-    const color = theme.alertColor || "#4f46e5";
+    const color = cssColor(theme.alertColor || "#4f46e5");
     const safe = theme.alertMessage.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\s*\n\s*/g, " ");
     rules.push(
       `${target}::before { content: "${safe}" !important; position: fixed !important; bottom: 20px !important; left: 50% !important; transform: translateX(-50%) !important; z-index: 2147483000 !important; background: ${color} !important; color: #fff !important; padding: 12px 24px !important; border-radius: 999px !important; font-weight: 600 !important; font-size: 14px !important; box-shadow: 0 8px 24px rgba(0,0,0,0.25) !important; max-width: 90vw !important; text-align: center !important; pointer-events: none !important; }`

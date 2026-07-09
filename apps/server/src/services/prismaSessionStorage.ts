@@ -101,7 +101,9 @@ export class PrismaSessionStorage extends SessionStorage {
 
   async getSession(resourceId: string): Promise<ISessionData | null> {
     const agency = await prisma.agencyInstall.findUnique({ where: { ghlCompanyId: resourceId } });
-    if (agency) {
+    // Skip uninstalled installs: their stored tokens are revoked/stale, and no
+    // caller should be making GHL API calls on their behalf.
+    if (agency && agency.status !== "uninstalled") {
       return {
         access_token: decryptToken(agency.accessTokenEnc),
         refresh_token: decryptToken(agency.refreshTokenEnc),

@@ -2,6 +2,7 @@ import "dotenv/config";
 import express, { Express } from "express";
 import { json } from "body-parser";
 import cors from "cors";
+import { validateEnv } from "./services/env";
 import { oauthRouter } from "./routes/oauth";
 import { onboardingRouter } from "./routes/onboarding";
 import { webhooksRouter } from "./routes/webhooks";
@@ -12,7 +13,14 @@ import { themeBundleRouter } from "./routes/themeBundle";
 import { themeCssRouter } from "./routes/themeCss";
 import { refreshAllExpiringAgencyTokens } from "./services/tokenRefresh";
 
+// Fail fast on missing/invalid config instead of silently degrading at runtime.
+validateEnv();
+
 const app: Express = express();
+// Behind Render/Cloudflare's TLS-terminating proxy, trust X-Forwarded-* so
+// req.protocol resolves to "https" (not "http") - this keeps any APP_PUBLIC_URL
+// fallback from emitting insecure http:// links that GHL blocks as mixed content.
+app.set("trust proxy", true);
 app.use(json({ type: "application/json" }));
 const adminDashboardCors = cors({ origin: process.env.ADMIN_DASHBOARD_URL ?? "http://localhost:5173" });
 app.use("/admin/api", adminDashboardCors);

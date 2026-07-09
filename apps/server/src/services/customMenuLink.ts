@@ -37,6 +37,37 @@ export async function ensureAgencyAdminMenuLink(agencyInstallId: string, appBase
     });
   }
 
+  // No DB record yet (e.g. a fresh database after a host migration). GHL may still
+  // hold a "Mosaic" menu link from a prior install pointing at a now-dead URL.
+  // Adopt and repoint it rather than creating a duplicate: match by our title or
+  // our /admin-embed/ URL pattern. This self-heals the exact stale-link problem
+  // seen when moving hosts.
+  const existing = await ghl.customMenus
+    .getCustomMenus({ showOnCompany: true, limit: 100 }, companyHeader)
+    .then((r) =>
+      (r.customMenus ?? []).find(
+        (m) => m.title === "Mosaic" || (m.url ?? "").includes("/admin-embed/")
+      )
+    )
+    .catch(() => undefined);
+
+  if (existing?.id) {
+    await ghl.customMenus.updateCustomMenu(
+      { customMenuId: existing.id },
+      { url, showOnCompany: true, showOnLocation: false, showToAllLocations: false, locations: [] },
+      companyHeader
+    );
+    return prisma.customMenuLinkRegistration.create({
+      data: {
+        agencyInstallId: agency.id,
+        ghlMenuLinkId: existing.id,
+        slug: randomBytes(16).toString("hex"),
+        url,
+        targetLocationIds: [],
+      },
+    });
+  }
+
   const slug = randomBytes(16).toString("hex");
 
   const created = await ghl.customMenus.createCustomMenu(

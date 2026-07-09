@@ -9,16 +9,49 @@ interface Props {
 export function CssExportModal({ agencyInstallId, onClose }: Props) {
   const [embed, setEmbed] = useState<EmbedInfo | null>(null);
   const [copied, setCopied] = useState<"import" | "full" | null>(null);
+  const [copyFailed, setCopyFailed] = useState(false);
   const [showFull, setShowFull] = useState(false);
 
   useEffect(() => {
     fetchEmbedInfo(agencyInstallId).then(setEmbed);
   }, [agencyInstallId]);
 
+  // GHL embeds this dashboard in a cross-origin iframe, where navigator.clipboard
+  // is blocked (silently rejects). Fall back to a hidden-textarea + execCommand,
+  // which works within a click gesture; report failure so the user can copy manually.
+  function writeClipboard(text: string): boolean {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      if (ok) return true;
+    } catch {
+      /* fall through to the modern API */
+    }
+    try {
+      navigator.clipboard?.writeText(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function copy(text: string, which: "import" | "full") {
-    navigator.clipboard.writeText(text);
-    setCopied(which);
-    setTimeout(() => setCopied(null), 2000);
+    if (writeClipboard(text)) {
+      setCopied(which);
+      setTimeout(() => setCopied(null), 2000);
+    } else {
+      setCopyFailed(true);
+      setTimeout(() => setCopyFailed(false), 4000);
+    }
   }
 
   const preStyle: React.CSSProperties = {
@@ -58,6 +91,11 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
           >
             {copied === "import" ? "Copied!" : "Copy one-line embed"}
           </button>
+          {copyFailed && (
+            <p style={{ fontSize: 12, color: "#b45309", margin: "8px 0 0" }}>
+              Couldn't copy automatically — select the line above and press ⌘/Ctrl+C.
+            </p>
+          )}
 
           <div style={{ marginTop: 20, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
             <button className="btn btn-ghost" onClick={() => setShowFull((v) => !v)}>

@@ -39,37 +39,3 @@ export async function syncLocationsForAgency(agencyInstallId: string) {
 
   return locations.length;
 }
-
-/**
- * Pushes a location's ThemeConfig (brand name, logo) to GHL's own business-profile
- * fields via PUT /locations/:id. `logoUrl` is missing from the SDK's UpdateLocationDto
- * type but the live API accepts and round-trips it fine (verified manually against a
- * real location) - same "SDK types are incomplete" pattern as the other quirks found
- * in customMenuLink.ts/locationSync.ts's searchLocations call.
- */
-export async function pushBusinessProfileToGhl(locationInstallId: string) {
-  const location = await prisma.locationInstall.findUniqueOrThrow({
-    where: { id: locationInstallId },
-    include: {
-      agencyInstall: true,
-      themeConfigs: { orderBy: { version: "desc" }, take: 1 },
-    },
-  });
-  const theme = location.themeConfigs[0];
-  if (!theme) return null;
-
-  const opts = {
-    preferredTokenType: "company" as const,
-    headers: { companyId: location.agencyInstall.ghlCompanyId },
-  };
-
-  return ghl.locations.putLocation(
-    { locationId: location.ghlLocationId },
-    {
-      companyId: location.agencyInstall.ghlCompanyId,
-      name: theme.brandName ?? undefined,
-      logoUrl: theme.logoUrl ?? undefined,
-    } as any,
-    opts
-  );
-}

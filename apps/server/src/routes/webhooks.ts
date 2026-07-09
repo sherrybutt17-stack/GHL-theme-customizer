@@ -16,6 +16,9 @@ webhooksRouter.post("/webhooks/ghl", ghl.webhooks.subscribe(), async (req: Reque
   const eventId = body.webhookId ?? body.id ?? `${body.type ?? "unknown"}-${Date.now()}`;
   const eventType: string = body.type ?? "unknown";
 
+  const sigValid = (req as any).isSignatureValid as boolean | undefined;
+  const signatureConfigured = !!process.env.WEBHOOK_SIGNATURE_PUBLIC_KEY?.trim();
+
   // Idempotency: if we've already processed this exact event, do nothing.
   const existing = await prisma.webhookEvent
     .findUnique({ where: { ghlEventId: String(eventId) } })
@@ -24,6 +27,7 @@ webhooksRouter.post("/webhooks/ghl", ghl.webhooks.subscribe(), async (req: Reque
     return res.json({ success: true, deduped: true });
   }
 
+  // Record every event for the audit trail, even ones we're about to reject.
   await prisma.webhookEvent
     .upsert({
       where: { ghlEventId: String(eventId) },
@@ -32,10 +36,27 @@ webhooksRouter.post("/webhooks/ghl", ghl.webhooks.subscribe(), async (req: Reque
         ghlEventId: String(eventId),
         eventType,
         payload: body,
-        status: (req as any).isSignatureValid === false ? "failed" : "received",
+        status: sigValid === false ? "failed" : "received",
       },
     })
     .catch((e) => console.error("Failed to persist webhook event:", e));
+
+  // SECURITY: never run lifecycle side effects (uninstall, disable, forced GHL
+  // API calls) on a payload we can't trust. Once a public key is configured we
+  // require a positive verification result and reject anything else (this is what
+  // blocks forged UninstallCompany/UninstallLocation requests). When no key is
+  // configured we cannot verify at all, so we process but warn loudly - setting
+  // the key is the documented go-live step (see docs/submission-checklist.md).
+  if (signatureConfigured && sigValid !== true) {
+    console.warn(`Rejected webhook ${eventType} (${eventId}): signature verification failed`);
+    return res.status(401).json({ success: false, error: "invalid webhook signature" });
+  }
+  if (!signatureConfigured) {
+    console.warn(
+      `WEBHOOK_SIGNATURE_PUBLIC_KEY is not set - processing ${eventType} WITHOUT signature verification. ` +
+        `Set it to the app's Ed25519 public key to secure this endpoint.`
+    );
+  }
 
   try {
     await handleLifecycle(eventType, body);
