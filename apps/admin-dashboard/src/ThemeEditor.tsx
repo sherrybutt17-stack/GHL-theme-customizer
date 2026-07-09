@@ -108,6 +108,7 @@ export function ThemeEditorModal({
   const [logoDims, setLogoDims] = useState<{ w: number; h: number; ow: number; oh: number } | null>(null);
   const [features, setFeatures] = useState<SidebarFeature[]>([]);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     // Editing the agency default (no brand name) → show the agency sidebar items;
@@ -166,6 +167,13 @@ export function ThemeEditorModal({
           value={labels[f.key] ?? ""}
           disabled={isHidden}
           onChange={(e) => setLabels((p) => ({ ...p, [f.key]: e.target.value }))}
+          // Stop password managers (1Password/LastPass) injecting an inline icon
+          // into the focused field — as a DOM sibling it stole a grid cell and
+          // bumped the "Visible" toggle onto its own line.
+          autoComplete="off"
+          data-1p-ignore="true"
+          data-lpignore="true"
+          data-form-type="other"
         />
         <button
           className={`btn ${isHidden ? "" : "btn-ghost"}`}
@@ -180,6 +188,7 @@ export function ThemeEditorModal({
 
   async function handleSave() {
     setSaving(true);
+    setSaveError(null);
     try {
       const cleanedLabels = Object.fromEntries(
         Object.entries(labels).filter(([, v]) => v && v.trim())
@@ -207,6 +216,10 @@ export function ThemeEditorModal({
         hiddenFeatures: [...hidden],
         menuLabelOverrides: cleanedLabels,
       });
+    } catch (e) {
+      // Surface the failure inside the modal instead of closing it (the caller only
+      // closes on success), so the agency never assumes an unsaved theme was saved.
+      setSaveError((e as Error).message || "Save failed. Please try again.");
     } finally {
       setSaving(false);
     }
@@ -215,7 +228,11 @@ export function ThemeEditorModal({
   async function handleSaveAsPreset() {
     const name = prompt("Name this preset (e.g. “Dark Gold”):");
     if (!name) return;
-    await onSaveAsPreset(name, look);
+    try {
+      await onSaveAsPreset(name, look);
+    } catch (e) {
+      setSaveError((e as Error).message || "Could not save preset.");
+    }
   }
 
   return (
@@ -424,6 +441,9 @@ export function ThemeEditorModal({
         </div>
 
         <div className="modal-footer">
+          {saveError && (
+            <span style={{ fontSize: 13, color: "#b91c1c", marginRight: "auto" }}>{saveError}</span>
+          )}
           <button className="btn" onClick={onCancel} disabled={saving}>
             Cancel
           </button>

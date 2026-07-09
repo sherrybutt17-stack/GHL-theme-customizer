@@ -81,13 +81,16 @@ export function App() {
       setLoading(false);
       return;
     }
-    Promise.all([fetchLocations(agencyId), fetchDefaultTheme(agencyId), fetchPresets(agencyId)])
+    // Load the three resources independently: a failure in a secondary one (presets
+    // or the default theme) must not blank out the sub-account list, which is the
+    // core of the page. Surface an error only if the essential locations call fails.
+    Promise.allSettled([fetchLocations(agencyId), fetchDefaultTheme(agencyId), fetchPresets(agencyId)])
       .then(([locs, def, pre]) => {
-        setLocations(locs);
-        setDefaultTheme(def);
-        setPresets(pre);
+        if (locs.status === "fulfilled") setLocations(locs.value);
+        else setError(locs.reason?.message ?? "Failed to load sub-accounts.");
+        if (def.status === "fulfilled") setDefaultTheme(def.value);
+        if (pre.status === "fulfilled") setPresets(pre.value);
       })
-      .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, [agencyId]);
 
@@ -105,9 +108,11 @@ export function App() {
   useEffect(() => {
     setPage((p) => Math.min(p, pageCount));
   }, [pageCount]);
-  // A new search should start from the first page.
+  // A new search should start from the first page, and drop any selection so a
+  // later bulk action can't silently target rows the new filter hides from view.
   useEffect(() => {
     setPage(1);
+    setSelected(new Set());
   }, [search]);
 
   const paged = useMemo(
@@ -141,19 +146,34 @@ export function App() {
   }
 
   async function handleToggle(locId: string, enabled: boolean) {
+    // Optimistic flip, rolled back if the server rejects so the UI never claims a
+    // state the DB doesn't have.
     setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, enabled } : l)));
-    await setEnabled(agencyId!, locId, enabled);
+    try {
+      await setEnabled(agencyId!, locId, enabled);
+    } catch (e) {
+      setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, enabled: !enabled } : l)));
+      setError((e as Error).message);
+    }
   }
 
   async function handleReset(locId: string, name: string) {
     if (!confirm(`Reset "${name}" back to the agency default look? Its custom theme will be removed.`)) return;
-    await resetTheme(agencyId!, locId);
-    setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, theme: null } : l)));
+    try {
+      await resetTheme(agencyId!, locId);
+      setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, theme: null } : l)));
+    } catch (e) {
+      setError((e as Error).message);
+    }
   }
 
   async function removePreset(id: string) {
-    await deletePreset(agencyId!, id);
-    setPresets((prev) => prev.filter((p) => p.id !== id));
+    try {
+      await deletePreset(agencyId!, id);
+      setPresets((prev) => prev.filter((p) => p.id !== id));
+    } catch (e) {
+      setError((e as Error).message);
+    }
   }
 
   function toggleSelected(locId: string) {

@@ -12,7 +12,14 @@ export async function syncLocationsForAgency(agencyInstallId: string) {
 
   // searchLocations is paginated: without an explicit limit GHL returns only its small
   // default page, so agencies with many sub-accounts would silently lose the rest. Page
-  // through with skip/limit until a short page comes back (the response carries no total).
+  // through with skip/limit until an empty page comes back (the response carries no total).
+  //
+  // We advance `skip` by the number of rows ACTUALLY returned, not by the requested
+  // PAGE_SIZE: GHL can cap a list endpoint's page size below what we ask for (several GHL
+  // endpoints cap at 20), and stepping by the larger requested size would skip right over
+  // the un-returned rows - silently dropping sub-accounts, the exact bug this fixes. We
+  // also dedupe by id and stop if a page yields nothing new, so an endpoint that ignores
+  // `skip` can't spin forever.
   //
   // preferredTokenType is required here: searchLocations accepts both Agency-Access and
   // Location-Access, and the SDK's token-resolution has a bug where, absent an explicit
@@ -20,14 +27,29 @@ export async function syncLocationsForAgency(agencyInstallId: string) {
   // to the agency token. See https://github.com/GoHighLevel/highlevel-api-sdk (extractResourceId).
   const PAGE_SIZE = 100;
   const locations: NonNullable<Awaited<ReturnType<typeof ghl.locations.searchLocations>>["locations"]> = [];
-  for (let skip = 0; ; skip += PAGE_SIZE) {
+  const seenIds = new Set<string>();
+  for (let skip = 0; ; ) {
     const res = await ghl.locations.searchLocations(
       { companyId: agency.ghlCompanyId, skip: String(skip), limit: String(PAGE_SIZE) },
       { preferredTokenType: "company" }
     );
     const page = res.locations ?? [];
-    locations.push(...page);
-    if (page.length < PAGE_SIZE) break;
+    if (page.length === 0) break;
+    let added = 0;
+    for (const loc of page) {
+      // Rows without an id can't be deduped or upserted; keep them out of the set
+      // but still count them so `skip` advances past them.
+      if (loc.id) {
+        if (seenIds.has(loc.id)) continue;
+        seenIds.add(loc.id);
+      }
+      locations.push(loc);
+      added++;
+    }
+    skip += page.length;
+    // A page that contributed nothing new means we've either seen everything or the
+    // endpoint is ignoring `skip` - either way, stop.
+    if (added === 0) break;
   }
 
   for (const loc of locations) {

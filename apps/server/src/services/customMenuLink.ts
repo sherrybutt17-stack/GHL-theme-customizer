@@ -23,7 +23,15 @@ export async function ensureAgencyAdminMenuLink(agencyInstallId: string, appBase
   // header - passed explicitly here, same underlying token-resolution quirk as
   // locationSync.ts's preferredTokenType fix.
   const companyHeader = { headers: { companyId: agency.ghlCompanyId } };
-  const url = `${appBaseUrl}/admin-embed/${agency.id}`;
+
+  // Per-agency secret baked into the menu-link URL as ?k=. GHL only ever renders this
+  // link to THIS agency's signed-in users, so the secret is never exposed publicly
+  // (unlike the agency id, which appears in the pasted @import CSS). /admin-embed
+  // requires it before minting a dashboard token - this is what stops anyone who
+  // scrapes the agency id from taking over the agency's admin API. Reuse the existing
+  // slug when there is one so the secret stays stable across reconciles.
+  const slug = agency.menuLink?.slug ?? randomBytes(16).toString("hex");
+  const url = `${appBaseUrl}/admin-embed/${agency.id}?k=${slug}`;
 
   if (agency.menuLink) {
     await ghl.customMenus.updateCustomMenu(
@@ -61,14 +69,12 @@ export async function ensureAgencyAdminMenuLink(agencyInstallId: string, appBase
       data: {
         agencyInstallId: agency.id,
         ghlMenuLinkId: existing.id,
-        slug: randomBytes(16).toString("hex"),
+        slug,
         url,
         targetLocationIds: [],
       },
     });
   }
-
-  const slug = randomBytes(16).toString("hex");
 
   const created = await ghl.customMenus.createCustomMenu(
     {
@@ -107,15 +113,22 @@ export async function ensureAgencyAdminMenuLink(agencyInstallId: string, appBase
 }
 
 export async function deleteMenuLinkForAgency(agencyInstallId: string) {
-  const agency = await prisma.agencyInstall.findUniqueOrThrow({
+  const agency = await prisma.agencyInstall.findUnique({
     where: { id: agencyInstallId },
     include: { menuLink: true },
   });
-  if (!agency.menuLink) return;
+  if (!agency?.menuLink) return;
 
-  await ghl.customMenus.deleteCustomMenu(
-    { customMenuId: agency.menuLink.ghlMenuLinkId },
-    { headers: { companyId: agency.ghlCompanyId } }
-  );
+  // Best-effort GHL delete: by the time an uninstall webhook fires, GHL has usually
+  // already revoked our token (so this 401s) and often removes the app's menu links
+  // itself. Either way we must still drop our own DB record, so swallow the GHL error.
+  try {
+    await ghl.customMenus.deleteCustomMenu(
+      { customMenuId: agency.menuLink.ghlMenuLinkId },
+      { headers: { companyId: agency.ghlCompanyId } }
+    );
+  } catch (e) {
+    console.warn(`Menu-link delete via GHL failed for agency ${agencyInstallId} (continuing):`, e);
+  }
   await prisma.customMenuLinkRegistration.delete({ where: { id: agency.menuLink.id } });
 }

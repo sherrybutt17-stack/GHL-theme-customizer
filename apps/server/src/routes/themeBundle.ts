@@ -1,8 +1,23 @@
 import { Router, Request, Response } from "express";
 import { prisma } from "../services/prisma";
 import { generateThemeBundleScript } from "../services/themeBundleScript";
+import { cssColor } from "../services/themeCssBundle";
+import { isKnownFeatureKey } from "../services/ghlSidebarFeatures";
 
 export const themeBundleRouter = Router();
+
+/** Null-safe color sanitize for the public config JSON (concatenated into CSS by the injected script). */
+const color = (v: string | null | undefined) => (v ? cssColor(v) : null);
+
+/** Drop any non-whitelisted keys from a stored menuLabelOverrides map. */
+function safeLabels(overrides: unknown): Record<string, string> {
+  if (!overrides || typeof overrides !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(overrides as Record<string, unknown>)) {
+    if (isKnownFeatureKey(k) && typeof v === "string") out[k] = v;
+  }
+  return out;
+}
 
 /**
  * Kept as a plain .js endpoint for reference/future use (e.g. if we later find a
@@ -46,15 +61,18 @@ themeBundleRouter.get(
     }
 
     const theme = location.themeConfigs[0];
+    const hidden = Array.isArray(theme.hiddenFeatures)
+      ? (theme.hiddenFeatures as string[]).filter(isKnownFeatureKey)
+      : [];
     res.json({
       brandName: theme.brandName,
       logoUrl: theme.logoUrl,
       faviconUrl: theme.faviconUrl,
-      primaryColor: theme.primaryColor,
-      secondaryColor: theme.secondaryColor,
-      accentColor: theme.accentColor,
-      menuLabelOverrides: theme.menuLabelOverrides,
-      hiddenFeatures: theme.hiddenFeatures,
+      primaryColor: color(theme.primaryColor),
+      secondaryColor: color(theme.secondaryColor),
+      accentColor: color(theme.accentColor),
+      menuLabelOverrides: safeLabels(theme.menuLabelOverrides),
+      hiddenFeatures: hidden,
     });
   }
 );

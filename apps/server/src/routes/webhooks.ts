@@ -2,6 +2,8 @@ import { Router, Request, Response } from "express";
 import { ghl } from "../services/ghlClient";
 import { prisma } from "../services/prisma";
 import { syncLocationsForAgency } from "../services/locationSync";
+import { deleteMenuLinkForAgency } from "../services/customMenuLink";
+import { describeError } from "../services/security";
 
 export const webhooksRouter = Router();
 
@@ -19,7 +21,26 @@ webhooksRouter.post("/webhooks/ghl", ghl.webhooks.subscribe(), async (req: Reque
   const sigValid = (req as any).isSignatureValid as boolean | undefined;
   const signatureConfigured = !!process.env.WEBHOOK_SIGNATURE_PUBLIC_KEY?.trim();
 
-  // Idempotency: if we've already processed this exact event, do nothing.
+  // SECURITY: verify the signature BEFORE touching the database. Rejecting here
+  // (rather than after persisting an audit row) means a flood of forged/unsigned
+  // requests can't write rows at all - no unauthenticated DB writes, no storage
+  // amplification. Once a public key is configured we require a positive result and
+  // reject anything else, blocking forged UninstallCompany/UninstallLocation events.
+  if (signatureConfigured && sigValid !== true) {
+    console.warn(`Rejected webhook ${eventType} (${eventId}): signature verification failed`);
+    return res.status(401).json({ success: false, error: "invalid webhook signature" });
+  }
+  if (!signatureConfigured) {
+    // No key configured: we can't verify. Process but warn loudly - setting the key
+    // is the documented go-live step (see docs/submission-checklist.md).
+    console.warn(
+      `WEBHOOK_SIGNATURE_PUBLIC_KEY is not set - processing ${eventType} WITHOUT signature verification. ` +
+        `Set it to the app's Ed25519 public key to secure this endpoint.`
+    );
+  }
+
+  // Idempotency: if we've already processed this exact event, do nothing. (Only
+  // reached for signature-valid events now, so this can't be used to probe.)
   const existing = await prisma.webhookEvent
     .findUnique({ where: { ghlEventId: String(eventId) } })
     .catch(() => null);
@@ -27,7 +48,7 @@ webhooksRouter.post("/webhooks/ghl", ghl.webhooks.subscribe(), async (req: Reque
     return res.json({ success: true, deduped: true });
   }
 
-  // Record every event for the audit trail, even ones we're about to reject.
+  // Record the (verified) event for the audit trail.
   await prisma.webhookEvent
     .upsert({
       where: { ghlEventId: String(eventId) },
@@ -36,27 +57,10 @@ webhooksRouter.post("/webhooks/ghl", ghl.webhooks.subscribe(), async (req: Reque
         ghlEventId: String(eventId),
         eventType,
         payload: body,
-        status: sigValid === false ? "failed" : "received",
+        status: "received",
       },
     })
-    .catch((e) => console.error("Failed to persist webhook event:", e));
-
-  // SECURITY: never run lifecycle side effects (uninstall, disable, forced GHL
-  // API calls) on a payload we can't trust. Once a public key is configured we
-  // require a positive verification result and reject anything else (this is what
-  // blocks forged UninstallCompany/UninstallLocation requests). When no key is
-  // configured we cannot verify at all, so we process but warn loudly - setting
-  // the key is the documented go-live step (see docs/submission-checklist.md).
-  if (signatureConfigured && sigValid !== true) {
-    console.warn(`Rejected webhook ${eventType} (${eventId}): signature verification failed`);
-    return res.status(401).json({ success: false, error: "invalid webhook signature" });
-  }
-  if (!signatureConfigured) {
-    console.warn(
-      `WEBHOOK_SIGNATURE_PUBLIC_KEY is not set - processing ${eventType} WITHOUT signature verification. ` +
-        `Set it to the app's Ed25519 public key to secure this endpoint.`
-    );
-  }
+    .catch((e) => console.error("Failed to persist webhook event:", describeError(e)));
 
   try {
     await handleLifecycle(eventType, body);
@@ -64,9 +68,9 @@ webhooksRouter.post("/webhooks/ghl", ghl.webhooks.subscribe(), async (req: Reque
       .update({ where: { ghlEventId: String(eventId) }, data: { status: "processed", processedAt: new Date() } })
       .catch(() => {});
   } catch (error: any) {
-    console.error(`Webhook ${eventType} handling failed:`, error);
+    console.error(`Webhook ${eventType} handling failed: ${describeError(error)}`);
     await prisma.webhookEvent
-      .update({ where: { ghlEventId: String(eventId) }, data: { status: "failed", errorMessage: String(error?.message ?? error) } })
+      .update({ where: { ghlEventId: String(eventId) }, data: { status: "failed", errorMessage: describeError(error) } })
       .catch(() => {});
   }
 
@@ -78,15 +82,30 @@ async function handleLifecycle(eventType: string, body: any): Promise<void> {
   const locationId: string | undefined = body.locationId;
 
   switch (eventType) {
-    // A sub-account was created/updated/removed - re-pull the agency's location
-    // list so the dashboard reflects it. Cheap and self-correcting vs. tracking
-    // each delta by hand.
+    // A sub-account was created or updated - re-pull the agency's location list so
+    // the dashboard reflects it. Cheap and self-correcting vs. tracking each delta.
     case "LocationCreate":
-    case "LocationUpdate":
-    case "LocationDelete": {
+    case "LocationUpdate": {
       if (!companyId) return;
       const agency = await prisma.agencyInstall.findUnique({ where: { ghlCompanyId: companyId } });
       if (agency) await syncLocationsForAgency(agency.id);
+      return;
+    }
+    // A sub-account was deleted. A re-sync only upserts locations still PRESENT in
+    // GHL's list, so it would never flip a vanished one to removed - its theme would
+    // keep being emitted forever. Mark the specific location removed directly (same
+    // soft-disable as UninstallLocation), then re-sync to catch any other changes.
+    case "LocationDelete": {
+      if (locationId) {
+        await prisma.locationInstall.updateMany({
+          where: { ghlLocationId: locationId },
+          data: { status: "removed", enabled: false },
+        });
+      }
+      if (companyId) {
+        const agency = await prisma.agencyInstall.findUnique({ where: { ghlCompanyId: companyId } });
+        if (agency) await syncLocationsForAgency(agency.id);
+      }
       return;
     }
     // App removed from a specific sub-account: soft-disable it so its theme stops
@@ -99,9 +118,17 @@ async function handleLifecycle(eventType: string, body: any): Promise<void> {
       });
       return;
     }
-    // App removed from the whole agency: mark the install uninstalled.
+    // App removed from the whole agency: delete the Custom Menu Link (best-effort;
+    // GHL may have already revoked our token) and mark the install uninstalled so
+    // its themes stop being served.
     case "UninstallCompany": {
       if (!companyId) return;
+      const agency = await prisma.agencyInstall.findUnique({ where: { ghlCompanyId: companyId } });
+      if (agency) {
+        await deleteMenuLinkForAgency(agency.id).catch((e) =>
+          console.error("Menu-link cleanup on uninstall failed:", e)
+        );
+      }
       await prisma.agencyInstall.updateMany({
         where: { ghlCompanyId: companyId },
         data: { status: "uninstalled" },

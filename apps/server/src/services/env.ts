@@ -37,6 +37,40 @@ export function validateEnv(): void {
     console.warn(`[env] APP_PUBLIC_URL has a trailing slash ("${appUrl}"); it will produce double slashes in URLs.`);
   }
 
+  // Treat an https, non-localhost public URL as "production". In that mode a few
+  // more vars are load-bearing and must not silently fall back to dev defaults.
+  const isProd = /^https:\/\//.test(appUrl) && !/localhost|127\.0\.0\.1/.test(appUrl);
+  if (isProd) {
+    const adminUrl = process.env.ADMIN_DASHBOARD_URL?.trim();
+    if (!adminUrl) {
+      // Without this, both CORS and the /admin-embed redirect fall back to
+      // http://localhost:5173 - the production dashboard is simply unreachable.
+      throw new Error(
+        "ADMIN_DASHBOARD_URL is required in production (APP_PUBLIC_URL is https). " +
+          "Set it to the deployed dashboard origin (e.g. https://mosaic-dashboard.onrender.com)."
+      );
+    }
+    if (process.env.DASHBOARD_AUTH_ENABLED !== "true") {
+      // Fatal in production: without it every /admin/api/:agencyInstallId/* route is
+      // reachable with only the (non-secret) agency id - cross-tenant reads AND writes
+      // are wide open. Fail the boot rather than silently serve an unauthenticated API.
+      throw new Error(
+        "DASHBOARD_AUTH_ENABLED must be \"true\" in production (APP_PUBLIC_URL is https). " +
+          "Without it the admin API requires no auth and any agency's data is exposed. " +
+          "Set DASHBOARD_AUTH_ENABLED=true and a strong DASHBOARD_TOKEN_SECRET."
+      );
+    }
+    if (!process.env.DASHBOARD_TOKEN_SECRET?.trim()) {
+      // Not fatal: dashboardAuth falls back to TOKEN_ENCRYPTION_KEY (itself a required,
+      // strong secret), so tokens are still signed with a strong key - just reused
+      // across two purposes. Prefer a dedicated secret; warn rather than break boot.
+      console.warn(
+        "[env] DASHBOARD_TOKEN_SECRET is not set; dashboard tokens will be signed with " +
+          "TOKEN_ENCRYPTION_KEY as a fallback. Set a dedicated DASHBOARD_TOKEN_SECRET."
+      );
+    }
+  }
+
   // Security-relevant but non-fatal gaps: warn loudly, don't crash a working install.
   if (!process.env.WEBHOOK_SIGNATURE_PUBLIC_KEY?.trim()) {
     console.warn(

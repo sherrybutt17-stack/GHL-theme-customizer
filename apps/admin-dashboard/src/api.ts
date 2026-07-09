@@ -5,9 +5,19 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3210";
 // DASHBOARD_AUTH_ENABLED=true). Persisted to sessionStorage so it survives
 // in-app navigations that drop the query string.
 function readToken(): string {
-  const fromUrl = new URLSearchParams(window.location.search).get("t");
+  const params = new URLSearchParams(window.location.search);
+  const fromUrl = params.get("t");
   if (fromUrl) {
     sessionStorage.setItem("mosaic_token", fromUrl);
+    // Strip the token from the visible URL so it doesn't linger in the address bar,
+    // browser history, or any copy-pasted link. It lives in sessionStorage now.
+    params.delete("t");
+    const qs = params.toString();
+    window.history.replaceState(
+      {},
+      "",
+      window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash
+    );
     return fromUrl;
   }
   return sessionStorage.getItem("mosaic_token") ?? "";

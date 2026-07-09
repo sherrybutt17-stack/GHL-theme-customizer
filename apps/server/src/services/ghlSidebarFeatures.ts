@@ -78,13 +78,35 @@ export const GHL_AGENCY_SIDEBAR_FEATURES: SidebarFeature[] = [
  * once their hrefs are captured.
  */
 export const GHL_SETTINGS_SIDEBAR_FEATURES: SidebarFeature[] = [
+  // "Settings" subsection.
+  // --- href slugs CONFIRMED via live DOM (190 Ranch sub-account) ---
   { key: "settings-my-staff", label: "My Staff", selector: 'a[href*="/settings/staff"]' },
   { key: "settings-opportunities", label: "Opportunities & Pipelines", selector: 'a[href*="/crm-settings"]' },
   { key: "settings-calendars", label: "Calendars (Settings)", selector: 'a[href*="/settings/calendars"]' },
   { key: "settings-email-services", label: "Email Services", selector: 'a[href*="/settings/smtp_service"]' },
   { key: "settings-phone-system", label: "Phone System", selector: 'a[href*="/settings/phone_system"]' },
   { key: "settings-whatsapp", label: "WhatsApp", selector: 'a[href*="/settings/whatsapp"]' },
+
+  // "Other Settings" subsection.
   { key: "settings-objects", label: "Objects", selector: 'a[href*="/settings/objects"]' },
+  // Custom Fields' href slug is `/settings/fields` (id sb_custom-fields-settings) — NOT `/custom_fields`.
+  { key: "settings-custom-fields", label: "Custom Fields", selector: 'a[href*="/settings/fields"]' },
+  { key: "settings-custom-values", label: "Custom Values", selector: 'a[href*="/settings/custom_values"]' },
+  { key: "settings-import-data", label: "Import Data", selector: 'a[href*="/settings/import-data"]' },
+  { key: "settings-manage-scoring", label: "Manage Scoring", selector: 'a[href*="/settings/scoring"]' },
+  { key: "settings-preferences", label: "Preference Management", selector: 'a[href*="/settings/preferences"]' },
+
+  // --- BEST-EFFORT: present in the live nav but their exact href slug wasn't in
+  // the DOM dump; using the conventional `/settings/<slug>`. A non-matching
+  // selector is a harmless no-op — correct any slug that proves off. ---
+  { key: "settings-domains", label: "Domains & URL Redirects", selector: 'a[href*="/settings/domain"]' },
+  { key: "settings-external-tracking", label: "External Tracking", selector: 'a[href*="/settings/external"]' },
+  { key: "settings-integrations", label: "Integrations", selector: 'a[href*="/settings/integrations"]' },
+  { key: "settings-private-integrations", label: "Private Integrations", selector: 'a[href*="/settings/private-integrations"]' },
+  { key: "settings-tags", label: "Tags", selector: 'a[href*="/settings/tags"]' },
+  { key: "settings-labs", label: "Labs", selector: 'a[href*="/settings/labs"]' },
+  { key: "settings-audit-logs", label: "Audit Logs", selector: 'a[href*="/settings/audit"]' },
+  { key: "settings-brand-boards", label: "Brand Boards", selector: 'a[href*="/settings/brand-boards"]' },
 ];
 
 /** key -> explicit selector, built from any features that declare one. */
@@ -95,6 +117,21 @@ const SELECTOR_BY_KEY: Record<string, string> = Object.fromEntries(
 );
 
 const SETTINGS_KEYS = new Set(GHL_SETTINGS_SIDEBAR_FEATURES.map((f) => f.key));
+
+/** Every legitimate feature key across the three sidebars. */
+const KNOWN_KEYS = new Set(
+  [...GHL_SIDEBAR_FEATURES, ...GHL_AGENCY_SIDEBAR_FEATURES, ...GHL_SETTINGS_SIDEBAR_FEATURES].map((f) => f.key)
+);
+
+/**
+ * Whether a key is a real, known sidebar feature. Used to reject arbitrary keys
+ * from stored hiddenFeatures / menuLabelOverrides before they reach a CSS selector -
+ * without this, a crafted key could break out of the `#sb_<key>` / `[meta="<key>"]`
+ * fallback selector and inject arbitrary CSS rules into the bundle.
+ */
+export function isKnownFeatureKey(key: string): boolean {
+  return KNOWN_KEYS.has(key);
+}
 
 /**
  * Whether a feature belongs to the Settings sidebar. Callers use this to switch
@@ -107,6 +144,9 @@ export function isSettingsFeature(key: string): boolean {
 
 /** CSS selector (relative to a location-scoped wrapper) for a feature's nav link. */
 export function featureSelector(key: string): string {
-  // Explicit selector (agency + settings items) wins; else the confirmed #sb_/meta pattern.
-  return SELECTOR_BY_KEY[key] ?? `#sb_${key}, a[meta="${key}"]`;
+  // Explicit selector (agency + settings items) wins; else the confirmed #sb_/meta
+  // pattern. Sanitize the interpolated key to a safe CSS-identifier charset as a
+  // second line of defense so nothing user-influenced can terminate the selector.
+  const safe = key.replace(/[^a-zA-Z0-9_-]/g, "");
+  return SELECTOR_BY_KEY[key] ?? `#sb_${safe}, a[meta="${safe}"]`;
 }

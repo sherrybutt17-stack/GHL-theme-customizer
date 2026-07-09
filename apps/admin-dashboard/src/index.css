@@ -473,9 +473,12 @@ body {
 /* ---- Feature list ---- */
 .feature-list { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
 .feature-row { display: grid; grid-template-columns: 1fr 130px 84px; align-items: center; gap: 10px; }
-.feature-name { font-size: 14px; }
+/* Pin each control to its column so a stray injected element (e.g. a password
+   manager's inline icon) can't displace the toggle onto a new grid row. */
+.feature-name { grid-column: 1; min-width: 0; font-size: 14px; }
+.feature-rename { grid-column: 2; min-width: 0; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; font-size: 13px; font-family: inherit; }
+.feature-row > button { grid-column: 3; }
 .feature-name.hidden { color: var(--text-muted); text-decoration: line-through; }
-.feature-rename { padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; font-size: 13px; font-family: inherit; }
 .feature-rename:disabled { background: #f1f5f9; cursor: not-allowed; }
 
 /* ---- Misc ---- */

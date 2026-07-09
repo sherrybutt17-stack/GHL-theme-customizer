@@ -1,5 +1,5 @@
 import { prisma } from "./prisma";
-import { featureSelector, isSettingsFeature } from "./ghlSidebarFeatures";
+import { featureSelector, isSettingsFeature, isKnownFeatureKey } from "./ghlSidebarFeatures";
 
 /**
  * GHL sidebar logo, confirmed via live DOM inspection:
@@ -109,13 +109,14 @@ function featureSelectorsScoped(key: string, scope: Scope): string[] {
 }
 
 /**
- * Selectors to apply a menu-label rename to. Main/agency items carry their label
- * in a `.nav-title` child; Settings items render the label as the link's own
- * text, so we target the link element directly.
+ * Selectors to apply a menu-label rename to. Every sidebar item — main, agency,
+ * AND Settings — carries its label in a `.nav-title` child span (confirmed for
+ * Settings via live DOM: `<span class="… nav-title …">Custom Fields</span>`), so
+ * we target that span. Renaming the span (not the whole `<a>`) leaves the icon's
+ * own text node untouched and keeps the injected label inside the label element.
  */
 function featureLabelSelectorsScoped(key: string, scope: Scope): string[] {
-  const base = featureSelectorsScoped(key, scope);
-  return isSettingsFeature(key) ? base : base.map((s) => `${s} .nav-title`);
+  return featureSelectorsScoped(key, scope).map((s) => `${s} .nav-title`);
 }
 
 /** Scope a comma-separated descendant selector list under the scope's prefix. */
@@ -133,7 +134,7 @@ function scoped(scope: Scope, selectorList: string): string {
  * input - it just stops a malformed/hostile color field from corrupting the whole
  * stylesheet. Raw power-user CSS still goes through the dedicated customCss path.
  */
-function cssColor(value: string): string {
+export function cssColor(value: string): string {
   return value.replace(/[;{}<>\\]/g, "").replace(/[\r\n]+/g, " ").trim();
 }
 
@@ -262,8 +263,11 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     rules.push(`${scoped(scope, LOGO_IMG_SELECTOR)} { opacity: 0 !important; }`);
   }
 
-  // Feature hiding
-  const hidden = Array.isArray(theme.hiddenFeatures) ? (theme.hiddenFeatures as string[]) : [];
+  // Feature hiding. Ignore any key that isn't a real, known feature - stored values
+  // are client-supplied, and only whitelisted keys may reach a selector.
+  const hidden = (Array.isArray(theme.hiddenFeatures) ? (theme.hiddenFeatures as string[]) : []).filter(
+    isKnownFeatureKey
+  );
   for (const key of hidden) {
     rules.push(`${featureSelectorsScoped(key, scope).join(", ")} { display: none !important; }`);
   }
@@ -274,7 +278,8 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
       ? (theme.menuLabelOverrides as Record<string, string>)
       : {};
   for (const [key, label] of Object.entries(labels)) {
-    if (!label) continue;
+    // Same whitelist as feature-hiding: never let an unknown key reach a selector.
+    if (!label || !isKnownFeatureKey(key)) continue;
     const safe = label.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]+/g, " ");
     const parts = featureLabelSelectorsScoped(key, scope);
     rules.push(`${parts.join(", ")} { font-size: 0 !important; }`);

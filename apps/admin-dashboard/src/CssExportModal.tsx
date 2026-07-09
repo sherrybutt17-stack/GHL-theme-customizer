@@ -8,13 +8,23 @@ interface Props {
 
 export function CssExportModal({ agencyInstallId, onClose }: Props) {
   const [embed, setEmbed] = useState<EmbedInfo | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [copied, setCopied] = useState<"import" | "full" | null>(null);
   const [copyFailed, setCopyFailed] = useState(false);
   const [showFull, setShowFull] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
-    fetchEmbedInfo(agencyInstallId).then(setEmbed);
-  }, [agencyInstallId]);
+    let cancelled = false;
+    setLoadError(null);
+    setEmbed(null);
+    fetchEmbedInfo(agencyInstallId)
+      .then((e) => !cancelled && setEmbed(e))
+      .catch((e) => !cancelled && setLoadError((e as Error).message || "Failed to load embed code"));
+    return () => {
+      cancelled = true;
+    };
+  }, [agencyInstallId, reloadKey]);
 
   // GHL embeds this dashboard in a cross-origin iframe, where navigator.clipboard
   // is blocked (silently rejects). Fall back to a hidden-textarea + execCommand,
@@ -83,14 +93,27 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
             You only paste it <strong>once</strong> &mdash; theme changes apply automatically
             afterward, no re-pasting.
           </p>
-          <pre style={preStyle}>{embed?.importSnippet ?? "Loading…"}</pre>
-          <button
-            className="btn btn-primary"
-            disabled={!embed}
-            onClick={() => embed && copy(embed.importSnippet, "import")}
-          >
-            {copied === "import" ? "Copied!" : "Copy one-line embed"}
-          </button>
+          {loadError ? (
+            <div style={{ margin: "12px 0" }}>
+              <p style={{ fontSize: 13, color: "#b91c1c", margin: "0 0 8px" }}>
+                Couldn't load your embed code: {loadError}
+              </p>
+              <button className="btn" onClick={() => setReloadKey((k) => k + 1)}>
+                Try again
+              </button>
+            </div>
+          ) : (
+            <>
+              <pre style={preStyle}>{embed?.importSnippet ?? "Loading…"}</pre>
+              <button
+                className="btn btn-primary"
+                disabled={!embed}
+                onClick={() => embed && copy(embed.importSnippet, "import")}
+              >
+                {copied === "import" ? "Copied!" : "Copy one-line embed"}
+              </button>
+            </>
+          )}
           {copyFailed && (
             <p style={{ fontSize: 12, color: "#b45309", margin: "8px 0 0" }}>
               Couldn't copy automatically — select the line above and press ⌘/Ctrl+C.

@@ -3,6 +3,7 @@ import { ghl, sessionStorage } from "../services/ghlClient";
 import { prisma } from "../services/prisma";
 import { syncLocationsForAgency } from "../services/locationSync";
 import { ensureAgencyAdminMenuLink } from "../services/customMenuLink";
+import { describeError } from "../services/security";
 
 export const oauthRouter = Router();
 
@@ -42,13 +43,15 @@ oauthRouter.get("/authorize-handler", async (req: Request, res: Response) => {
       } catch (setupError) {
         // Non-fatal: the install itself succeeded and tokens are safely stored.
         // Portal setup can be retried later (e.g. from the Phase 4 admin dashboard).
-        console.error("Post-install portal setup failed (install still succeeded):", setupError);
+        console.error(`Post-install portal setup failed (install still succeeded): ${describeError(setupError)}`);
       }
       return res.redirect(`/onboarding/${agency.id}`);
     }
     return res.redirect("https://app.gohighlevel.com/");
   } catch (error) {
-    console.error("OAuth authorize-handler failed:", error);
+    // describeError, not the raw error: the token-exchange failure carries the POST
+    // body (client_secret + auth code) in config.data - keep it out of the logs.
+    console.error(`OAuth authorize-handler failed: ${describeError(error)}`);
     return res.status(500).send("Failed to complete GHL OAuth install. Check server logs.");
   }
 });
