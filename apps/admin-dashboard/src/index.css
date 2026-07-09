@@ -233,6 +233,21 @@ body {
 .pill-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .pill-btn-solid { background: var(--primary); color: #fff; border-color: var(--primary); }
 .pill-btn-solid:hover:not(:disabled) { background: var(--primary-hover); color: #fff; }
+
+/* ---- Pagination ---- */
+.cp-pagination {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+  padding: 14px 16px; border-top: 1px solid var(--border);
+}
+.cp-pagination-info { font-size: 13px; color: var(--text-muted); }
+.cp-pagination-controls { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.cp-pagination .pill-btn { padding: 8px 12px; }
+.cp-page-num { min-width: 38px; justify-content: center; }
+.cp-page-active {
+  background: var(--primary); color: #fff; border-color: var(--primary);
+}
+.cp-page-active:hover:not(:disabled) { background: var(--primary-hover); color: #fff; border-color: var(--primary-hover); }
+.cp-page-gap { display: inline-flex; align-items: center; padding: 0 4px; color: var(--text-muted); }
 .pill-apply { display: inline-flex; gap: 8px; align-items: center; }
 .pill-apply select {
   padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);

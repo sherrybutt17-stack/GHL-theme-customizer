@@ -10,15 +10,25 @@ import { prisma } from "./prisma";
 export async function syncLocationsForAgency(agencyInstallId: string) {
   const agency = await prisma.agencyInstall.findUniqueOrThrow({ where: { id: agencyInstallId } });
 
+  // searchLocations is paginated: without an explicit limit GHL returns only its small
+  // default page, so agencies with many sub-accounts would silently lose the rest. Page
+  // through with skip/limit until a short page comes back (the response carries no total).
+  //
   // preferredTokenType is required here: searchLocations accepts both Agency-Access and
   // Location-Access, and the SDK's token-resolution has a bug where, absent an explicit
   // preference, it incorrectly tries the (empty) location token instead of falling back
   // to the agency token. See https://github.com/GoHighLevel/highlevel-api-sdk (extractResourceId).
-  const res = await ghl.locations.searchLocations(
-    { companyId: agency.ghlCompanyId },
-    { preferredTokenType: "company" }
-  );
-  const locations = res.locations ?? [];
+  const PAGE_SIZE = 100;
+  const locations: NonNullable<Awaited<ReturnType<typeof ghl.locations.searchLocations>>["locations"]> = [];
+  for (let skip = 0; ; skip += PAGE_SIZE) {
+    const res = await ghl.locations.searchLocations(
+      { companyId: agency.ghlCompanyId, skip: String(skip), limit: String(PAGE_SIZE) },
+      { preferredTokenType: "company" }
+    );
+    const page = res.locations ?? [];
+    locations.push(...page);
+    if (page.length < PAGE_SIZE) break;
+  }
 
   for (const loc of locations) {
     if (!loc.id) continue;

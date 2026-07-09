@@ -39,6 +39,27 @@ function ghlBaseUrl(): string {
 }
 const GHL_BASE = ghlBaseUrl();
 
+/** How many sub-accounts to show per page in the table. */
+const PAGE_SIZE = 25;
+
+/**
+ * Build a compact page list: always the first/last page, plus a window around the
+ * current one, with "…" gaps so large agencies don't get 40 raw page buttons.
+ */
+function pageItems(current: number, total: number): (number | "…")[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+  const pages = new Set([1, total, current, current - 1, current + 1]);
+  const sorted = [...pages].filter((n) => n >= 1 && n <= total).sort((a, b) => a - b);
+  const out: (number | "…")[] = [];
+  let prev = 0;
+  for (const n of sorted) {
+    if (n - prev > 1) out.push("…");
+    out.push(n);
+    prev = n;
+  }
+  return out;
+}
+
 export function App() {
   const agencyId = agencyIdFromUrl();
   const [locations, setLocations] = useState<LocationRow[]>([]);
@@ -53,6 +74,7 @@ export function App() {
   const [bulkPresetId, setBulkPresetId] = useState("");
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     if (!agencyId) {
@@ -77,6 +99,21 @@ export function App() {
       l.ghlLocationId.toLowerCase().includes(q)
     );
   }, [locations, search]);
+
+  const pageCount = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
+  // Keep the current page in range as the filtered list shrinks/grows.
+  useEffect(() => {
+    setPage((p) => Math.min(p, pageCount));
+  }, [pageCount]);
+  // A new search should start from the first page.
+  useEffect(() => {
+    setPage(1);
+  }, [search]);
+
+  const paged = useMemo(
+    () => visible.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [visible, page]
+  );
 
   if (!agencyId) {
     return (
@@ -272,7 +309,7 @@ export function App() {
                 </tr>
               </thead>
               <tbody>
-                {visible.map((loc) => {
+                {paged.map((loc) => {
                   const t = loc.theme;
                   return (
                     <tr key={loc.id} className={selected.has(loc.id) ? "row-selected" : ""}>
@@ -360,6 +397,44 @@ export function App() {
               </tbody>
             </table>
             {visible.length === 0 && <div className="empty-state">No sub-accounts match “{search}”.</div>}
+          </div>
+        )}
+        {!loading && pageCount > 1 && (
+          <div className="cp-pagination">
+            <span className="cp-pagination-info">
+              Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, visible.length)} of {visible.length}
+            </span>
+            <div className="cp-pagination-controls">
+              <button
+                className="pill-btn"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                ‹ Prev
+              </button>
+              {pageItems(page, pageCount).map((n, i) =>
+                n === "…" ? (
+                  <span key={`gap-${i}`} className="cp-page-gap">
+                    …
+                  </span>
+                ) : (
+                  <button
+                    key={n}
+                    className={`pill-btn cp-page-num${n === page ? " cp-page-active" : ""}`}
+                    onClick={() => setPage(n)}
+                  >
+                    {n}
+                  </button>
+                )
+              )}
+              <button
+                className="pill-btn"
+                disabled={page >= pageCount}
+                onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+              >
+                Next ›
+              </button>
+            </div>
           </div>
         )}
       </div>
