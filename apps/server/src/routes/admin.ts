@@ -1,7 +1,11 @@
 import { Router, Request, Response } from "express";
 import { prisma } from "../services/prisma";
 import { generateThemeCssBundle } from "../services/themeCssBundle";
-import { GHL_SIDEBAR_FEATURES, GHL_AGENCY_SIDEBAR_FEATURES } from "../services/ghlSidebarFeatures";
+import {
+  GHL_SIDEBAR_FEATURES,
+  GHL_AGENCY_SIDEBAR_FEATURES,
+  GHL_SETTINGS_SIDEBAR_FEATURES,
+} from "../services/ghlSidebarFeatures";
 import { dashboardAuthEnabled, verifyDashboardToken } from "../services/dashboardAuth";
 
 export const adminRouter = Router();
@@ -13,7 +17,13 @@ export const adminRouter = Router();
  */
 adminRouter.get("/admin/api/sidebar-features", (req: Request, res: Response) => {
   const agency = req.query.scope === "agency";
-  res.json(agency ? GHL_AGENCY_SIDEBAR_FEATURES : GHL_SIDEBAR_FEATURES);
+  const main = agency ? GHL_AGENCY_SIDEBAR_FEATURES : GHL_SIDEBAR_FEATURES;
+  // The Settings-page sidebar items apply in both scopes (agency default + per
+  // sub-account). Tag each item with its group so the UI can render subheadings.
+  res.json([
+    ...main.map((f) => ({ ...f, group: "main" })),
+    ...GHL_SETTINGS_SIDEBAR_FEATURES.map((f) => ({ ...f, group: "settings" })),
+  ]);
 });
 
 /** Pull the shared visual theme fields out of a request body (whitelist). */

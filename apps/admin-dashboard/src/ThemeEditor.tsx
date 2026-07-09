@@ -155,6 +155,29 @@ export function ThemeEditorModal({
     });
   }
 
+  function renderFeatureRow(f: SidebarFeature) {
+    const isHidden = hidden.has(f.key);
+    return (
+      <div className="feature-row" key={f.key}>
+        <span className={`feature-name ${isHidden ? "hidden" : ""}`}>{f.label}</span>
+        <input
+          className="feature-rename"
+          placeholder="Rename…"
+          value={labels[f.key] ?? ""}
+          disabled={isHidden}
+          onChange={(e) => setLabels((p) => ({ ...p, [f.key]: e.target.value }))}
+        />
+        <button
+          className={`btn ${isHidden ? "" : "btn-ghost"}`}
+          onClick={() => toggleHidden(f.key)}
+          title={isHidden ? "Hidden — click to show" : "Visible — click to hide"}
+        >
+          {isHidden ? "Hidden" : "Visible"}
+        </button>
+      </div>
+    );
+  }
+
   async function handleSave() {
     setSaving(true);
     try {
@@ -307,29 +330,24 @@ export function ThemeEditorModal({
                 Hide items this client shouldn't see, or rename them.
               </p>
               <div className="feature-list">
-                {features.map((f) => {
-                  const isHidden = hidden.has(f.key);
-                  return (
-                    <div className="feature-row" key={f.key}>
-                      <span className={`feature-name ${isHidden ? "hidden" : ""}`}>{f.label}</span>
-                      <input
-                        className="feature-rename"
-                        placeholder="Rename…"
-                        value={labels[f.key] ?? ""}
-                        disabled={isHidden}
-                        onChange={(e) => setLabels((p) => ({ ...p, [f.key]: e.target.value }))}
-                      />
-                      <button
-                        className={`btn ${isHidden ? "" : "btn-ghost"}`}
-                        onClick={() => toggleHidden(f.key)}
-                        title={isHidden ? "Hidden — click to show" : "Visible — click to hide"}
-                      >
-                        {isHidden ? "Hidden" : "Visible"}
-                      </button>
-                    </div>
-                  );
-                })}
+                {features
+                  .filter((f) => f.group !== "settings")
+                  .map((f) => renderFeatureRow(f))}
               </div>
+
+              {features.some((f) => f.group === "settings") && (
+                <>
+                  <label style={{ marginTop: 20 }}>Settings menu items</label>
+                  <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px" }}>
+                    The sidebar shown inside Settings (Business Profile, My Staff, Calendars…).
+                  </p>
+                  <div className="feature-list">
+                    {features
+                      .filter((f) => f.group === "settings")
+                      .map((f) => renderFeatureRow(f))}
+                  </div>
+                </>
+              )}
             </div>
           )}
 

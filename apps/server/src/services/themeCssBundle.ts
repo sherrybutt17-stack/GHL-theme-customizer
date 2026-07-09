@@ -1,5 +1,5 @@
 import { prisma } from "./prisma";
-import { featureSelector } from "./ghlSidebarFeatures";
+import { featureSelector, isSettingsFeature } from "./ghlSidebarFeatures";
 
 /**
  * GHL sidebar logo, confirmed via live DOM inspection:
@@ -68,6 +68,8 @@ const UPGRADE_SELECTOR =
 interface Scope {
   bases: string[];
   prefix: string;
+  /** The sub-account id when this is a location override; undefined for global. */
+  locationId?: string;
 }
 
 function globalScope(): Scope {
@@ -80,7 +82,40 @@ function locationScope(locationId: string): Scope {
     bases: [`#sidebar-v2${has}`, `.hl_sidebar${has}`],
     // The sidebar wrapper div carries the raw location id as a CSS class.
     prefix: `[class~="${locationId}"]`,
+    locationId,
   };
+}
+
+/**
+ * Selectors for a feature's nav link, correctly scoped.
+ *
+ * Main/agency sidebar items live inside the location-classed sidebar wrapper, so
+ * we scope them with the ancestor `prefix`. Settings-sidebar items live OUTSIDE
+ * that wrapper, so ancestor scoping can't reach them - instead we scope by the
+ * locationId embedded in their own href (adding a second `[href*="/location/<id>"]`
+ * attribute match), which also sidesteps their id/meta collisions with the main
+ * sidebar. Global scope (agency default) leaves both untouched so they apply to
+ * every sub-account.
+ */
+function featureSelectorsScoped(key: string, scope: Scope): string[] {
+  const raw = featureSelector(key)
+    .split(",")
+    .map((s) => s.trim());
+  if (isSettingsFeature(key)) {
+    if (!scope.locationId) return raw; // agency default: match the item on any location
+    return raw.map((s) => s.replace(/^a\[/, `a[href*="/location/${scope.locationId}"][`));
+  }
+  return raw.map((s) => (scope.prefix ? `${scope.prefix} ${s}` : s));
+}
+
+/**
+ * Selectors to apply a menu-label rename to. Main/agency items carry their label
+ * in a `.nav-title` child; Settings items render the label as the link's own
+ * text, so we target the link element directly.
+ */
+function featureLabelSelectorsScoped(key: string, scope: Scope): string[] {
+  const base = featureSelectorsScoped(key, scope);
+  return isSettingsFeature(key) ? base : base.map((s) => `${s} .nav-title`);
 }
 
 /** Scope a comma-separated descendant selector list under the scope's prefix. */
@@ -230,7 +265,7 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
   // Feature hiding
   const hidden = Array.isArray(theme.hiddenFeatures) ? (theme.hiddenFeatures as string[]) : [];
   for (const key of hidden) {
-    rules.push(`${scoped(scope, featureSelector(key))} { display: none !important; }`);
+    rules.push(`${featureSelectorsScoped(key, scope).join(", ")} { display: none !important; }`);
   }
 
   // Menu label renaming
@@ -241,9 +276,7 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
   for (const [key, label] of Object.entries(labels)) {
     if (!label) continue;
     const safe = label.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]+/g, " ");
-    const parts = featureSelector(key)
-      .split(",")
-      .map((s) => scoped(scope, `${s.trim()} .nav-title`));
+    const parts = featureLabelSelectorsScoped(key, scope);
     rules.push(`${parts.join(", ")} { font-size: 0 !important; }`);
     rules.push(
       `${parts.map((p) => `${p}::after`).join(", ")} { content: "${safe}" !important; font-size: 14px !important; }`

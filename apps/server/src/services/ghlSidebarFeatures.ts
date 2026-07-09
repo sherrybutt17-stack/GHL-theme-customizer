@@ -57,15 +57,56 @@ export const GHL_AGENCY_SIDEBAR_FEATURES: SidebarFeature[] = [
   { key: "agency-app-marketplace", label: "App Marketplace", selector: 'a[href*="/integration"], a[href*="/app-marketplace"]' },
 ];
 
+/**
+ * The SUB-ACCOUNT Settings-page sidebar items (Settings → Business Profile, My
+ * Staff, Calendars, etc.) - a THIRD nav, distinct from the two main sidebars
+ * above and only visible inside Settings.
+ *
+ * These links DO carry `#sb_<key>` / `meta="<key>"` like the main sidebar, but we
+ * deliberately target them by their unique href fragment instead, because:
+ *   1. Some keys COLLIDE with the main sidebar (e.g. Settings "Calendars" shares
+ *      id="sb_calendars"/meta="calendars" with the main sidebar Calendars), so an
+ *      id/meta selector would hit both navs.
+ *   2. The href already embeds the locationId (/v2/location/<id>/settings/...),
+ *      which gives us clean per-sub-account scoping (see themeCssBundle) - the
+ *      Settings nav lives OUTSIDE the location-classed sidebar wrapper, so the
+ *      ancestor-prefix scoping used for the main sidebar wouldn't reach it.
+ *
+ * Keys are prefixed `settings-` so they never clash with main-sidebar keys in the
+ * stored hiddenFeatures/menuLabelOverrides maps. Fragments below are CONFIRMED via
+ * live DOM inspection; the remaining Settings items can be appended the same way
+ * once their hrefs are captured.
+ */
+export const GHL_SETTINGS_SIDEBAR_FEATURES: SidebarFeature[] = [
+  { key: "settings-my-staff", label: "My Staff", selector: 'a[href*="/settings/staff"]' },
+  { key: "settings-opportunities", label: "Opportunities & Pipelines", selector: 'a[href*="/crm-settings"]' },
+  { key: "settings-calendars", label: "Calendars (Settings)", selector: 'a[href*="/settings/calendars"]' },
+  { key: "settings-email-services", label: "Email Services", selector: 'a[href*="/settings/smtp_service"]' },
+  { key: "settings-phone-system", label: "Phone System", selector: 'a[href*="/settings/phone_system"]' },
+  { key: "settings-whatsapp", label: "WhatsApp", selector: 'a[href*="/settings/whatsapp"]' },
+  { key: "settings-objects", label: "Objects", selector: 'a[href*="/settings/objects"]' },
+];
+
 /** key -> explicit selector, built from any features that declare one. */
 const SELECTOR_BY_KEY: Record<string, string> = Object.fromEntries(
-  [...GHL_SIDEBAR_FEATURES, ...GHL_AGENCY_SIDEBAR_FEATURES]
+  [...GHL_SIDEBAR_FEATURES, ...GHL_AGENCY_SIDEBAR_FEATURES, ...GHL_SETTINGS_SIDEBAR_FEATURES]
     .filter((f) => f.selector)
     .map((f) => [f.key, f.selector as string])
 );
 
+const SETTINGS_KEYS = new Set(GHL_SETTINGS_SIDEBAR_FEATURES.map((f) => f.key));
+
+/**
+ * Whether a feature belongs to the Settings sidebar. Callers use this to switch
+ * scoping strategy (href-based vs ancestor-prefix) and rename target (the link
+ * itself vs a `.nav-title` child).
+ */
+export function isSettingsFeature(key: string): boolean {
+  return SETTINGS_KEYS.has(key);
+}
+
 /** CSS selector (relative to a location-scoped wrapper) for a feature's nav link. */
 export function featureSelector(key: string): string {
-  // Explicit selector (agency items) wins; otherwise the confirmed #sb_/meta pattern.
+  // Explicit selector (agency + settings items) wins; else the confirmed #sb_/meta pattern.
   return SELECTOR_BY_KEY[key] ?? `#sb_${key}, a[meta="${key}"]`;
 }

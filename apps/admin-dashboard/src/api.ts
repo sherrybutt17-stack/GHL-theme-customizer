@@ -81,6 +81,8 @@ export interface LocationRow {
 export interface SidebarFeature {
   key: string;
   label: string;
+  /** "main" (top-level sidebar) or "settings" (Settings-page sidebar). */
+  group?: "main" | "settings";
 }
 
 /** Everything the theme editor collects. brandName only applies to a location. */
