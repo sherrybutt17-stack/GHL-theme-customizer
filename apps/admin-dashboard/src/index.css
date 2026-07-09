@@ -233,6 +233,21 @@ body {
 .pill-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .pill-btn-solid { background: var(--primary); color: #fff; border-color: var(--primary); }
 .pill-btn-solid:hover:not(:disabled) { background: var(--primary-hover); color: #fff; }
+
+/* ---- Pagination ---- */
+.cp-pagination {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+  padding: 14px 16px; border-top: 1px solid var(--border);
+}
+.cp-pagination-info { font-size: 13px; color: var(--text-muted); }
+.cp-pagination-controls { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.cp-pagination .pill-btn { padding: 8px 12px; }
+.cp-page-num { min-width: 38px; justify-content: center; }
+.cp-page-active {
+  background: var(--primary); color: #fff; border-color: var(--primary);
+}
+.cp-page-active:hover:not(:disabled) { background: var(--primary-hover); color: #fff; border-color: var(--primary-hover); }
+.cp-page-gap { display: inline-flex; align-items: center; padding: 0 4px; color: var(--text-muted); }
 .pill-apply { display: inline-flex; gap: 8px; align-items: center; }
 .pill-apply select {
   padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);
@@ -458,9 +473,12 @@ body {
 /* ---- Feature list ---- */
 .feature-list { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
 .feature-row { display: grid; grid-template-columns: 1fr 130px 84px; align-items: center; gap: 10px; }
-.feature-name { font-size: 14px; }
+/* Pin each control to its column so a stray injected element (e.g. a password
+   manager's inline icon) can't displace the toggle onto a new grid row. */
+.feature-name { grid-column: 1; min-width: 0; font-size: 14px; }
+.feature-rename { grid-column: 2; min-width: 0; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; font-size: 13px; font-family: inherit; }
+.feature-row > button { grid-column: 3; }
 .feature-name.hidden { color: var(--text-muted); text-decoration: line-through; }
-.feature-rename { padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; font-size: 13px; font-family: inherit; }
 .feature-rename:disabled { background: #f1f5f9; cursor: not-allowed; }
 
 /* ---- Misc ---- */

@@ -1,6 +1,7 @@
 import axios from "axios";
 import { prisma } from "./prisma";
 import { sessionStorage } from "./ghlClient";
+import { describeError } from "./security";
 
 /**
  * Proactively refreshes agency tokens before they expire, using a raw HTTP call
@@ -54,7 +55,9 @@ export async function refreshAllExpiringAgencyTokens(): Promise<void> {
     try {
       await refreshAgencyTokenIfNeeded(agency.id);
     } catch (error) {
-      console.error(`Background token refresh failed for agency ${agency.id}:`, error);
+      // describeError, not the raw error: an Axios failure here carries the POST body
+      // (client_secret + refresh_token) in config.data and must never hit the logs.
+      console.error(`Background token refresh failed for agency ${agency.id}: ${describeError(error)}`);
     }
   }
 }

@@ -1,26 +1,37 @@
 import { Router, Request, Response } from "express";
 import { prisma } from "../services/prisma";
 import { mintDashboardToken } from "../services/dashboardAuth";
+import { safeEqual } from "../services/security";
 
 export const adminEmbedRouter = Router();
 
 /**
- * Agency-level Custom Menu Link entry point (showOnCompany: true). Originally
- * this resolved the agency via the SSO postMessage handshake (like the
- * per-location portal), but that turned out to be unnecessary complexity:
- * unlike the per-location portal (one link shared across many locations,
- * genuinely needing runtime resolution of which one is active), we create
- * exactly one menu link per agency - so we already know which agency it is
- * at creation time and can just bake the id into the URL, same pattern as
- * the onboarding page. Confirmed via DevTools that GHL's own SSO-context
- * handler errors out for agency-level (no-location) pages anyway
- * ("message channel closed before a response was received", traced to
- * GHL's own /agency_dashboard code) - so this also sidesteps that bug.
+ * Agency-level Custom Menu Link entry point (showOnCompany: true). We can't use
+ * GHL's SSO postMessage handshake to authenticate the viewer here: GHL's own
+ * SSO-context handler errors out for agency-level (no-location) pages
+ * ("message channel closed before a response was received", traced to GHL's own
+ * /agency_dashboard code). So instead the menu-link URL carries a per-agency
+ * secret (?k=<slug>) that only that agency's signed-in users ever see, and we
+ * require it before minting a dashboard token.
+ *
+ * SECURITY: the :agencyInstallId is NOT a secret - it appears in the public
+ * @import CSS. The ?k= slug is. Without this check, anyone who scraped the id
+ * from a themed page could mint a valid admin token and take over the agency.
  */
 adminEmbedRouter.get("/admin-embed/:agencyInstallId", async (req: Request, res: Response) => {
-  const agency = await prisma.agencyInstall.findUnique({ where: { id: req.params.agencyInstallId } });
+  const agency = await prisma.agencyInstall.findUnique({
+    where: { id: req.params.agencyInstallId },
+    include: { menuLink: true },
+  });
   if (!agency) {
     return res.status(404).send("Unknown agency install");
+  }
+
+  const provided = typeof req.query.k === "string" ? req.query.k : "";
+  const expected = agency.menuLink?.slug ?? "";
+  if (!expected || !safeEqual(provided, expected)) {
+    // Generic 403 - don't reveal whether the id existed or the key was wrong.
+    return res.status(403).send("Forbidden");
   }
 
   const adminDashboardUrl = process.env.ADMIN_DASHBOARD_URL ?? "http://localhost:5173";
