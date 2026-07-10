@@ -33,6 +33,7 @@ interface VisualTheme {
   cornerRadius?: number | null;
   sidebarImageUrl?: string | null;
   scrollbarColor?: string | null;
+  sidebarTextColor?: string | null;
   darkMode?: boolean | null;
   hideUpgrade?: boolean | null;
   alertMessage?: string | null;
@@ -198,6 +199,16 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
       .join(", ")} { background: ${accent} !important; color: #fff !important; }`
   );
   rules.push(`${scope.bases.map((b) => `${b} a i`).join(", ")} { color: ${accent} !important; }`);
+
+  // Sidebar menu text color. Scoped to inactive links (`:not(.active)`) so active
+  // items keep the white contrast color set against the accent background above.
+  if (theme.sidebarTextColor) {
+    const txt = cssColor(theme.sidebarTextColor);
+    const sel = scope.bases
+      .flatMap((b) => [`${b} a:not(.active)`, `${b} a:not(.active) .nav-title`])
+      .join(", ");
+    rules.push(`${sel} { color: ${txt} !important; }`);
+  }
 
   // Font family (applies to the whole scoped subtree; for global, to sidebar + body)
   if (theme.fontFamily) {

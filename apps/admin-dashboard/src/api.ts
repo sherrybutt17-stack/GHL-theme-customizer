@@ -43,6 +43,7 @@ export interface VisualTheme {
   cornerRadius: number | null;
   sidebarImageUrl: string | null;
   scrollbarColor: string | null;
+  sidebarTextColor: string | null;
   darkMode: boolean;
   hideUpgrade: boolean;
   alertMessage: string | null;
@@ -77,6 +78,7 @@ export interface ThemePreset {
   buttonColor: string | null;
   cornerRadius: number | null;
   scrollbarColor: string | null;
+  sidebarTextColor: string | null;
   darkMode: boolean;
 }
 
@@ -111,6 +113,7 @@ export interface ThemeInput {
   cornerRadius: number | null;
   sidebarImageUrl: string;
   scrollbarColor: string;
+  sidebarTextColor: string;
   darkMode: boolean;
   hideUpgrade: boolean;
   alertMessage: string;

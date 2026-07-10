@@ -80,6 +80,7 @@ function lookFrom(initial: Props["initial"]): Look {
     buttonColor: initial?.buttonColor ?? "#4f46e5",
     cornerRadius: initial?.cornerRadius ?? 8,
     scrollbarColor: initial?.scrollbarColor ?? "#94a3b8",
+    sidebarTextColor: initial?.sidebarTextColor ?? "#ffffff",
     darkMode: initial?.darkMode ?? false,
   };
 }
@@ -144,6 +145,7 @@ export function ThemeEditorModal({
       buttonColor: p.buttonColor ?? look.buttonColor,
       cornerRadius: p.cornerRadius ?? look.cornerRadius,
       scrollbarColor: p.scrollbarColor ?? look.scrollbarColor,
+      sidebarTextColor: p.sidebarTextColor ?? look.sidebarTextColor,
       darkMode: p.darkMode,
     });
   }
@@ -207,6 +209,7 @@ export function ThemeEditorModal({
         buttonColor: look.buttonColor,
         cornerRadius: look.cornerRadius,
         scrollbarColor: look.scrollbarColor,
+        sidebarTextColor: look.sidebarTextColor,
         darkMode: look.darkMode,
         sidebarImageUrl,
         hideUpgrade,
