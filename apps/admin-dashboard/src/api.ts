@@ -58,6 +58,7 @@ export interface ThemeConfig extends VisualTheme {
   brandName: string | null;
   customCssOverride: string | null;
   version: number;
+  createdAt?: string;
 }
 
 export interface AgencyDefaultTheme extends VisualTheme {
@@ -151,6 +152,9 @@ export const fetchLocations = (a: string): Promise<LocationRow[]> =>
 
 export const saveTheme = (a: string, loc: string, theme: ThemeInput): Promise<ThemeConfig> =>
   fetch(`${API_BASE}/admin/api/${a}/locations/${loc}/theme`, j("PUT", theme)).then(handle);
+
+export const fetchThemeVersions = (a: string, loc: string): Promise<ThemeConfig[]> =>
+  fetch(`${API_BASE}/admin/api/${a}/locations/${loc}/theme/versions`, g()).then(handle);
 
 export const setEnabled = (a: string, loc: string, enabled: boolean) =>
   fetch(`${API_BASE}/admin/api/${a}/locations/${loc}/enabled`, j("PUT", { enabled })).then(handle);

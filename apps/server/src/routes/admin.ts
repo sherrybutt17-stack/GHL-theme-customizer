@@ -174,6 +174,34 @@ adminRouter.put(
 );
 
 /**
+ * Version history for a sub-account's theme. Every save creates a new ThemeConfig
+ * row (version++), so this is just the row list, newest first. The dashboard loads a
+ * chosen version's values back into the editor; saving then writes a new version
+ * (so history is append-only and a "restore" is itself an auditable version).
+ */
+adminRouter.get(
+  "/admin/api/:agencyInstallId/locations/:locationInstallId/theme/versions",
+  async (req: Request, res: Response) => {
+    const agencyId = await requireAgency(req, res);
+    if (!agencyId) return;
+
+    const location = await prisma.locationInstall.findFirst({
+      where: { id: req.params.locationInstallId, agencyInstallId: agencyId },
+    });
+    if (!location) {
+      return res.status(403).json({ error: "Location does not belong to this agency install" });
+    }
+
+    const versions = await prisma.themeConfig.findMany({
+      where: { locationInstallId: location.id },
+      orderBy: { version: "desc" },
+      take: 50,
+    });
+    res.json(versions);
+  }
+);
+
+/**
  * Reset a sub-account back to inheriting the agency default: delete its own
  * ThemeConfig rows so the CSS bundle stops emitting location-scoped overrides
  * for it (the global agency-default rules still apply to every sidebar).

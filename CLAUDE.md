@@ -103,7 +103,7 @@ Drag to reorder sidebar menu items; delivered via CSS `order`.
 - **Risk:** if items aren't flex children, `order` won't apply — fall back to targeting
   the flex parent. Ship behind a live-DOM check.
 
-## 3. [ ] Theme history + rollback
+## 3. [x] Theme history + rollback  — DONE (History tab; GET …/theme/versions; load→save)
 Surface the versions already stored per location + one-click restore.
 - **Data:** none — `ThemeConfig` is already versioned.
 - **Server:** `GET /admin/api/:agency/locations/:loc/theme/versions` → list

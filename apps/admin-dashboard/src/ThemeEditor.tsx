@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import {
   fetchSidebarFeatures,
+  fetchThemeVersions,
   type SidebarFeature,
+  type ThemeConfig,
   type ThemeInput,
   type ThemePreset,
   type VisualTheme,
@@ -20,6 +22,8 @@ interface Props {
     | null;
   showBrandName: boolean;
   presets: ThemePreset[];
+  /** When set (per-location editing), enables the version-history tab. */
+  history?: { agencyId: string; locationInstallId: string };
   onSave: (theme: ThemeInput) => Promise<void>;
   onSaveAsPreset: (name: string, look: Look) => Promise<void>;
   onCancel: () => void;
@@ -91,11 +95,13 @@ export function ThemeEditorModal({
   initial,
   showBrandName,
   presets,
+  history,
   onSave,
   onSaveAsPreset,
   onCancel,
 }: Props) {
-  const [tab, setTab] = useState<"branding" | "features" | "advanced">("branding");
+  const [tab, setTab] = useState<"branding" | "features" | "advanced" | "history">("branding");
+  const [versions, setVersions] = useState<ThemeConfig[] | null>(null);
   const [brandName, setBrandName] = useState(initial?.brandName ?? "");
   const [logoUrl, setLogoUrl] = useState(initial?.logoUrl ?? "");
   const [look, setLook] = useState<Look>(lookFrom(initial));
@@ -121,6 +127,14 @@ export function ThemeEditorModal({
     // editing a sub-account → show the sub-account items.
     fetchSidebarFeatures(showBrandName ? undefined : "agency").then(setFeatures);
   }, [showBrandName]);
+
+  useEffect(() => {
+    if (tab === "history" && history && versions === null) {
+      fetchThemeVersions(history.agencyId, history.locationInstallId)
+        .then(setVersions)
+        .catch(() => setVersions([]));
+    }
+  }, [tab, history, versions]);
 
   const patchLook = (p: Partial<Look>) => setLook((l) => ({ ...l, ...p }));
 
@@ -161,6 +175,23 @@ export function ThemeEditorModal({
       next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
+  }
+
+  // Load an older version's values back into the form. Saving then writes a NEW
+  // version (history stays append-only; a restore is itself an auditable version).
+  function loadVersion(v: ThemeConfig) {
+    setLook(lookFrom(v));
+    setBrandName(v.brandName ?? "");
+    setLogoUrl(v.logoUrl ?? "");
+    setHidden(new Set(v.hiddenFeatures ?? []));
+    setLabels((v.menuLabelOverrides as Record<string, string>) ?? {});
+    setMenuOrder(Array.isArray(v.menuOrder) ? v.menuOrder : []);
+    setSidebarImageUrl(v.sidebarImageUrl ?? "");
+    setHideUpgrade(v.hideUpgrade ?? false);
+    setCustomCss(v.customCssOverride ?? "");
+    setAlertMessage(v.alertMessage ?? "");
+    setAlertColor(v.alertColor ?? "#4f46e5");
+    setTab("branding");
   }
 
   // Main sidebar features, sorted by the saved order (unlisted keep natural order).
@@ -281,6 +312,11 @@ export function ThemeEditorModal({
           <button className={`tab ${tab === "advanced" ? "active" : ""}`} onClick={() => setTab("advanced")}>
             Advanced
           </button>
+          {history && (
+            <button className={`tab ${tab === "history" ? "active" : ""}`} onClick={() => setTab("history")}>
+              History
+            </button>
+          )}
         </div>
 
         <div className="modal-body editor-body">
@@ -478,6 +514,44 @@ export function ThemeEditorModal({
                 />
               </div>
             </>
+          )}
+
+          {tab === "history" && (
+            <div className="field">
+              <label>Version history</label>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px" }}>
+                Every save is a version. Load an older one into the editor, review it in the
+                preview, then <strong>Save changes</strong> to restore it as a new version.
+              </p>
+              {versions === null ? (
+                <div className="empty-state">Loading history…</div>
+              ) : versions.length === 0 ? (
+                <div className="empty-state">No saved versions yet.</div>
+              ) : (
+                <div className="version-list">
+                  {versions.map((v, i) => (
+                    <div key={v.id} className="version-row">
+                      <div>
+                        <div className="version-title">
+                          Version {v.version}
+                          {i === 0 && <span className="version-current"> · current</span>}
+                        </div>
+                        <div className="version-date">
+                          {v.createdAt ? new Date(v.createdAt).toLocaleString() : `v${v.version}`}
+                        </div>
+                      </div>
+                      <button
+                        className="btn btn-ghost"
+                        disabled={i === 0}
+                        onClick={() => loadVersion(v)}
+                      >
+                        {i === 0 ? "Current" : "Load this version"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
           </div>
           <MosaicPreview

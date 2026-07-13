@@ -510,6 +510,11 @@ body {
 .drag-handle { cursor: grab; color: var(--text-muted); user-select: none; font-size: 15px; line-height: 1; padding: 2px 1px; flex: 0 0 auto; }
 .drag-handle:active { cursor: grabbing; }
 .drag-handle-inline { color: var(--text-muted); }
+.version-list { display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow-y: auto; }
+.version-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; }
+.version-title { font-size: 14px; font-weight: 600; }
+.version-current { color: var(--text-muted); font-weight: 400; font-size: 12px; }
+.version-date { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
 
 /* ---- Misc ---- */
 .empty-state { padding: 60px 20px; text-align: center; color: var(--text-muted); font-size: 14px; }

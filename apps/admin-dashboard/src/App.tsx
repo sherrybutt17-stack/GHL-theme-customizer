@@ -465,6 +465,7 @@ export function App() {
           initial={editingLocation.theme}
           showBrandName
           presets={presets}
+          history={{ agencyId: agencyId!, locationInstallId: editingLocation.id }}
           onSave={(t) => handleSaveLocation(editingLocation.id, t)}
           onSaveAsPreset={saveAsPreset}
           onCancel={() => setEditingLocation(null)}
