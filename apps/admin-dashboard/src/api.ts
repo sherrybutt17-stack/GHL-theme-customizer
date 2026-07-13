@@ -31,6 +31,7 @@ function authHeaders(): Record<string, string> {
 /** The visual look fields shared by location themes, the agency default, and presets. */
 export interface VisualTheme {
   logoUrl: string | null;
+  faviconUrl: string | null;
   primaryColor: string | null;
   secondaryColor: string | null;
   accentColor: string | null;
@@ -104,6 +105,7 @@ export interface SidebarFeature {
 export interface ThemeInput {
   brandName?: string;
   logoUrl: string;
+  faviconUrl: string;
   primaryColor: string;
   secondaryColor: string;
   accentColor: string;

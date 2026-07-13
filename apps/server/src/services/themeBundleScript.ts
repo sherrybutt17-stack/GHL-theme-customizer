@@ -52,6 +52,15 @@ export function generateThemeBundleScript(agencyId: string, apiBase: string): st
       if (theme.brandName) {
         document.title = theme.brandName;
       }
+      if (theme.faviconUrl) {
+        var link = document.querySelector("link[rel~='icon']");
+        if (!link) {
+          link = document.createElement('link');
+          link.rel = 'icon';
+          document.head.appendChild(link);
+        }
+        link.href = theme.faviconUrl;
+      }
     }
 
     function fetchAndApply(locationId) {

@@ -105,6 +105,7 @@ export function ThemeEditorModal({
   const [versions, setVersions] = useState<ThemeConfig[] | null>(null);
   const [brandName, setBrandName] = useState(initial?.brandName ?? "");
   const [logoUrl, setLogoUrl] = useState(initial?.logoUrl ?? "");
+  const [faviconUrl, setFaviconUrl] = useState(initial?.faviconUrl ?? "");
   const [look, setLook] = useState<Look>(lookFrom(initial));
   const [hidden, setHidden] = useState<Set<string>>(new Set(initial?.hiddenFeatures ?? []));
   const [labels, setLabels] = useState<Record<string, string>>(initial?.menuLabelOverrides ?? {});
@@ -179,6 +180,16 @@ export function ThemeEditorModal({
   }
 
   const [pickingColors, setPickingColors] = useState(false);
+  async function handleFaviconFile(file: File | undefined) {
+    if (!file) return;
+    try {
+      const img = await fileToDownscaledDataUrl(file, 128);
+      setFaviconUrl(img.dataUrl);
+    } catch (e) {
+      setLogoErr((e as Error).message);
+    }
+  }
+
   async function applyLogoColors() {
     if (!logoUrl) return;
     setLogoErr(null);
@@ -266,6 +277,7 @@ export function ThemeEditorModal({
       await onSave({
         ...(showBrandName ? { brandName } : {}),
         logoUrl,
+        faviconUrl,
         primaryColor: look.primaryColor,
         secondaryColor: look.primaryColor,
         accentColor: look.accentColor,
@@ -421,6 +433,39 @@ export function ThemeEditorModal({
                   {pickingColors ? "Reading logo…" : "🎨 Use colors from logo"}
                 </button>
               )}
+
+              <div className="field">
+                <label>Favicon</label>
+                <input
+                  type="url"
+                  value={faviconUrl.startsWith("data:") ? "" : faviconUrl}
+                  onChange={(e) => setFaviconUrl(e.target.value)}
+                  placeholder="Paste an icon URL…"
+                />
+                <div className="logo-upload-row">
+                  <label className="btn btn-ghost logo-upload-btn">
+                    Upload icon
+                    <input
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      onChange={(e) => handleFaviconFile(e.target.files?.[0])}
+                    />
+                  </label>
+                  {faviconUrl && (
+                    <img
+                      src={faviconUrl}
+                      alt="favicon"
+                      style={{ width: 20, height: 20, objectFit: "contain", borderRadius: 4 }}
+                    />
+                  )}
+                </div>
+                <p className="logo-hint">
+                  The browser-tab icon (a square PNG works best). <strong>Requires the optional
+                  Custom JavaScript snippet</strong> — favicons can't be set via CSS. Colors/logo
+                  work with the CSS embed alone.
+                </p>
+              </div>
 
               <LookFields value={look} onChange={patchLook} />
 

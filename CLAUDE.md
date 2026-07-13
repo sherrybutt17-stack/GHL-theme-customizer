@@ -120,7 +120,7 @@ On logo upload, extract dominant colors and offer to prefill primary/accent.
   canvas, quantize pixels, pick dominant + accent). Add a "Use logo colors" button in the
   branding tab that sets `primaryColor` / `accentColor`.
 
-## 5. [ ] Favicon (per sub-account)
+## 5. [x] Favicon (per sub-account)  — DONE (editor field + JS-bundle applies <link rel=icon>)
 - **Data:** `faviconUrl` already on ThemeConfig / AgencyDefaultTheme. Add to
   `visualFields` / types / editor (URL input + upload, like the logo).
 - **Delivery:** CSS CANNOT set a favicon. Deliver via the JS bundle
