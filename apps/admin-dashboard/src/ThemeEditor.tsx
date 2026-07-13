@@ -7,6 +7,7 @@ import {
   type VisualTheme,
 } from "./api";
 import { LookFields, type Look } from "./LookFields";
+import { MosaicPreview } from "./MosaicPreview";
 
 interface Props {
   title: string;
@@ -260,7 +261,8 @@ export function ThemeEditorModal({
           </button>
         </div>
 
-        <div className="modal-body">
+        <div className="modal-body editor-body">
+          <div className="editor-panes">
           {tab === "branding" && (
             <>
               {presets.length > 0 && (
@@ -441,6 +443,15 @@ export function ThemeEditorModal({
               </div>
             </>
           )}
+          </div>
+          <MosaicPreview
+            look={look}
+            logoUrl={logoUrl}
+            brandName={showBrandName ? brandName : undefined}
+            features={features}
+            hidden={hidden}
+            labels={labels}
+          />
         </div>
 
         <div className="modal-footer">
