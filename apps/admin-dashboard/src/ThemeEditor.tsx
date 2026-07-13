@@ -10,6 +10,7 @@ import {
 } from "./api";
 import { LookFields, type Look } from "./LookFields";
 import { MosaicPreview } from "./MosaicPreview";
+import { paletteFromImage } from "./colorUtils";
 
 interface Props {
   title: string;
@@ -175,6 +176,20 @@ export function ThemeEditorModal({
       next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
+  }
+
+  const [pickingColors, setPickingColors] = useState(false);
+  async function applyLogoColors() {
+    if (!logoUrl) return;
+    setLogoErr(null);
+    setPickingColors(true);
+    try {
+      const pal = await paletteFromImage(logoUrl);
+      if (pal) patchLook({ primaryColor: pal.primary, accentColor: pal.accent });
+      else setLogoErr("Couldn't read colors from this image — try uploading it instead of a URL.");
+    } finally {
+      setPickingColors(false);
+    }
   }
 
   // Load an older version's values back into the form. Saving then writes a NEW
@@ -394,6 +409,18 @@ export function ThemeEditorModal({
                   </div>
                 )}
               </div>
+
+              {logoUrl && (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  style={{ alignSelf: "flex-start", marginTop: 4 }}
+                  onClick={applyLogoColors}
+                  disabled={pickingColors}
+                >
+                  {pickingColors ? "Reading logo…" : "🎨 Use colors from logo"}
+                </button>
+              )}
 
               <LookFields value={look} onChange={patchLook} />
 

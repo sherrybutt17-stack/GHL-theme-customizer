@@ -75,6 +75,82 @@ export function suggestGradients(primary: string): GradientSuggestion[] {
   ];
 }
 
+function rgbToHex(r: number, g: number, b: number): string {
+  const h = (v: number) => Math.round(clamp(v, 0, 255)).toString(16).padStart(2, "0");
+  return `#${h(r)}${h(g)}${h(b)}`;
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous"; // lets us read pixels for CORS-enabled URLs
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("image load failed"));
+    img.src = src;
+  });
+}
+
+/**
+ * Extract a brand palette (primary + accent) from a logo image. Downscales to a
+ * small canvas, drops transparent / near-white / near-black / grey pixels, buckets
+ * the rest, and takes the most common saturated color as primary; accent is the next
+ * bucket with a distinct hue (else a derived complement). Returns null if the image
+ * can't be read (e.g. a cross-origin URL without CORS headers taints the canvas) -
+ * uploaded logos are data: URLs and always work.
+ */
+export async function paletteFromImage(src: string): Promise<{ primary: string; accent: string } | null> {
+  let img: HTMLImageElement;
+  try {
+    img = await loadImage(src);
+  } catch {
+    return null;
+  }
+  const size = 48;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(img, 0, 0, size, size);
+  let data: Uint8ClampedArray;
+  try {
+    data = ctx.getImageData(0, 0, size, size).data;
+  } catch {
+    return null; // tainted canvas (cross-origin without CORS)
+  }
+
+  const buckets = new Map<string, { count: number; r: number; g: number; b: number }>();
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+    if (a < 200) continue;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    if (max > 244 && min > 244) continue; // near-white
+    if (max < 22) continue; // near-black
+    const sat = max === 0 ? 0 : (max - min) / max;
+    if (sat < 0.12) continue; // grey / neutral
+    const key = `${r >> 4}-${g >> 4}-${b >> 4}`; // quantize to 16 levels/channel
+    const e = buckets.get(key) ?? { count: 0, r: 0, g: 0, b: 0 };
+    e.count++; e.r += r; e.g += g; e.b += b;
+    buckets.set(key, e);
+  }
+  if (buckets.size === 0) return null;
+
+  const avg = (e: { count: number; r: number; g: number; b: number }) =>
+    rgbToHex(e.r / e.count, e.g / e.count, e.b / e.count);
+  const sorted = [...buckets.values()].sort((a, b) => b.count - a.count);
+  const primary = avg(sorted[0]);
+  const [ph] = hexToHsl(primary);
+  let accent = "";
+  for (let i = 1; i < sorted.length; i++) {
+    const hx = avg(sorted[i]);
+    const [hh] = hexToHsl(hx);
+    const hueDist = Math.abs((((hh - ph) % 360) + 540) % 360 - 180); // 0..180
+    if (hueDist > 40) { accent = hx; break; }
+  }
+  if (!accent) accent = suggestAccents(primary)[0] ?? shift(primary, 180, 5, 6);
+  return { primary, accent };
+}
+
 /** Accent color candidates (complementary / triadic / tint) from the primary. */
 export function suggestAccents(primary: string): string[] {
   if (!isValidHex(primary)) return [];

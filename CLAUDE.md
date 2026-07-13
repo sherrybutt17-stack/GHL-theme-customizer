@@ -112,7 +112,7 @@ Surface the versions already stored per location + one-click restore.
 - **Dashboard:** a "History" section in the editor: list versions with timestamps + a
   "Restore" button. Per-location only (AgencyDefaultTheme isn't versioned).
 
-## 4. [ ] Brand-from-logo (palette extraction)
+## 4. [x] Brand-from-logo (palette extraction)  — DONE (paletteFromImage + "Use colors from logo")
 On logo upload, extract dominant colors and offer to prefill primary/accent.
 - **Scope:** client-side only (Canvas), no deps, no server. Website-URL scraping is a
   later, heavier follow-up.
