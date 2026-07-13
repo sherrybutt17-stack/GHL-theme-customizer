@@ -88,7 +88,8 @@ A mock GHL sidebar rendered inside the editor that updates live as the agency ed
 - **Integrate:** side panel in the editor (branding tab), driven by the same `look` +
   `hidden` + `labels` + `order` state.
 
-## 2. [ ] Sidebar reordering
+## 2. [x] Sidebar reordering  — DONE (drag rows; `menuOrder` Json; CSS `order`)
+NOTE: relies on the GHL sidebar nav being a flex container — CONFIRM live; no-op if not.
 Drag to reorder sidebar menu items; delivered via CSS `order`.
 - **Data:** add `menuOrder Json?` (array of feature keys) to ThemeConfig +
   AgencyDefaultTheme + ThemePreset. Migration.

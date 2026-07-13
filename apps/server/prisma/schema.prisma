@@ -89,6 +89,7 @@ model ThemeConfig {
   scrollbarColor      String?
   sidebarTextColor    String?
   darkMode            Boolean   @default(false)
+  menuOrder           Json?
   hideUpgrade         Boolean   @default(false)
   alertMessage        String?
   alertColor          String?
@@ -126,6 +127,7 @@ model AgencyDefaultTheme {
   scrollbarColor      String?
   sidebarTextColor    String?
   darkMode            Boolean   @default(false)
+  menuOrder           Json?
   hideUpgrade         Boolean   @default(false)
   alertMessage        String?
   alertColor          String?
@@ -157,6 +159,7 @@ model ThemePreset {
   scrollbarColor      String?
   sidebarTextColor    String?
   darkMode            Boolean   @default(false)
+  menuOrder           Json?
   createdAt           DateTime  @default(now())
 
   @@index([agencyInstallId])

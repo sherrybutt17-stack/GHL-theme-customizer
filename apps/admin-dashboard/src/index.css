@@ -504,6 +504,12 @@ body {
 .feature-row > button { grid-column: 3; }
 .feature-name.hidden { color: var(--text-muted); text-decoration: line-through; }
 .feature-rename:disabled { background: #f1f5f9; cursor: not-allowed; }
+.feature-drag-row { display: flex; align-items: center; gap: 8px; }
+.feature-drag-row .feature-row { flex: 1; min-width: 0; }
+.feature-drag-row.dragging { opacity: .45; }
+.drag-handle { cursor: grab; color: var(--text-muted); user-select: none; font-size: 15px; line-height: 1; padding: 2px 1px; flex: 0 0 auto; }
+.drag-handle:active { cursor: grabbing; }
+.drag-handle-inline { color: var(--text-muted); }
 
 /* ---- Misc ---- */
 .empty-state { padding: 60px 20px; text-align: center; color: var(--text-muted); font-size: 14px; }

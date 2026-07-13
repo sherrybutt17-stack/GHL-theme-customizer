@@ -101,6 +101,10 @@ export function ThemeEditorModal({
   const [look, setLook] = useState<Look>(lookFrom(initial));
   const [hidden, setHidden] = useState<Set<string>>(new Set(initial?.hiddenFeatures ?? []));
   const [labels, setLabels] = useState<Record<string, string>>(initial?.menuLabelOverrides ?? {});
+  const [menuOrder, setMenuOrder] = useState<string[]>(
+    Array.isArray(initial?.menuOrder) ? (initial!.menuOrder as string[]) : []
+  );
+  const [dragKey, setDragKey] = useState<string | null>(null);
   const [sidebarImageUrl, setSidebarImageUrl] = useState(initial?.sidebarImageUrl ?? "");
   const [hideUpgrade, setHideUpgrade] = useState(initial?.hideUpgrade ?? false);
   const [customCss, setCustomCss] = useState(initial?.customCssOverride ?? initial?.customCss ?? "");
@@ -157,6 +161,23 @@ export function ThemeEditorModal({
       next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
+  }
+
+  // Main sidebar features, sorted by the saved order (unlisted keep natural order).
+  function mainFeaturesInOrder(): SidebarFeature[] {
+    const main = features.filter((f) => f.group !== "settings");
+    const pos = new Map(menuOrder.map((k, i) => [k, i]));
+    return [...main].sort((a, b) => (pos.get(a.key) ?? 999) - (pos.get(b.key) ?? 999));
+  }
+
+  function reorderMenu(fromKey: string, toKey: string) {
+    if (fromKey === toKey) return;
+    const keys = mainFeaturesInOrder().map((f) => f.key);
+    const from = keys.indexOf(fromKey);
+    const to = keys.indexOf(toKey);
+    if (from < 0 || to < 0) return;
+    keys.splice(to, 0, keys.splice(from, 1)[0]);
+    setMenuOrder(keys);
   }
 
   function renderFeatureRow(f: SidebarFeature) {
@@ -219,6 +240,7 @@ export function ThemeEditorModal({
         alertColor,
         hiddenFeatures: [...hidden],
         menuLabelOverrides: cleanedLabels,
+        menuOrder,
       });
     } catch (e) {
       // Surface the failure inside the modal instead of closing it (the caller only
@@ -349,12 +371,26 @@ export function ThemeEditorModal({
             <div className="field">
               <label>Sidebar menu items</label>
               <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px" }}>
-                Hide items this client shouldn't see, or rename them.
+                Drag <span className="drag-handle-inline">⠿</span> to reorder, or hide/rename items.
               </p>
               <div className="feature-list">
-                {features
-                  .filter((f) => f.group !== "settings")
-                  .map((f) => renderFeatureRow(f))}
+                {mainFeaturesInOrder().map((f) => (
+                  <div
+                    key={f.key}
+                    className={`feature-drag-row ${dragKey === f.key ? "dragging" : ""}`}
+                    draggable
+                    onDragStart={() => setDragKey(f.key)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => {
+                      if (dragKey) reorderMenu(dragKey, f.key);
+                      setDragKey(null);
+                    }}
+                    onDragEnd={() => setDragKey(null)}
+                  >
+                    <span className="drag-handle" title="Drag to reorder">⠿</span>
+                    {renderFeatureRow(f)}
+                  </div>
+                ))}
               </div>
 
               {features.some((f) => f.group === "settings") && (
@@ -451,6 +487,7 @@ export function ThemeEditorModal({
             features={features}
             hidden={hidden}
             labels={labels}
+            order={menuOrder}
           />
         </div>
 

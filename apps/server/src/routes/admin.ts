@@ -50,6 +50,7 @@ function visualFields(body: any) {
     alertColor: body?.alertColor || null,
     menuLabelOverrides: body?.menuLabelOverrides,
     hiddenFeatures: body?.hiddenFeatures,
+    menuOrder: Array.isArray(body?.menuOrder) ? body.menuOrder : null,
   };
 }
 
@@ -68,6 +69,7 @@ function presetLookFields(body: any) {
     cornerRadius: typeof body?.cornerRadius === "number" ? body.cornerRadius : null,
     scrollbarColor: body?.scrollbarColor || null,
     sidebarTextColor: body?.sidebarTextColor || null,
+    menuOrder: Array.isArray(body?.menuOrder) ? body.menuOrder : null,
     darkMode: !!body?.darkMode,
   };
 }
@@ -320,6 +322,7 @@ adminRouter.post(
             cornerRadius: preset.cornerRadius,
             scrollbarColor: preset.scrollbarColor,
             sidebarTextColor: preset.sidebarTextColor,
+            menuOrder: preset.menuOrder ?? undefined,
             darkMode: preset.darkMode,
             version: (prev?.version ?? 0) + 1,
           },

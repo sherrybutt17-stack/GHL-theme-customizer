@@ -50,6 +50,7 @@ export interface VisualTheme {
   alertColor: string | null;
   menuLabelOverrides: Record<string, string> | null;
   hiddenFeatures: string[] | null;
+  menuOrder: string[] | null;
 }
 
 export interface ThemeConfig extends VisualTheme {
@@ -80,6 +81,7 @@ export interface ThemePreset {
   scrollbarColor: string | null;
   sidebarTextColor: string | null;
   darkMode: boolean;
+  menuOrder: string[] | null;
 }
 
 export interface LocationRow {
@@ -121,6 +123,7 @@ export interface ThemeInput {
   customCss: string;
   menuLabelOverrides: Record<string, string>;
   hiddenFeatures: string[];
+  menuOrder: string[];
 }
 
 // Returns any so `.then(handle)` composes cleanly; each exported fn types its result.
