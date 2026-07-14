@@ -74,7 +74,9 @@ export function MosaicPreview({ look, logoUrl, brandName, features, hidden, labe
                 </div>
               );
             })}
-            {visible.length === 0 && <div className="mp-empty">All items hidden</div>}
+            {features.length > 0 && visible.length === 0 && (
+              <div className="mp-empty">All items hidden</div>
+            )}
           </div>
         </div>
         <div className="mp-canvas" style={{ background: look.darkMode ? "#0f172a" : "#f8fafc" }}>

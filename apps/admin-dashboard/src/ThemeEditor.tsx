@@ -123,6 +123,7 @@ export function ThemeEditorModal({
   const [features, setFeatures] = useState<SidebarFeature[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [pickingColors, setPickingColors] = useState(false);
 
   useEffect(() => {
     // Editing the agency default (no brand name) → show the agency sidebar items;
@@ -179,7 +180,6 @@ export function ThemeEditorModal({
     });
   }
 
-  const [pickingColors, setPickingColors] = useState(false);
   async function handleFaviconFile(file: File | undefined) {
     if (!file) return;
     try {
@@ -209,6 +209,7 @@ export function ThemeEditorModal({
     setLook(lookFrom(v));
     setBrandName(v.brandName ?? "");
     setLogoUrl(v.logoUrl ?? "");
+    setFaviconUrl(v.faviconUrl ?? "");
     setHidden(new Set(v.hiddenFeatures ?? []));
     setLabels((v.menuLabelOverrides as Record<string, string>) ?? {});
     setMenuOrder(Array.isArray(v.menuOrder) ? v.menuOrder : []);

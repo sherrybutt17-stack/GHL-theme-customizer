@@ -112,13 +112,21 @@ export async function paletteFromImage(src: string): Promise<{ primary: string; 
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
   ctx.drawImage(img, 0, 0, size, size);
-  let data: Uint8ClampedArray;
   try {
-    data = ctx.getImageData(0, 0, size, size).data;
+    return paletteFromPixels(ctx.getImageData(0, 0, size, size).data);
   } catch {
     return null; // tainted canvas (cross-origin without CORS)
   }
+}
 
+/**
+ * The pure pixel-analysis half of paletteFromImage, split out so it can be tested
+ * without a DOM. Takes RGBA pixel data; returns primary + accent, or null if no
+ * usable (non-neutral, opaque) color is present.
+ */
+export function paletteFromPixels(
+  data: Uint8ClampedArray | number[]
+): { primary: string; accent: string } | null {
   const buckets = new Map<string, { count: number; r: number; g: number; b: number }>();
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];

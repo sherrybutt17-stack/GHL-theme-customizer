@@ -336,6 +336,9 @@ adminRouter.post(
             hideUpgrade: prev?.hideUpgrade ?? false,
             menuLabelOverrides: prev?.menuLabelOverrides ?? undefined,
             hiddenFeatures: prev?.hiddenFeatures ?? undefined,
+            // Menu order is structural, not part of a color preset - keep the
+            // sub-account's existing order instead of wiping it on preset apply.
+            menuOrder: prev?.menuOrder ?? undefined,
             customCssOverride: prev?.customCssOverride ?? null,
             // Overlay the preset look.
             primaryColor: preset.primaryColor,
@@ -350,7 +353,6 @@ adminRouter.post(
             cornerRadius: preset.cornerRadius,
             scrollbarColor: preset.scrollbarColor,
             sidebarTextColor: preset.sidebarTextColor,
-            menuOrder: preset.menuOrder ?? undefined,
             darkMode: preset.darkMode,
             version: (prev?.version ?? 0) + 1,
           },
