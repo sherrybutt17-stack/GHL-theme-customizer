@@ -406,6 +406,59 @@ function fontImports(themes: VisualTheme[]): string {
  *  3. Per-sub-account overrides (location-scoped selectors; win by specificity).
  * See routes/themeCss.ts for why this is CSS rather than JS.
  */
+/** Agency-level login-page branding (rendered globally; login is pre-sub-account). */
+interface LoginTheme {
+  loginBgColor?: string | null;
+  loginBgImage?: string | null;
+  loginGradientEnabled?: boolean | null;
+  loginGradientColor?: string | null;
+  loginGradientAngle?: number | null;
+  loginCardColor?: string | null;
+  loginButtonColor?: string | null;
+  loginLogoUrl?: string | null;
+}
+
+// Confirmed against live GHL DOM: the login page uses .hl_login (section),
+// .hl_login--header / --body, and a centered .card / .card-body. The outer
+// .sidebar-v2-agency wrapper fills the viewport, so it carries the full background.
+const LOGIN_BG_SELECTOR = ".sidebar-v2-agency, .hl_login, .hl_login--header, .hl_login--body";
+const LOGIN_CARD_SELECTOR = ".hl_login .card, .hl_login .card-body";
+const LOGIN_BUTTON_SELECTOR =
+  ".hl_login .card-body button, .hl_login button[type='submit'], .hl_login .btn, .hl_login .n-button--primary-type";
+const LOGIN_HEADER_SELECTOR = ".hl_login--header";
+
+function renderLoginRules(t: LoginTheme): string[] {
+  const rules: string[] = [];
+
+  // Full-page background: image wins, then gradient, then solid color.
+  if (t.loginBgImage) {
+    rules.push(
+      `${LOGIN_BG_SELECTOR} { background-image: url("${cssUrl(t.loginBgImage)}") !important; background-size: cover !important; background-position: center !important; background-repeat: no-repeat !important; }`
+    );
+  } else if (t.loginGradientEnabled && t.loginGradientColor && t.loginBgColor) {
+    const angle = typeof t.loginGradientAngle === "number" ? t.loginGradientAngle : 135;
+    rules.push(
+      `${LOGIN_BG_SELECTOR} { background: linear-gradient(${angle}deg, ${cssColor(t.loginBgColor)}, ${cssColor(t.loginGradientColor)}) !important; }`
+    );
+  } else if (t.loginBgColor) {
+    rules.push(`${LOGIN_BG_SELECTOR} { background: ${cssColor(t.loginBgColor)} !important; }`);
+  }
+
+  if (t.loginCardColor) {
+    rules.push(`${LOGIN_CARD_SELECTOR} { background: ${cssColor(t.loginCardColor)} !important; }`);
+  }
+  if (t.loginButtonColor) {
+    const b = cssColor(t.loginButtonColor);
+    rules.push(`${LOGIN_BUTTON_SELECTOR} { background-color: ${b} !important; border-color: ${b} !important; }`);
+  }
+  if (t.loginLogoUrl) {
+    rules.push(
+      `${LOGIN_HEADER_SELECTOR} { background-image: url("${cssUrl(t.loginLogoUrl)}") !important; background-size: contain !important; background-repeat: no-repeat !important; background-position: center !important; min-height: 72px !important; }`
+    );
+  }
+  return rules;
+}
+
 export async function generateThemeCssBundle(agencyInstallId: string): Promise<string> {
   const [defaultTheme, locations] = await Promise.all([
     prisma.agencyDefaultTheme.findUnique({ where: { agencyInstallId } }),
@@ -435,6 +488,10 @@ export async function generateThemeCssBundle(agencyInstallId: string): Promise<s
 
   if (defaultTheme) {
     blocks.push("/* Agency default (applies to all sub-accounts unless overridden) */\n" + renderRules(globalScope(), defaultTheme as VisualTheme).join("\n"));
+    const loginRules = renderLoginRules(defaultTheme as LoginTheme);
+    if (loginRules.length) {
+      blocks.push("/* Agency login page */\n" + loginRules.join("\n"));
+    }
   }
 
   for (const { loc, theme } of locationThemes) {

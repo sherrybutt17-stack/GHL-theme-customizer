@@ -296,10 +296,24 @@ adminRouter.get("/admin/api/:agencyInstallId/default-theme", async (req: Request
   res.json(theme);
 });
 
+/** Login-page branding fields (agency default only; login is pre-sub-account). */
+function loginFields(body: any) {
+  return {
+    loginBgColor: body?.loginBgColor || null,
+    loginBgImage: body?.loginBgImage || null,
+    loginGradientEnabled: !!body?.loginGradientEnabled,
+    loginGradientColor: body?.loginGradientColor || null,
+    loginGradientAngle: typeof body?.loginGradientAngle === "number" ? body.loginGradientAngle : 135,
+    loginCardColor: body?.loginCardColor || null,
+    loginButtonColor: body?.loginButtonColor || null,
+    loginLogoUrl: body?.loginLogoUrl || null,
+  };
+}
+
 adminRouter.put("/admin/api/:agencyInstallId/default-theme", async (req: Request, res: Response) => {
   const agencyId = await requireAgency(req, res);
   if (!agencyId) return;
-  const fields = { ...visualFields(req.body), customCss: req.body?.customCss || null };
+  const fields = { ...visualFields(req.body), ...loginFields(req.body), customCss: req.body?.customCss || null };
   const theme = await prisma.agencyDefaultTheme.upsert({
     where: { agencyInstallId: agencyId },
     update: fields,

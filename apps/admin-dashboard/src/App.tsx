@@ -478,6 +478,7 @@ export function App() {
           title="Agency default theme"
           initial={defaultTheme}
           showBrandName={false}
+          isAgencyDefault
           presets={presets}
           agencyId={agencyId!}
           onSave={handleSaveDefault}

@@ -3,6 +3,7 @@ import {
   fetchSidebarFeatures,
   fetchThemeVersions,
   scanBrandWebsite,
+  type LoginBranding,
   type SidebarFeature,
   type ThemeConfig,
   type ThemeInput,
@@ -16,13 +17,15 @@ import { paletteFromImage } from "./colorUtils";
 interface Props {
   title: string;
   initial:
-    | (Partial<VisualTheme> & {
+    | (Partial<VisualTheme> & Partial<LoginBranding> & {
         brandName?: string | null;
         customCss?: string | null;
         customCssOverride?: string | null;
       })
     | null;
   showBrandName: boolean;
+  /** True for the agency default theme editor — unlocks the Login page section. */
+  isAgencyDefault?: boolean;
   presets: ThemePreset[];
   /** Agency install id — needed for the "brand from website" server call. */
   agencyId?: string;
@@ -101,6 +104,7 @@ export function ThemeEditorModal({
   title,
   initial,
   showBrandName,
+  isAgencyDefault,
   presets,
   agencyId,
   history,
@@ -134,6 +138,15 @@ export function ThemeEditorModal({
   const [websiteUrl, setWebsiteUrl] = useState("");
   const [scanning, setScanning] = useState(false);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
+  // Login-page branding (agency default only).
+  const [loginBgColor, setLoginBgColor] = useState(initial?.loginBgColor ?? "");
+  const [loginBgImage, setLoginBgImage] = useState(initial?.loginBgImage ?? "");
+  const [loginGradientEnabled, setLoginGradientEnabled] = useState(initial?.loginGradientEnabled ?? false);
+  const [loginGradientColor, setLoginGradientColor] = useState(initial?.loginGradientColor ?? "#1e293b");
+  const [loginGradientAngle, setLoginGradientAngle] = useState(initial?.loginGradientAngle ?? 135);
+  const [loginCardColor, setLoginCardColor] = useState(initial?.loginCardColor ?? "");
+  const [loginButtonColor, setLoginButtonColor] = useState(initial?.loginButtonColor ?? "");
+  const [loginLogoUrl, setLoginLogoUrl] = useState(initial?.loginLogoUrl ?? "");
 
   useEffect(() => {
     // Editing the agency default (no brand name) → show the agency sidebar items;
@@ -191,6 +204,26 @@ export function ThemeEditorModal({
       next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
+  }
+
+  async function handleLoginBgFile(file: File | undefined) {
+    if (!file) return;
+    try {
+      const img = await fileToDownscaledDataUrl(file, 1600);
+      setLoginBgImage(img.dataUrl);
+    } catch (e) {
+      setLogoErr((e as Error).message);
+    }
+  }
+
+  async function handleLoginLogoFile(file: File | undefined) {
+    if (!file) return;
+    try {
+      const img = await fileToDownscaledDataUrl(file, 512);
+      setLoginLogoUrl(img.dataUrl);
+    } catch (e) {
+      setLogoErr((e as Error).message);
+    }
   }
 
   async function applyLogoColors() {
@@ -342,6 +375,18 @@ export function ThemeEditorModal({
         hiddenFeatures: [...hidden],
         menuLabelOverrides: cleanedLabels,
         menuOrder,
+        ...(isAgencyDefault
+          ? {
+              loginBgColor,
+              loginBgImage,
+              loginGradientEnabled,
+              loginGradientColor,
+              loginGradientAngle,
+              loginCardColor,
+              loginButtonColor,
+              loginLogoUrl,
+            }
+          : {}),
       });
     } catch (e) {
       // Surface the failure inside the modal instead of closing it (the caller only
@@ -511,6 +556,146 @@ export function ThemeEditorModal({
               )}
 
               <LookFields value={look} onChange={patchLook} />
+
+              {isAgencyDefault && (
+                <div style={{ marginTop: 18, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+                  <label style={{ fontWeight: 600, fontSize: 14 }}>Login page</label>
+                  <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "4px 0 14px" }}>
+                    Brands the GoHighLevel <strong>login screen</strong> for your whole agency (it's shared —
+                    there's one login before a sub-account is chosen). Leave a field blank to skip it.
+                  </p>
+
+                  <div className="look-color-row">
+                    <input
+                      type="color"
+                      value={loginBgColor || "#0f172a"}
+                      onChange={(e) => setLoginBgColor(e.target.value)}
+                    />
+                    <div>
+                      <div className="look-color-label">Background color</div>
+                      <div className="look-color-hint">The full-page background behind the login box.</div>
+                    </div>
+                  </div>
+
+                  <div className="look-toggle-row" style={{ marginTop: 10 }}>
+                    <label className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={loginGradientEnabled}
+                        onChange={(e) => setLoginGradientEnabled(e.target.checked)}
+                      />
+                      <span className="toggle-track" />
+                    </label>
+                    <div>
+                      <div className="look-color-label">Gradient background</div>
+                      <div className="look-color-hint">Blend the background color into a second color.</div>
+                    </div>
+                  </div>
+                  {loginGradientEnabled && (
+                    <>
+                      <div className="look-color-row">
+                        <input
+                          type="color"
+                          value={loginGradientColor || "#1e293b"}
+                          onChange={(e) => setLoginGradientColor(e.target.value)}
+                        />
+                        <div>
+                          <div className="look-color-label">Gradient — second color</div>
+                        </div>
+                      </div>
+                      <div className="look-angle">
+                        <label>Gradient angle: {loginGradientAngle}°</label>
+                        <input
+                          type="range"
+                          min={0}
+                          max={360}
+                          value={loginGradientAngle}
+                          onChange={(e) => setLoginGradientAngle(Number(e.target.value))}
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  <div className="field" style={{ marginTop: 10 }}>
+                    <label>Background image (overrides colors)</label>
+                    <input
+                      type="url"
+                      value={loginBgImage.startsWith("data:") ? "" : loginBgImage}
+                      onChange={(e) => setLoginBgImage(e.target.value)}
+                      placeholder="Paste an image URL…"
+                    />
+                    <div className="logo-upload-row">
+                      <label className="btn btn-ghost logo-upload-btn">
+                        Upload image
+                        <input
+                          type="file"
+                          accept="image/*"
+                          hidden
+                          onChange={(e) => handleLoginBgFile(e.target.files?.[0])}
+                        />
+                      </label>
+                      {loginBgImage && (
+                        <>
+                          <span className="logo-uploaded">Image set ✓</span>
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => setLoginBgImage("")}
+                          >
+                            Remove
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="look-color-row">
+                    <input
+                      type="color"
+                      value={loginButtonColor || "#4f46e5"}
+                      onChange={(e) => setLoginButtonColor(e.target.value)}
+                    />
+                    <div>
+                      <div className="look-color-label">Sign-in button color</div>
+                    </div>
+                  </div>
+
+                  <div className="look-color-row">
+                    <input
+                      type="color"
+                      value={loginCardColor || "#ffffff"}
+                      onChange={(e) => setLoginCardColor(e.target.value)}
+                    />
+                    <div>
+                      <div className="look-color-label">Login box color</div>
+                      <div className="look-color-hint">Background of the centered login card.</div>
+                    </div>
+                  </div>
+
+                  <div className="field" style={{ marginTop: 10 }}>
+                    <label>Login logo</label>
+                    <input
+                      type="url"
+                      value={loginLogoUrl.startsWith("data:") ? "" : loginLogoUrl}
+                      onChange={(e) => setLoginLogoUrl(e.target.value)}
+                      placeholder="Paste a logo URL…"
+                    />
+                    <div className="logo-upload-row">
+                      <label className="btn btn-ghost logo-upload-btn">
+                        Upload logo
+                        <input
+                          type="file"
+                          accept="image/*"
+                          hidden
+                          onChange={(e) => handleLoginLogoFile(e.target.files?.[0])}
+                        />
+                      </label>
+                      {loginLogoUrl && <span className="logo-uploaded">Logo set ✓</span>}
+                    </div>
+                    <p className="logo-hint">Shown above the login form. May need size tuning per theme.</p>
+                  </div>
+                </div>
+              )}
 
               <button className="btn btn-ghost" style={{ marginTop: 4 }} onClick={handleSaveAsPreset}>
                 + Save this look as a preset

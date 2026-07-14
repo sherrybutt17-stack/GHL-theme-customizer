@@ -140,6 +140,15 @@ model AgencyDefaultTheme {
   customCss           String?
   menuLabelOverrides  Json?
   hiddenFeatures      Json?
+  // Login page branding (agency-level; the login page is pre-sub-account).
+  loginBgColor        String?
+  loginBgImage        String?
+  loginGradientEnabled Boolean  @default(false)
+  loginGradientColor  String?
+  loginGradientAngle  Int       @default(135)
+  loginCardColor      String?
+  loginButtonColor    String?
+  loginLogoUrl        String?
   updatedAt           DateTime  @updatedAt
   createdAt           DateTime  @default(now())
 }

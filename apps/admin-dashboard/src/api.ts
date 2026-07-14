@@ -65,7 +65,19 @@ export interface ThemeConfig extends VisualTheme {
   createdAt?: string;
 }
 
-export interface AgencyDefaultTheme extends VisualTheme {
+/** Agency-level login-page branding (only on the agency default theme). */
+export interface LoginBranding {
+  loginBgColor: string | null;
+  loginBgImage: string | null;
+  loginGradientEnabled: boolean;
+  loginGradientColor: string | null;
+  loginGradientAngle: number;
+  loginCardColor: string | null;
+  loginButtonColor: string | null;
+  loginLogoUrl: string | null;
+}
+
+export interface AgencyDefaultTheme extends VisualTheme, LoginBranding {
   id: string;
   customCss: string | null;
 }
@@ -136,6 +148,15 @@ export interface ThemeInput {
   menuLabelOverrides: Record<string, string>;
   hiddenFeatures: string[];
   menuOrder: string[];
+  // Login-page branding — only sent for the agency default theme.
+  loginBgColor?: string;
+  loginBgImage?: string;
+  loginGradientEnabled?: boolean;
+  loginGradientColor?: string;
+  loginGradientAngle?: number;
+  loginCardColor?: string;
+  loginButtonColor?: string;
+  loginLogoUrl?: string;
 }
 
 // Returns any so `.then(handle)` composes cleanly; each exported fn types its result.
