@@ -114,6 +114,7 @@ export function ThemeEditorModal({
 }: Props) {
   const [tab, setTab] = useState<"branding" | "features" | "advanced" | "history">("branding");
   const [versions, setVersions] = useState<ThemeConfig[] | null>(null);
+  const [previewingVersion, setPreviewingVersion] = useState<number | null>(null);
   const [brandName, setBrandName] = useState(initial?.brandName ?? "");
   const [logoUrl, setLogoUrl] = useState(initial?.logoUrl ?? "");
   const [faviconUrl, setFaviconUrl] = useState(initial?.faviconUrl ?? "");
@@ -290,6 +291,7 @@ export function ThemeEditorModal({
     setCustomCss(v.customCssOverride ?? "");
     setAlertMessage(v.alertMessage ?? "");
     setAlertColor(v.alertColor ?? "#4f46e5");
+    setPreviewingVersion(v.version);
     setTab("branding");
   }
 
@@ -438,6 +440,27 @@ export function ThemeEditorModal({
           <div className="editor-panes">
           {tab === "branding" && (
             <>
+              {previewingVersion !== null && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    background: "#eff6ff",
+                    border: "1px solid #bfdbfe",
+                    color: "#1e40af",
+                    borderRadius: 8,
+                    padding: "8px 12px",
+                    marginBottom: 12,
+                    fontSize: 13,
+                  }}
+                >
+                  <span style={{ marginRight: "auto" }}>
+                    👁️ Previewing <strong>version {previewingVersion}</strong> — <strong>Save changes</strong> to
+                    restore it, or Cancel to discard.
+                  </span>
+                </div>
+              )}
               {presets.length > 0 && (
                 <div className="preset-apply">
                   <label>Start from a preset</label>
@@ -820,8 +843,9 @@ export function ThemeEditorModal({
             <div className="field">
               <label>Version history</label>
               <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px" }}>
-                Every save is a version. Load an older one into the editor, review it in the
-                preview, then <strong>Save changes</strong> to restore it as a new version.
+                Every save is a version. Click <strong>View</strong> to load one into the editor and
+                see it in the live preview, then <strong>Save changes</strong> to restore it as a new
+                version.
               </p>
               {versions === null ? (
                 <div className="empty-state">Loading history…</div>
@@ -842,10 +866,9 @@ export function ThemeEditorModal({
                       </div>
                       <button
                         className="btn btn-ghost"
-                        disabled={i === 0}
                         onClick={() => loadVersion(v)}
                       >
-                        {i === 0 ? "Current" : "Load this version"}
+                        {i === 0 ? "View current" : "👁️ View"}
                       </button>
                     </div>
                   ))}
