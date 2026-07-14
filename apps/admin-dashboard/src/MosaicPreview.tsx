@@ -94,7 +94,16 @@ export function MosaicPreview({ look, logoUrl, brandName, features, hidden, labe
         </div>
         <div className="mp-canvas" style={{ background: canvasBg }}>
           <div className="mp-topbar" style={{ background: look.topBarColor || "#ffffff" }} />
-          <div className="mp-card" style={{ background: cardBg, borderRadius: radius }}>
+          <div
+            className="mp-card"
+            style={{
+              background: cardBg,
+              borderRadius: radius,
+              // When a custom content bg makes the card match the canvas, add a hairline
+              // so the card stays visible in the preview.
+              border: look.contentBgColor ? `1px solid ${contentText}33` : undefined,
+            }}
+          >
             <div className="mp-line" style={{ width: "60%", background: contentText, opacity: 0.85 }} />
             <div className="mp-line" style={{ width: "85%", background: contentText, opacity: 0.55 }} />
             <button

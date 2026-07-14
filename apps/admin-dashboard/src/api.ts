@@ -1,22 +1,24 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3210";
 
-// Dashboard session token, minted at /admin-embed and passed as ?t=...
-// We stash it so every API call carries it (verified server-side when
-// DASHBOARD_AUTH_ENABLED=true). Persisted to sessionStorage so it survives
-// in-app navigations that drop the query string.
+// Dashboard session token, minted at /admin-embed and delivered in the URL FRAGMENT
+// (#t=...) so it never reaches a server log/Referer. (Older links used ?t= — still
+// accepted for back-compat.) Stashed in sessionStorage so every API call carries it
+// (verified server-side when DASHBOARD_AUTH_ENABLED=true) and survives in-app nav.
 function readToken(): string {
-  const params = new URLSearchParams(window.location.search);
-  const fromUrl = params.get("t");
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const queryParams = new URLSearchParams(window.location.search);
+  const fromUrl = hashParams.get("t") ?? queryParams.get("t");
   if (fromUrl) {
     sessionStorage.setItem("mosaic_token", fromUrl);
-    // Strip the token from the visible URL so it doesn't linger in the address bar,
-    // browser history, or any copy-pasted link. It lives in sessionStorage now.
-    params.delete("t");
-    const qs = params.toString();
+    // Strip the token from the visible URL (address bar, history, copy-pasted links).
+    hashParams.delete("t");
+    queryParams.delete("t");
+    const qs = queryParams.toString();
+    const hs = hashParams.toString();
     window.history.replaceState(
       {},
       "",
-      window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash
+      window.location.pathname + (qs ? `?${qs}` : "") + (hs ? `#${hs}` : "")
     );
     return fromUrl;
   }

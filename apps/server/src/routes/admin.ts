@@ -220,10 +220,25 @@ adminRouter.put(
       return res.status(403).json({ error: "Location does not belong to this agency install" });
     }
 
+    // A save writes a whole new version from the body. The dashboard sends a complete
+    // snapshot, but defensively carry client identity/policy forward from the previous
+    // version for any field the body OMITS (undefined) - so a partial PATCH from some
+    // other client can't silently null out the logo, hidden features, labels, or order.
+    const prev = location.themeConfigs[0];
+    const fields = visualFields(req.body);
+    const keep = (bodyKey: string, current: any, prevVal: any) =>
+      req.body?.[bodyKey] === undefined ? (prevVal ?? undefined) : current;
+
     const theme = await createThemeVersion(location.id, {
-      brandName: req.body?.brandName,
-      ...visualFields(req.body),
-      customCssOverride: req.body?.customCss || null,
+      brandName: req.body?.brandName === undefined ? (prev?.brandName ?? null) : req.body.brandName,
+      ...fields,
+      logoUrl: keep("logoUrl", fields.logoUrl, prev?.logoUrl),
+      faviconUrl: keep("faviconUrl", fields.faviconUrl, prev?.faviconUrl),
+      sidebarImageUrl: keep("sidebarImageUrl", fields.sidebarImageUrl, prev?.sidebarImageUrl),
+      hiddenFeatures: keep("hiddenFeatures", fields.hiddenFeatures, prev?.hiddenFeatures),
+      menuLabelOverrides: keep("menuLabelOverrides", fields.menuLabelOverrides, prev?.menuLabelOverrides),
+      menuOrder: keep("menuOrder", fields.menuOrder, prev?.menuOrder),
+      customCssOverride: req.body?.customCss === undefined ? (prev?.customCssOverride ?? null) : (req.body.customCss || null),
     });
 
     res.json(theme);

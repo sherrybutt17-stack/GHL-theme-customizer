@@ -15,6 +15,7 @@ enum LocationStatus {
 
 enum WebhookStatus {
   received
+  processing
   processed
   failed
 }

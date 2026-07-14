@@ -80,5 +80,20 @@ export async function syncLocationsForAgency(agencyInstallId: string) {
     });
   }
 
+  // Prune: soft-remove active DB locations that are no longer in GHL's list. This
+  // self-heals a missed LocationDelete webhook (downtime, dropped retry) whose theme
+  // would otherwise keep being served forever. Guarded on a non-empty result so a
+  // transient empty response can never wipe every sub-account.
+  if (seenIds.size > 0) {
+    await prisma.locationInstall.updateMany({
+      where: {
+        agencyInstallId: agency.id,
+        status: "active",
+        ghlLocationId: { notIn: [...seenIds] },
+      },
+      data: { status: "removed", enabled: false },
+    });
+  }
+
   return locations.length;
 }

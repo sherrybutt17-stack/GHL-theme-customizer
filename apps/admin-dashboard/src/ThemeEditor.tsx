@@ -160,6 +160,15 @@ export function ThemeEditorModal({
       .catch((e) => setFeaturesError((e as Error).message || "Couldn't load the sidebar items."));
   }, [showBrandName]);
 
+  // Escape closes the editor (unless a nested dialog is open, which handles its own).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !presetPromptOpen) onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel, presetPromptOpen]);
+
   useEffect(() => {
     if (tab === "history" && history && versions === null) {
       fetchThemeVersions(history.agencyId, history.locationInstallId)
@@ -209,7 +218,11 @@ export function ThemeEditorModal({
     if (Array.isArray(p.menuOrder)) setMenuOrder(p.menuOrder as string[]);
   }
 
+  // Any edit means we're no longer just viewing an old version — drop the banner.
+  const markEdited = () => setPreviewingVersion(null);
+
   function toggleHidden(key: string) {
+    markEdited();
     setHidden((prev) => {
       const next = new Set(prev);
       next.has(key) ? next.delete(key) : next.add(key);
@@ -316,10 +329,13 @@ export function ThemeEditorModal({
     if (fromKey === toKey) return;
     const keys = mainFeaturesInOrder().map((f) => f.key);
     const from = keys.indexOf(fromKey);
-    const to = keys.indexOf(toKey);
-    if (from < 0 || to < 0) return;
-    keys.splice(to, 0, keys.splice(from, 1)[0]);
+    if (from < 0 || keys.indexOf(toKey) < 0) return;
+    // Remove first, THEN find the target's new index so the drop lands consistently
+    // just before the target row regardless of drag direction (fixes off-by-one).
+    const [item] = keys.splice(from, 1);
+    keys.splice(keys.indexOf(toKey), 0, item);
     setMenuOrder(keys);
+    markEdited();
   }
 
   function renderFeatureRow(f: SidebarFeature) {
@@ -332,7 +348,10 @@ export function ThemeEditorModal({
           placeholder="Rename…"
           value={labels[f.key] ?? ""}
           disabled={isHidden}
-          onChange={(e) => setLabels((p) => ({ ...p, [f.key]: e.target.value }))}
+          onChange={(e) => {
+            markEdited();
+            setLabels((p) => ({ ...p, [f.key]: e.target.value }));
+          }}
           // Stop password managers (1Password/LastPass) injecting an inline icon
           // into the focused field — as a DOM sibling it stole a grid cell and
           // bumped the "Visible" toggle onto its own line.

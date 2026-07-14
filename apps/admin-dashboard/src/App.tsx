@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   applyPreset,
   createPreset,
@@ -238,6 +238,14 @@ export function App() {
   }
 
   const allVisibleSelected = visible.length > 0 && visible.every((l) => selected.has(l.id));
+  // Reflect a partial selection (some, not all) with the checkbox's indeterminate dash.
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (selectAllRef.current) {
+      const some = visible.some((l) => selected.has(l.id));
+      selectAllRef.current.indeterminate = some && !allVisibleSelected;
+    }
+  }, [visible, selected, allVisibleSelected]);
 
   return (
     <div className="page cp">
@@ -333,7 +341,7 @@ export function App() {
               <thead>
                 <tr>
                   <th className="col-check">
-                    <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} />
+                    <input ref={selectAllRef} type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} />
                   </th>
                   <th>Sub-account</th>
                   <th className="col-center">Enabled</th>

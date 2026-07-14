@@ -16,6 +16,14 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  useEffect(() => {
     let cancelled = false;
     setLoadError(null);
     setEmbed(null);
