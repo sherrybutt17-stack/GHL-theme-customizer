@@ -28,10 +28,11 @@ export function MosaicPreview({ look, logoUrl, brandName, features, hidden, labe
   const font = look.fontFamily ? `'${look.fontFamily}', sans-serif` : "inherit";
   const textColor = look.sidebarTextColor || "#ffffff";
   const radius = typeof look.cornerRadius === "number" ? look.cornerRadius : 8;
-  // Content area reflects the custom content background (falls back to dark-mode
-  // preset, then light). When a custom bg is set we keep both canvas + card the same.
-  const canvasBg = look.contentBgColor || (look.darkMode ? "#121212" : "#f8fafc");
-  const cardBg = look.contentBgColor || (look.darkMode ? "#1c1c1c" : "#ffffff");
+  // Content area reflects the custom content background (default light). Dark mode
+  // was removed, so there's no preset fallback - the custom color is the only driver.
+  const canvasBg = look.contentBgColor || "#f8fafc";
+  const cardBg = look.contentBgColor || "#ffffff";
+  const contentText = look.contentTextColor || (look.contentBgColor ? "#e5e5e5" : "#334155");
   const btnRadius =
     look.buttonShape === "square"
       ? 0
@@ -94,8 +95,8 @@ export function MosaicPreview({ look, logoUrl, brandName, features, hidden, labe
         <div className="mp-canvas" style={{ background: canvasBg }}>
           <div className="mp-topbar" style={{ background: look.topBarColor || "#ffffff" }} />
           <div className="mp-card" style={{ background: cardBg, borderRadius: radius }}>
-            <div className="mp-line" style={{ width: "60%" }} />
-            <div className="mp-line" style={{ width: "85%" }} />
+            <div className="mp-line" style={{ width: "60%", background: contentText, opacity: 0.85 }} />
+            <div className="mp-line" style={{ width: "85%", background: contentText, opacity: 0.55 }} />
             <button
               className="mp-btn"
               style={{ background: look.buttonColor || look.primaryColor, borderRadius: btnRadius }}

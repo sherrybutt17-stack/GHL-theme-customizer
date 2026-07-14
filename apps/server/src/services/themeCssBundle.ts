@@ -166,9 +166,15 @@ export function cssColor(value: string): string {
   return value.replace(/[;{}<>\\]/g, "").replace(/[\r\n]+/g, " ").trim();
 }
 
-/** Same idea for values dropped inside url("..."): also strip quotes and parens. */
+/**
+ * Sanitize a value dropped inside url("..."). We keep it inside double quotes, so the
+ * only characters that can break out are the double-quote, backslash, angle brackets,
+ * braces, and newlines - strip exactly those. Crucially we must NOT strip ; : / + =
+ * because data: URLs (from uploaded logos/images: "data:image/png;base64,...") depend
+ * on them; stripping ";" turned every uploaded image into a broken URL.
+ */
 function cssUrl(value: string): string {
-  return value.replace(/[;{}<>\\"'()]/g, "").replace(/[\r\n]+/g, " ").trim();
+  return value.replace(/["\\{}<>]/g, "").replace(/[\r\n]+/g, " ").trim();
 }
 
 function sidebarBackground(primary: string, theme: VisualTheme): string {

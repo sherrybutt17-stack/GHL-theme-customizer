@@ -123,7 +123,6 @@ export interface SidebarFeature {
 export interface ThemeInput {
   brandName?: string;
   logoUrl: string;
-  faviconUrl: string;
   primaryColor: string;
   secondaryColor: string;
   accentColor: string;

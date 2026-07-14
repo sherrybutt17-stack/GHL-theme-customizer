@@ -10,6 +10,13 @@
  * (2) resolving the hostname and rejecting any private / loopback / link-local /
  * reserved IP, (3) handling redirects manually and re-validating every hop, and
  * (4) capping response size + total time. Never relax these without care.
+ *
+ * RESIDUAL RISK (accepted): we validate the resolved IP then hand the *hostname* to
+ * fetch(), which re-resolves independently - so a low-TTL attacker domain could pass
+ * validation on a public IP then connect to a private one (DNS rebinding / TOCTOU).
+ * The endpoint is auth-gated (an authenticated agency scanning a URL), so exposure is
+ * limited. Closing it fully needs a pinned-IP dispatcher (undici custom lookup); a
+ * follow-up if this ever becomes untrusted-facing.
  */
 import dns from "node:dns/promises";
 import net from "node:net";

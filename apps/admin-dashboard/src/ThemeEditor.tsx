@@ -117,7 +117,6 @@ export function ThemeEditorModal({
   const [previewingVersion, setPreviewingVersion] = useState<number | null>(null);
   const [brandName, setBrandName] = useState(initial?.brandName ?? "");
   const [logoUrl, setLogoUrl] = useState(initial?.logoUrl ?? "");
-  const [faviconUrl, setFaviconUrl] = useState(initial?.faviconUrl ?? "");
   const [look, setLook] = useState<Look>(lookFrom(initial));
   const [hidden, setHidden] = useState<Set<string>>(new Set(initial?.hiddenFeatures ?? []));
   const [labels, setLabels] = useState<Record<string, string>>(initial?.menuLabelOverrides ?? {});
@@ -163,7 +162,10 @@ export function ThemeEditorModal({
     }
   }, [tab, history, versions]);
 
-  const patchLook = (p: Partial<Look>) => setLook((l) => ({ ...l, ...p }));
+  const patchLook = (p: Partial<Look>) => {
+    setLook((l) => ({ ...l, ...p }));
+    setPreviewingVersion(null); // any edit means we're no longer just viewing an old version
+  };
 
   async function handleLogoFile(file: File | undefined) {
     if (!file) return;
@@ -278,11 +280,10 @@ export function ThemeEditorModal({
 
   // Load an older version's values back into the form. Saving then writes a NEW
   // version (history stays append-only; a restore is itself an auditable version).
-  function loadVersion(v: ThemeConfig) {
+  function loadVersion(v: ThemeConfig, isCurrent = false) {
     setLook(lookFrom(v));
     setBrandName(v.brandName ?? "");
     setLogoUrl(v.logoUrl ?? "");
-    setFaviconUrl(v.faviconUrl ?? "");
     setHidden(new Set(v.hiddenFeatures ?? []));
     setLabels((v.menuLabelOverrides as Record<string, string>) ?? {});
     setMenuOrder(Array.isArray(v.menuOrder) ? v.menuOrder : []);
@@ -291,7 +292,8 @@ export function ThemeEditorModal({
     setCustomCss(v.customCssOverride ?? "");
     setAlertMessage(v.alertMessage ?? "");
     setAlertColor(v.alertColor ?? "#4f46e5");
-    setPreviewingVersion(v.version);
+    // Only show the "previewing an OLD version" banner for non-current versions.
+    setPreviewingVersion(isCurrent ? null : v.version);
     setTab("branding");
   }
 
@@ -352,7 +354,6 @@ export function ThemeEditorModal({
       await onSave({
         ...(showBrandName ? { brandName } : {}),
         logoUrl,
-        faviconUrl,
         primaryColor: look.primaryColor,
         secondaryColor: look.primaryColor,
         accentColor: look.accentColor,
@@ -872,7 +873,7 @@ export function ThemeEditorModal({
                       </div>
                       <button
                         className="btn btn-ghost"
-                        onClick={() => loadVersion(v)}
+                        onClick={() => loadVersion(v, i === 0)}
                       >
                         {i === 0 ? "View current" : "👁️ View"}
                       </button>
