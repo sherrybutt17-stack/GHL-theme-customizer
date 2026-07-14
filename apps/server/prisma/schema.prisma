@@ -87,7 +87,9 @@ model ThemeConfig {
   cornerRadius        Int?
   sidebarImageUrl     String?
   scrollbarColor      String?
+  sidebarTextColor    String?
   darkMode            Boolean   @default(false)
+  menuOrder           Json?
   hideUpgrade         Boolean   @default(false)
   alertMessage        String?
   alertColor          String?
@@ -123,7 +125,9 @@ model AgencyDefaultTheme {
   cornerRadius        Int?
   sidebarImageUrl     String?
   scrollbarColor      String?
+  sidebarTextColor    String?
   darkMode            Boolean   @default(false)
+  menuOrder           Json?
   hideUpgrade         Boolean   @default(false)
   alertMessage        String?
   alertColor          String?
@@ -153,7 +157,9 @@ model ThemePreset {
   buttonColor         String?
   cornerRadius        Int?
   scrollbarColor      String?
+  sidebarTextColor    String?
   darkMode            Boolean   @default(false)
+  menuOrder           Json?
   createdAt           DateTime  @default(now())
 
   @@index([agencyInstallId])

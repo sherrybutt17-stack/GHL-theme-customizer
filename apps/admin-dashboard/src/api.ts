@@ -31,6 +31,7 @@ function authHeaders(): Record<string, string> {
 /** The visual look fields shared by location themes, the agency default, and presets. */
 export interface VisualTheme {
   logoUrl: string | null;
+  faviconUrl: string | null;
   primaryColor: string | null;
   secondaryColor: string | null;
   accentColor: string | null;
@@ -43,12 +44,14 @@ export interface VisualTheme {
   cornerRadius: number | null;
   sidebarImageUrl: string | null;
   scrollbarColor: string | null;
+  sidebarTextColor: string | null;
   darkMode: boolean;
   hideUpgrade: boolean;
   alertMessage: string | null;
   alertColor: string | null;
   menuLabelOverrides: Record<string, string> | null;
   hiddenFeatures: string[] | null;
+  menuOrder: string[] | null;
 }
 
 export interface ThemeConfig extends VisualTheme {
@@ -56,6 +59,7 @@ export interface ThemeConfig extends VisualTheme {
   brandName: string | null;
   customCssOverride: string | null;
   version: number;
+  createdAt?: string;
 }
 
 export interface AgencyDefaultTheme extends VisualTheme {
@@ -77,7 +81,9 @@ export interface ThemePreset {
   buttonColor: string | null;
   cornerRadius: number | null;
   scrollbarColor: string | null;
+  sidebarTextColor: string | null;
   darkMode: boolean;
+  menuOrder: string[] | null;
 }
 
 export interface LocationRow {
@@ -99,6 +105,7 @@ export interface SidebarFeature {
 export interface ThemeInput {
   brandName?: string;
   logoUrl: string;
+  faviconUrl: string;
   primaryColor: string;
   secondaryColor: string;
   accentColor: string;
@@ -111,6 +118,7 @@ export interface ThemeInput {
   cornerRadius: number | null;
   sidebarImageUrl: string;
   scrollbarColor: string;
+  sidebarTextColor: string;
   darkMode: boolean;
   hideUpgrade: boolean;
   alertMessage: string;
@@ -118,6 +126,7 @@ export interface ThemeInput {
   customCss: string;
   menuLabelOverrides: Record<string, string>;
   hiddenFeatures: string[];
+  menuOrder: string[];
 }
 
 // Returns any so `.then(handle)` composes cleanly; each exported fn types its result.
@@ -145,6 +154,9 @@ export const fetchLocations = (a: string): Promise<LocationRow[]> =>
 
 export const saveTheme = (a: string, loc: string, theme: ThemeInput): Promise<ThemeConfig> =>
   fetch(`${API_BASE}/admin/api/${a}/locations/${loc}/theme`, j("PUT", theme)).then(handle);
+
+export const fetchThemeVersions = (a: string, loc: string): Promise<ThemeConfig[]> =>
+  fetch(`${API_BASE}/admin/api/${a}/locations/${loc}/theme/versions`, g()).then(handle);
 
 export const setEnabled = (a: string, loc: string, enabled: boolean) =>
   fetch(`${API_BASE}/admin/api/${a}/locations/${loc}/enabled`, j("PUT", { enabled })).then(handle);

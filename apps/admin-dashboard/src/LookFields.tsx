@@ -12,6 +12,7 @@ export interface Look {
   buttonColor: string;
   cornerRadius: number;
   scrollbarColor: string;
+  sidebarTextColor: string;
   darkMode: boolean;
 }
 
@@ -171,6 +172,13 @@ export function LookFields({ value, onChange }: { value: Look; onChange: (patch:
         hint="The draggable scrollbar thumb color."
         value={value.scrollbarColor || "#94a3b8"}
         onChange={(v) => onChange({ scrollbarColor: v })}
+      />
+
+      <ColorRow
+        label="Sidebar menu text"
+        hint="Color of the sidebar menu labels. Pick a dark color if you use a light sidebar background."
+        value={value.sidebarTextColor || "#ffffff"}
+        onChange={(v) => onChange({ sidebarTextColor: v })}
       />
 
       <div className="look-angle">

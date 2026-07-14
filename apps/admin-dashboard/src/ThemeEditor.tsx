@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import {
   fetchSidebarFeatures,
+  fetchThemeVersions,
   type SidebarFeature,
+  type ThemeConfig,
   type ThemeInput,
   type ThemePreset,
   type VisualTheme,
 } from "./api";
 import { LookFields, type Look } from "./LookFields";
+import { MosaicPreview } from "./MosaicPreview";
+import { paletteFromImage } from "./colorUtils";
 
 interface Props {
   title: string;
@@ -19,6 +23,8 @@ interface Props {
     | null;
   showBrandName: boolean;
   presets: ThemePreset[];
+  /** When set (per-location editing), enables the version-history tab. */
+  history?: { agencyId: string; locationInstallId: string };
   onSave: (theme: ThemeInput) => Promise<void>;
   onSaveAsPreset: (name: string, look: Look) => Promise<void>;
   onCancel: () => void;
@@ -80,6 +86,7 @@ function lookFrom(initial: Props["initial"]): Look {
     buttonColor: initial?.buttonColor ?? "#4f46e5",
     cornerRadius: initial?.cornerRadius ?? 8,
     scrollbarColor: initial?.scrollbarColor ?? "#94a3b8",
+    sidebarTextColor: initial?.sidebarTextColor ?? "#ffffff",
     darkMode: initial?.darkMode ?? false,
   };
 }
@@ -89,16 +96,23 @@ export function ThemeEditorModal({
   initial,
   showBrandName,
   presets,
+  history,
   onSave,
   onSaveAsPreset,
   onCancel,
 }: Props) {
-  const [tab, setTab] = useState<"branding" | "features" | "advanced">("branding");
+  const [tab, setTab] = useState<"branding" | "features" | "advanced" | "history">("branding");
+  const [versions, setVersions] = useState<ThemeConfig[] | null>(null);
   const [brandName, setBrandName] = useState(initial?.brandName ?? "");
   const [logoUrl, setLogoUrl] = useState(initial?.logoUrl ?? "");
+  const [faviconUrl, setFaviconUrl] = useState(initial?.faviconUrl ?? "");
   const [look, setLook] = useState<Look>(lookFrom(initial));
   const [hidden, setHidden] = useState<Set<string>>(new Set(initial?.hiddenFeatures ?? []));
   const [labels, setLabels] = useState<Record<string, string>>(initial?.menuLabelOverrides ?? {});
+  const [menuOrder, setMenuOrder] = useState<string[]>(
+    Array.isArray(initial?.menuOrder) ? (initial!.menuOrder as string[]) : []
+  );
+  const [dragKey, setDragKey] = useState<string | null>(null);
   const [sidebarImageUrl, setSidebarImageUrl] = useState(initial?.sidebarImageUrl ?? "");
   const [hideUpgrade, setHideUpgrade] = useState(initial?.hideUpgrade ?? false);
   const [customCss, setCustomCss] = useState(initial?.customCssOverride ?? initial?.customCss ?? "");
@@ -109,12 +123,21 @@ export function ThemeEditorModal({
   const [features, setFeatures] = useState<SidebarFeature[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [pickingColors, setPickingColors] = useState(false);
 
   useEffect(() => {
     // Editing the agency default (no brand name) → show the agency sidebar items;
     // editing a sub-account → show the sub-account items.
     fetchSidebarFeatures(showBrandName ? undefined : "agency").then(setFeatures);
   }, [showBrandName]);
+
+  useEffect(() => {
+    if (tab === "history" && history && versions === null) {
+      fetchThemeVersions(history.agencyId, history.locationInstallId)
+        .then(setVersions)
+        .catch(() => setVersions([]));
+    }
+  }, [tab, history, versions]);
 
   const patchLook = (p: Partial<Look>) => setLook((l) => ({ ...l, ...p }));
 
@@ -144,6 +167,7 @@ export function ThemeEditorModal({
       buttonColor: p.buttonColor ?? look.buttonColor,
       cornerRadius: p.cornerRadius ?? look.cornerRadius,
       scrollbarColor: p.scrollbarColor ?? look.scrollbarColor,
+      sidebarTextColor: p.sidebarTextColor ?? look.sidebarTextColor,
       darkMode: p.darkMode,
     });
   }
@@ -154,6 +178,64 @@ export function ThemeEditorModal({
       next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
+  }
+
+  async function handleFaviconFile(file: File | undefined) {
+    if (!file) return;
+    try {
+      const img = await fileToDownscaledDataUrl(file, 128);
+      setFaviconUrl(img.dataUrl);
+    } catch (e) {
+      setLogoErr((e as Error).message);
+    }
+  }
+
+  async function applyLogoColors() {
+    if (!logoUrl) return;
+    setLogoErr(null);
+    setPickingColors(true);
+    try {
+      const pal = await paletteFromImage(logoUrl);
+      if (pal) patchLook({ primaryColor: pal.primary, accentColor: pal.accent });
+      else setLogoErr("Couldn't read colors from this image — try uploading it instead of a URL.");
+    } finally {
+      setPickingColors(false);
+    }
+  }
+
+  // Load an older version's values back into the form. Saving then writes a NEW
+  // version (history stays append-only; a restore is itself an auditable version).
+  function loadVersion(v: ThemeConfig) {
+    setLook(lookFrom(v));
+    setBrandName(v.brandName ?? "");
+    setLogoUrl(v.logoUrl ?? "");
+    setFaviconUrl(v.faviconUrl ?? "");
+    setHidden(new Set(v.hiddenFeatures ?? []));
+    setLabels((v.menuLabelOverrides as Record<string, string>) ?? {});
+    setMenuOrder(Array.isArray(v.menuOrder) ? v.menuOrder : []);
+    setSidebarImageUrl(v.sidebarImageUrl ?? "");
+    setHideUpgrade(v.hideUpgrade ?? false);
+    setCustomCss(v.customCssOverride ?? "");
+    setAlertMessage(v.alertMessage ?? "");
+    setAlertColor(v.alertColor ?? "#4f46e5");
+    setTab("branding");
+  }
+
+  // Main sidebar features, sorted by the saved order (unlisted keep natural order).
+  function mainFeaturesInOrder(): SidebarFeature[] {
+    const main = features.filter((f) => f.group !== "settings");
+    const pos = new Map(menuOrder.map((k, i) => [k, i]));
+    return [...main].sort((a, b) => (pos.get(a.key) ?? 999) - (pos.get(b.key) ?? 999));
+  }
+
+  function reorderMenu(fromKey: string, toKey: string) {
+    if (fromKey === toKey) return;
+    const keys = mainFeaturesInOrder().map((f) => f.key);
+    const from = keys.indexOf(fromKey);
+    const to = keys.indexOf(toKey);
+    if (from < 0 || to < 0) return;
+    keys.splice(to, 0, keys.splice(from, 1)[0]);
+    setMenuOrder(keys);
   }
 
   function renderFeatureRow(f: SidebarFeature) {
@@ -196,6 +278,7 @@ export function ThemeEditorModal({
       await onSave({
         ...(showBrandName ? { brandName } : {}),
         logoUrl,
+        faviconUrl,
         primaryColor: look.primaryColor,
         secondaryColor: look.primaryColor,
         accentColor: look.accentColor,
@@ -207,6 +290,7 @@ export function ThemeEditorModal({
         buttonColor: look.buttonColor,
         cornerRadius: look.cornerRadius,
         scrollbarColor: look.scrollbarColor,
+        sidebarTextColor: look.sidebarTextColor,
         darkMode: look.darkMode,
         sidebarImageUrl,
         hideUpgrade,
@@ -215,6 +299,7 @@ export function ThemeEditorModal({
         alertColor,
         hiddenFeatures: [...hidden],
         menuLabelOverrides: cleanedLabels,
+        menuOrder,
       });
     } catch (e) {
       // Surface the failure inside the modal instead of closing it (the caller only
@@ -255,9 +340,15 @@ export function ThemeEditorModal({
           <button className={`tab ${tab === "advanced" ? "active" : ""}`} onClick={() => setTab("advanced")}>
             Advanced
           </button>
+          {history && (
+            <button className={`tab ${tab === "history" ? "active" : ""}`} onClick={() => setTab("history")}>
+              History
+            </button>
+          )}
         </div>
 
-        <div className="modal-body">
+        <div className="modal-body editor-body">
+          <div className="editor-panes">
           {tab === "branding" && (
             <>
               {presets.length > 0 && (
@@ -332,6 +423,51 @@ export function ThemeEditorModal({
                 )}
               </div>
 
+              {logoUrl && (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  style={{ alignSelf: "flex-start", marginTop: 4 }}
+                  onClick={applyLogoColors}
+                  disabled={pickingColors}
+                >
+                  {pickingColors ? "Reading logo…" : "🎨 Use colors from logo"}
+                </button>
+              )}
+
+              <div className="field">
+                <label>Favicon</label>
+                <input
+                  type="url"
+                  value={faviconUrl.startsWith("data:") ? "" : faviconUrl}
+                  onChange={(e) => setFaviconUrl(e.target.value)}
+                  placeholder="Paste an icon URL…"
+                />
+                <div className="logo-upload-row">
+                  <label className="btn btn-ghost logo-upload-btn">
+                    Upload icon
+                    <input
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      onChange={(e) => handleFaviconFile(e.target.files?.[0])}
+                    />
+                  </label>
+                  {faviconUrl && (
+                    <img
+                      src={faviconUrl}
+                      alt="favicon"
+                      style={{ width: 20, height: 20, objectFit: "contain", borderRadius: 4 }}
+                    />
+                  )}
+                </div>
+                <p className="logo-hint">
+                  The browser-tab icon (a square PNG works best). <strong>Requires the optional
+                  Custom JavaScript snippet</strong> — favicons can't be set via CSS. Colors/logo
+                  work with the CSS embed alone.
+                </p>
+              </div>
+
               <LookFields value={look} onChange={patchLook} />
 
               <button className="btn btn-ghost" style={{ marginTop: 4 }} onClick={handleSaveAsPreset}>
@@ -344,12 +480,26 @@ export function ThemeEditorModal({
             <div className="field">
               <label>Sidebar menu items</label>
               <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px" }}>
-                Hide items this client shouldn't see, or rename them.
+                Drag <span className="drag-handle-inline">⠿</span> to reorder, or hide/rename items.
               </p>
               <div className="feature-list">
-                {features
-                  .filter((f) => f.group !== "settings")
-                  .map((f) => renderFeatureRow(f))}
+                {mainFeaturesInOrder().map((f) => (
+                  <div
+                    key={f.key}
+                    className={`feature-drag-row ${dragKey === f.key ? "dragging" : ""}`}
+                    draggable
+                    onDragStart={() => setDragKey(f.key)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => {
+                      if (dragKey) reorderMenu(dragKey, f.key);
+                      setDragKey(null);
+                    }}
+                    onDragEnd={() => setDragKey(null)}
+                  >
+                    <span className="drag-handle" title="Drag to reorder">⠿</span>
+                    {renderFeatureRow(f)}
+                  </div>
+                ))}
               </div>
 
               {features.some((f) => f.group === "settings") && (
@@ -438,6 +588,54 @@ export function ThemeEditorModal({
               </div>
             </>
           )}
+
+          {tab === "history" && (
+            <div className="field">
+              <label>Version history</label>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px" }}>
+                Every save is a version. Load an older one into the editor, review it in the
+                preview, then <strong>Save changes</strong> to restore it as a new version.
+              </p>
+              {versions === null ? (
+                <div className="empty-state">Loading history…</div>
+              ) : versions.length === 0 ? (
+                <div className="empty-state">No saved versions yet.</div>
+              ) : (
+                <div className="version-list">
+                  {versions.map((v, i) => (
+                    <div key={v.id} className="version-row">
+                      <div>
+                        <div className="version-title">
+                          Version {v.version}
+                          {i === 0 && <span className="version-current"> · current</span>}
+                        </div>
+                        <div className="version-date">
+                          {v.createdAt ? new Date(v.createdAt).toLocaleString() : `v${v.version}`}
+                        </div>
+                      </div>
+                      <button
+                        className="btn btn-ghost"
+                        disabled={i === 0}
+                        onClick={() => loadVersion(v)}
+                      >
+                        {i === 0 ? "Current" : "Load this version"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          </div>
+          <MosaicPreview
+            look={look}
+            logoUrl={logoUrl}
+            brandName={showBrandName ? brandName : undefined}
+            features={features}
+            hidden={hidden}
+            labels={labels}
+            order={menuOrder}
+          />
         </div>
 
         <div className="modal-footer">

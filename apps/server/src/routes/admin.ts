@@ -43,12 +43,14 @@ function visualFields(body: any) {
     cornerRadius: typeof body?.cornerRadius === "number" ? body.cornerRadius : null,
     sidebarImageUrl: body?.sidebarImageUrl || null,
     scrollbarColor: body?.scrollbarColor || null,
+    sidebarTextColor: body?.sidebarTextColor || null,
     darkMode: !!body?.darkMode,
     hideUpgrade: !!body?.hideUpgrade,
     alertMessage: body?.alertMessage || null,
     alertColor: body?.alertColor || null,
     menuLabelOverrides: body?.menuLabelOverrides,
     hiddenFeatures: body?.hiddenFeatures,
+    menuOrder: Array.isArray(body?.menuOrder) ? body.menuOrder : null,
   };
 }
 
@@ -66,6 +68,8 @@ function presetLookFields(body: any) {
     buttonColor: body?.buttonColor || null,
     cornerRadius: typeof body?.cornerRadius === "number" ? body.cornerRadius : null,
     scrollbarColor: body?.scrollbarColor || null,
+    sidebarTextColor: body?.sidebarTextColor || null,
+    menuOrder: Array.isArray(body?.menuOrder) ? body.menuOrder : null,
     darkMode: !!body?.darkMode,
   };
 }
@@ -166,6 +170,34 @@ adminRouter.put(
     });
 
     res.json(theme);
+  }
+);
+
+/**
+ * Version history for a sub-account's theme. Every save creates a new ThemeConfig
+ * row (version++), so this is just the row list, newest first. The dashboard loads a
+ * chosen version's values back into the editor; saving then writes a new version
+ * (so history is append-only and a "restore" is itself an auditable version).
+ */
+adminRouter.get(
+  "/admin/api/:agencyInstallId/locations/:locationInstallId/theme/versions",
+  async (req: Request, res: Response) => {
+    const agencyId = await requireAgency(req, res);
+    if (!agencyId) return;
+
+    const location = await prisma.locationInstall.findFirst({
+      where: { id: req.params.locationInstallId, agencyInstallId: agencyId },
+    });
+    if (!location) {
+      return res.status(403).json({ error: "Location does not belong to this agency install" });
+    }
+
+    const versions = await prisma.themeConfig.findMany({
+      where: { locationInstallId: location.id },
+      orderBy: { version: "desc" },
+      take: 50,
+    });
+    res.json(versions);
   }
 );
 
@@ -304,6 +336,9 @@ adminRouter.post(
             hideUpgrade: prev?.hideUpgrade ?? false,
             menuLabelOverrides: prev?.menuLabelOverrides ?? undefined,
             hiddenFeatures: prev?.hiddenFeatures ?? undefined,
+            // Menu order is structural, not part of a color preset - keep the
+            // sub-account's existing order instead of wiping it on preset apply.
+            menuOrder: prev?.menuOrder ?? undefined,
             customCssOverride: prev?.customCssOverride ?? null,
             // Overlay the preset look.
             primaryColor: preset.primaryColor,
@@ -317,6 +352,7 @@ adminRouter.post(
             buttonColor: preset.buttonColor,
             cornerRadius: preset.cornerRadius,
             scrollbarColor: preset.scrollbarColor,
+            sidebarTextColor: preset.sidebarTextColor,
             darkMode: preset.darkMode,
             version: (prev?.version ?? 0) + 1,
           },

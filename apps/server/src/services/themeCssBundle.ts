@@ -33,6 +33,8 @@ interface VisualTheme {
   cornerRadius?: number | null;
   sidebarImageUrl?: string | null;
   scrollbarColor?: string | null;
+  sidebarTextColor?: string | null;
+  menuOrder?: unknown;
   darkMode?: boolean | null;
   hideUpgrade?: boolean | null;
   alertMessage?: string | null;
@@ -199,6 +201,16 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
   );
   rules.push(`${scope.bases.map((b) => `${b} a i`).join(", ")} { color: ${accent} !important; }`);
 
+  // Sidebar menu text color. Scoped to inactive links (`:not(.active)`) so active
+  // items keep the white contrast color set against the accent background above.
+  if (theme.sidebarTextColor) {
+    const txt = cssColor(theme.sidebarTextColor);
+    const sel = scope.bases
+      .flatMap((b) => [`${b} a:not(.active)`, `${b} a:not(.active) .nav-title`])
+      .join(", ");
+    rules.push(`${sel} { color: ${txt} !important; }`);
+  }
+
   // Font family (applies to the whole scoped subtree; for global, to sidebar + body)
   if (theme.fontFamily) {
     const stack = `'${theme.fontFamily}', sans-serif`;
@@ -271,6 +283,16 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
   for (const key of hidden) {
     rules.push(`${featureSelectorsScoped(key, scope).join(", ")} { display: none !important; }`);
   }
+
+  // Sidebar menu ordering. Emits a flex `order` per item; the GHL sidebar nav is a
+  // flex column, so lower order floats higher. Unknown keys are ignored. Items not
+  // in the list keep order:0 (their natural position). No-op if the nav isn't flex.
+  const menuOrder = (Array.isArray(theme.menuOrder) ? (theme.menuOrder as string[]) : []).filter(
+    isKnownFeatureKey
+  );
+  menuOrder.forEach((key, i) => {
+    rules.push(`${featureSelectorsScoped(key, scope).join(", ")} { order: ${i} !important; }`);
+  });
 
   // Menu label renaming
   const labels =
