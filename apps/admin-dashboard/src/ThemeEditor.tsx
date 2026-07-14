@@ -12,6 +12,7 @@ import {
 } from "./api";
 import { LookFields, type Look } from "./LookFields";
 import { MosaicPreview } from "./MosaicPreview";
+import { LoginPreview } from "./LoginPreview";
 import { PromptDialog } from "./Dialog";
 import { paletteFromImage } from "./colorUtils";
 
@@ -112,7 +113,7 @@ export function ThemeEditorModal({
   onSaveAsPreset,
   onCancel,
 }: Props) {
-  const [tab, setTab] = useState<"branding" | "features" | "advanced" | "history">("branding");
+  const [tab, setTab] = useState<"branding" | "features" | "login" | "advanced" | "history">("branding");
   const [versions, setVersions] = useState<ThemeConfig[] | null>(null);
   const [previewingVersion, setPreviewingVersion] = useState<number | null>(null);
   const [brandName, setBrandName] = useState(initial?.brandName ?? "");
@@ -341,23 +342,27 @@ export function ThemeEditorModal({
     return (
       <div className="feature-row" key={f.key}>
         <span className={`feature-name ${isHidden ? "hidden" : ""}`}>{f.label}</span>
-        <input
-          className="feature-rename"
-          placeholder="Rename…"
-          value={labels[f.key] ?? ""}
-          disabled={isHidden}
-          onChange={(e) => {
-            markEdited();
-            setLabels((p) => ({ ...p, [f.key]: e.target.value }));
-          }}
-          // Stop password managers (1Password/LastPass) injecting an inline icon
-          // into the focused field — as a DOM sibling it stole a grid cell and
-          // bumped the "Visible" toggle onto its own line.
-          autoComplete="off"
-          data-1p-ignore="true"
-          data-lpignore="true"
-          data-form-type="other"
-        />
+        {/* Wrap the input so any icon a password manager injects as a sibling stays
+            INSIDE this cell (positioned over the field) instead of becoming a stray
+            grid item that flows to a new row and bumps "Visible" down (the gap bug). */}
+        <div className="feature-rename-wrap">
+          <input
+            className="feature-rename"
+            placeholder="Rename…"
+            value={labels[f.key] ?? ""}
+            disabled={isHidden}
+            onChange={(e) => {
+              markEdited();
+              setLabels((p) => ({ ...p, [f.key]: e.target.value }));
+            }}
+            // Belt-and-suspenders: also ask 1Password/LastPass/browser autofill to
+            // skip this field so they don't inject their inline icon at all.
+            autoComplete="off"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            data-form-type="other"
+          />
+        </div>
         <button
           className={`btn ${isHidden ? "" : "btn-ghost"}`}
           onClick={() => toggleHidden(f.key)}
@@ -454,6 +459,11 @@ export function ThemeEditorModal({
           <button className={`tab ${tab === "features" ? "active" : ""}`} onClick={() => setTab("features")}>
             Menu &amp; features
           </button>
+          {isAgencyDefault && (
+            <button className={`tab ${tab === "login" ? "active" : ""}`} onClick={() => setTab("login")}>
+              Login page
+            </button>
+          )}
           <button className={`tab ${tab === "advanced" ? "active" : ""}`} onClick={() => setTab("advanced")}>
             Advanced
           </button>
@@ -608,152 +618,6 @@ export function ThemeEditorModal({
 
               <LookFields value={look} onChange={patchLook} />
 
-              {isAgencyDefault && (
-                <div style={{ marginTop: 18, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
-                  <label style={{ fontWeight: 600, fontSize: 14 }}>Login page</label>
-                  <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "4px 0 14px" }}>
-                    Brands the GoHighLevel <strong>login screen</strong> for your whole agency (it's shared —
-                    there's one login before a sub-account is chosen). Leave a field blank to skip it.
-                  </p>
-
-                  <div className="look-color-row">
-                    <input
-                      type="color"
-                      value={loginBgColor || "#0f172a"}
-                      onChange={(e) => setLoginBgColor(e.target.value)}
-                    />
-                    <div>
-                      <div className="look-color-label">Background color</div>
-                      <div className="look-color-hint">The full-page background behind the login box.</div>
-                    </div>
-                  </div>
-
-                  <div className="look-toggle-row" style={{ marginTop: 10 }}>
-                    <label className="toggle">
-                      <input
-                        type="checkbox"
-                        checked={loginGradientEnabled}
-                        onChange={(e) => {
-                          const on = e.target.checked;
-                          setLoginGradientEnabled(on);
-                          // The gradient needs a base color; if the picker was never
-                          // touched (empty), seed it so the gradient actually renders.
-                          if (on && !loginBgColor) setLoginBgColor("#0f172a");
-                        }}
-                      />
-                      <span className="toggle-track" />
-                    </label>
-                    <div>
-                      <div className="look-color-label">Gradient background</div>
-                      <div className="look-color-hint">Blend the background color into a second color.</div>
-                    </div>
-                  </div>
-                  {loginGradientEnabled && (
-                    <>
-                      <div className="look-color-row">
-                        <input
-                          type="color"
-                          value={loginGradientColor || "#1e293b"}
-                          onChange={(e) => setLoginGradientColor(e.target.value)}
-                        />
-                        <div>
-                          <div className="look-color-label">Gradient — second color</div>
-                        </div>
-                      </div>
-                      <div className="look-angle">
-                        <label>Gradient angle: {loginGradientAngle}°</label>
-                        <input
-                          type="range"
-                          min={0}
-                          max={360}
-                          value={loginGradientAngle}
-                          onChange={(e) => setLoginGradientAngle(Number(e.target.value))}
-                        />
-                      </div>
-                    </>
-                  )}
-
-                  <div className="field" style={{ marginTop: 10 }}>
-                    <label>Background image (overrides colors)</label>
-                    <input
-                      type="url"
-                      value={loginBgImage.startsWith("data:") ? "" : loginBgImage}
-                      onChange={(e) => setLoginBgImage(e.target.value)}
-                      placeholder="Paste an image URL…"
-                    />
-                    <div className="logo-upload-row">
-                      <label className="btn btn-ghost logo-upload-btn">
-                        Upload image
-                        <input
-                          type="file"
-                          accept="image/*"
-                          hidden
-                          onChange={(e) => handleLoginBgFile(e.target.files?.[0])}
-                        />
-                      </label>
-                      {loginBgImage && (
-                        <>
-                          <span className="logo-uploaded">Image set ✓</span>
-                          <button
-                            type="button"
-                            className="btn btn-ghost"
-                            onClick={() => setLoginBgImage("")}
-                          >
-                            Remove
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="look-color-row">
-                    <input
-                      type="color"
-                      value={loginButtonColor || "#4f46e5"}
-                      onChange={(e) => setLoginButtonColor(e.target.value)}
-                    />
-                    <div>
-                      <div className="look-color-label">Sign-in button color</div>
-                    </div>
-                  </div>
-
-                  <div className="look-color-row">
-                    <input
-                      type="color"
-                      value={loginCardColor || "#ffffff"}
-                      onChange={(e) => setLoginCardColor(e.target.value)}
-                    />
-                    <div>
-                      <div className="look-color-label">Login box color</div>
-                      <div className="look-color-hint">Background of the centered login card.</div>
-                    </div>
-                  </div>
-
-                  <div className="field" style={{ marginTop: 10 }}>
-                    <label>Login logo</label>
-                    <input
-                      type="url"
-                      value={loginLogoUrl.startsWith("data:") ? "" : loginLogoUrl}
-                      onChange={(e) => setLoginLogoUrl(e.target.value)}
-                      placeholder="Paste a logo URL…"
-                    />
-                    <div className="logo-upload-row">
-                      <label className="btn btn-ghost logo-upload-btn">
-                        Upload logo
-                        <input
-                          type="file"
-                          accept="image/*"
-                          hidden
-                          onChange={(e) => handleLoginLogoFile(e.target.files?.[0])}
-                        />
-                      </label>
-                      {loginLogoUrl && <span className="logo-uploaded">Logo set ✓</span>}
-                    </div>
-                    <p className="logo-hint">Shown above the login form. May need size tuning per theme.</p>
-                  </div>
-                </div>
-              )}
-
               <button className="btn btn-ghost" style={{ marginTop: 4 }} onClick={() => setPresetPromptOpen(true)}>
                 + Save this look as a preset
               </button>
@@ -800,6 +664,152 @@ export function ThemeEditorModal({
                   </div>
                 </>
               )}
+            </div>
+          )}
+
+          {tab === "login" && isAgencyDefault && (
+            <div>
+              <label style={{ fontWeight: 600, fontSize: 14 }}>Login page</label>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "4px 0 14px" }}>
+                Brands the GoHighLevel <strong>login screen</strong> for your whole agency (it's shared —
+                there's one login before a sub-account is chosen). Leave a field blank to skip it.
+              </p>
+
+              <div className="look-color-row">
+                <input
+                  type="color"
+                  value={loginBgColor || "#0f172a"}
+                  onChange={(e) => setLoginBgColor(e.target.value)}
+                />
+                <div>
+                  <div className="look-color-label">Background color</div>
+                  <div className="look-color-hint">The full-page background behind the login box.</div>
+                </div>
+              </div>
+
+              <div className="look-toggle-row" style={{ marginTop: 10 }}>
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={loginGradientEnabled}
+                    onChange={(e) => {
+                      const on = e.target.checked;
+                      setLoginGradientEnabled(on);
+                      // The gradient needs a base color; if the picker was never
+                      // touched (empty), seed it so the gradient actually renders.
+                      if (on && !loginBgColor) setLoginBgColor("#0f172a");
+                    }}
+                  />
+                  <span className="toggle-track" />
+                </label>
+                <div>
+                  <div className="look-color-label">Gradient background</div>
+                  <div className="look-color-hint">Blend the background color into a second color.</div>
+                </div>
+              </div>
+              {loginGradientEnabled && (
+                <>
+                  <div className="look-color-row">
+                    <input
+                      type="color"
+                      value={loginGradientColor || "#1e293b"}
+                      onChange={(e) => setLoginGradientColor(e.target.value)}
+                    />
+                    <div>
+                      <div className="look-color-label">Gradient — second color</div>
+                    </div>
+                  </div>
+                  <div className="look-angle">
+                    <label>Gradient angle: {loginGradientAngle}°</label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={360}
+                      value={loginGradientAngle}
+                      onChange={(e) => setLoginGradientAngle(Number(e.target.value))}
+                    />
+                  </div>
+                </>
+              )}
+
+              <div className="field" style={{ marginTop: 10 }}>
+                <label>Background image (overrides colors)</label>
+                <input
+                  type="url"
+                  value={loginBgImage.startsWith("data:") ? "" : loginBgImage}
+                  onChange={(e) => setLoginBgImage(e.target.value)}
+                  placeholder="Paste an image URL…"
+                />
+                <div className="logo-upload-row">
+                  <label className="btn btn-ghost logo-upload-btn">
+                    Upload image
+                    <input
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      onChange={(e) => handleLoginBgFile(e.target.files?.[0])}
+                    />
+                  </label>
+                  {loginBgImage && (
+                    <>
+                      <span className="logo-uploaded">Image set ✓</span>
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        onClick={() => setLoginBgImage("")}
+                      >
+                        Remove
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="look-color-row">
+                <input
+                  type="color"
+                  value={loginButtonColor || "#4f46e5"}
+                  onChange={(e) => setLoginButtonColor(e.target.value)}
+                />
+                <div>
+                  <div className="look-color-label">Sign-in button color</div>
+                </div>
+              </div>
+
+              <div className="look-color-row">
+                <input
+                  type="color"
+                  value={loginCardColor || "#ffffff"}
+                  onChange={(e) => setLoginCardColor(e.target.value)}
+                />
+                <div>
+                  <div className="look-color-label">Login box color</div>
+                  <div className="look-color-hint">Background of the centered login card.</div>
+                </div>
+              </div>
+
+              <div className="field" style={{ marginTop: 10 }}>
+                <label>Login logo</label>
+                <input
+                  type="url"
+                  value={loginLogoUrl.startsWith("data:") ? "" : loginLogoUrl}
+                  onChange={(e) => setLoginLogoUrl(e.target.value)}
+                  placeholder="Paste a logo URL…"
+                />
+                <div className="logo-upload-row">
+                  <label className="btn btn-ghost logo-upload-btn">
+                    Upload logo
+                    <input
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      onChange={(e) => handleLoginLogoFile(e.target.files?.[0])}
+                    />
+                  </label>
+                  {loginLogoUrl && <span className="logo-uploaded">Logo set ✓</span>}
+                </div>
+                <p className="logo-hint">Shown above the login form. May need size tuning per theme.</p>
+              </div>
             </div>
           )}
 
@@ -912,15 +922,28 @@ export function ThemeEditorModal({
             </div>
           )}
           </div>
-          <MosaicPreview
-            look={look}
-            logoUrl={logoUrl}
-            brandName={showBrandName ? brandName : undefined}
-            features={features}
-            hidden={hidden}
-            labels={labels}
-            order={menuOrder}
-          />
+          {tab === "login" && isAgencyDefault ? (
+            <LoginPreview
+              bgColor={loginBgColor}
+              bgImage={loginBgImage}
+              gradientEnabled={loginGradientEnabled}
+              gradientColor={loginGradientColor}
+              gradientAngle={loginGradientAngle}
+              cardColor={loginCardColor}
+              buttonColor={loginButtonColor}
+              logoUrl={loginLogoUrl}
+            />
+          ) : (
+            <MosaicPreview
+              look={look}
+              logoUrl={logoUrl}
+              brandName={showBrandName ? brandName : undefined}
+              features={features}
+              hidden={hidden}
+              labels={labels}
+              order={menuOrder}
+            />
+          )}
         </div>
 
         <div className="modal-footer">
