@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import { ghl } from "../services/ghlClient";
 import { prisma } from "../services/prisma";
 import { syncLocationsForAgency } from "../services/locationSync";
-import { deleteMenuLinkForAgency } from "../services/customMenuLink";
+import { deleteMenuLinkForAgency, ensureAgencyAdminMenuLink } from "../services/customMenuLink";
 import { describeError } from "../services/security";
 
 export const webhooksRouter = Router();
@@ -82,6 +82,34 @@ webhooksRouter.post("/webhooks/ghl", ghl.webhooks.subscribe(), async (req: Reque
 async function handleLifecycle(eventType: string, body: any): Promise<void> {
   const companyId: string | undefined = body.companyId;
   const locationId: string | undefined = body.locationId;
+
+  // App installed on an agency. The browser OAuth redirect (routes/oauth.ts) is what
+  // normally creates the token and runs portal setup (location sync + Custom Menu
+  // Link). But that redirect depends on the user's browser completing the round-trip;
+  // if it times out (e.g. a cold-started instance), the install is left half-done:
+  // token present but no menu link and no onboarding. This webhook is server-to-server
+  // and GHL retries it, so we re-run the (idempotent) setup here to self-heal.
+  //
+  // NOTE: the webhook carries NO token - agency tokens only come from the OAuth code
+  // exchange. So we can only COMPLETE setup once the AgencyInstall row exists (created
+  // by that exchange). If it doesn't exist yet, we no-op and let the OAuth handler (or
+  // a later webhook retry) do it. GHL's event type is "INSTALL"; we also accept a
+  // granular "Install*" form defensively, mirroring the Uninstall* cases below.
+  if (eventType === "INSTALL" || /^install/i.test(eventType)) {
+    if (!companyId) return;
+    const agency = await prisma.agencyInstall.findUnique({ where: { ghlCompanyId: companyId } });
+    // Only for a live agency install: no row yet -> OAuth hasn't created the token, so
+    // there's nothing we can set up. Skip uninstalled installs (stale/revoked tokens).
+    if (!agency || agency.status === "uninstalled") return;
+    const appBaseUrl = process.env.APP_PUBLIC_URL;
+    if (!appBaseUrl) {
+      console.warn("INSTALL webhook: APP_PUBLIC_URL not set - skipping menu-link setup");
+      return;
+    }
+    await syncLocationsForAgency(agency.id);
+    await ensureAgencyAdminMenuLink(agency.id, appBaseUrl);
+    return;
+  }
 
   switch (eventType) {
     // A sub-account was created or updated - re-pull the agency's location list so
