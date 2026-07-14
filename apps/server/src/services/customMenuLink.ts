@@ -1,6 +1,14 @@
 import { randomBytes } from "node:crypto";
 import { ghl } from "./ghlClient";
 import { prisma } from "./prisma";
+import { decryptToken } from "./tokenCrypto";
+
+// GHL REST base + API version. We only need these for the uninstall-time delete,
+// which can't go through the SDK (see deleteMenuLinkForAgency). The version matches
+// the SDK client's default (we never override apiVersion), so it's the exact value
+// GHL already accepts for our create/update calls on this same resource.
+const GHL_BASE_URL = "https://services.leadconnectorhq.com";
+const GHL_API_VERSION = "2023-02-21";
 
 /**
  * One agency-level Custom Menu Link per agency (showOnCompany: true, showOnLocation:
@@ -120,14 +128,43 @@ export async function deleteMenuLinkForAgency(agencyInstallId: string) {
   });
   if (!agency?.menuLink) return;
 
-  // Best-effort GHL delete: by the time an uninstall webhook fires, GHL has usually
-  // already revoked our token (so this 401s) and often removes the app's menu links
-  // itself. Either way we must still drop our own DB record, so swallow the GHL error.
+  // Best-effort GHL delete of the actual menu link so it disappears from the agency's
+  // nav on uninstall.
+  //
+  // Why NOT the SDK here: the UninstallCompany webhook middleware runs BEFORE this and
+  // flips the agency to status="uninstalled". Our PrismaSessionStorage.getSession then
+  // deliberately withholds tokens for uninstalled installs, so the SDK's auth resolver
+  // THROWS ("Agency Access Token required but not available") before it can even send
+  // the request — leaving the link orphaned in GHL. That's the "menu link doesn't get
+  // deleted on uninstall" bug.
+  //
+  // Fix: call GHL directly with the token that's still in the row. Uninstall only flips
+  // status; it never wipes accessTokenEnc, and GHL access tokens stay valid for their
+  // lifetime after uninstall (only the refresh token is revoked), so a direct delete
+  // usually succeeds. If the token is already expired/revoked, this fails gracefully
+  // and we still drop our own DB record below.
   try {
-    await ghl.customMenus.deleteCustomMenu(
-      { customMenuId: agency.menuLink.ghlMenuLinkId },
-      { headers: { companyId: agency.ghlCompanyId } }
-    );
+    const token = agency.accessTokenEnc ? decryptToken(agency.accessTokenEnc) : null;
+    if (token) {
+      const resp = await fetch(
+        `${GHL_BASE_URL}/custom-menus/${encodeURIComponent(agency.menuLink.ghlMenuLinkId)}`,
+        {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Version: GHL_API_VERSION,
+            Accept: "application/json",
+          },
+        }
+      );
+      if (!resp.ok) {
+        console.warn(
+          `Menu-link delete via GHL returned ${resp.status} for agency ${agencyInstallId} (continuing).`
+        );
+      }
+    } else {
+      console.warn(`No stored token to delete menu link for agency ${agencyInstallId} (continuing).`);
+    }
   } catch (e) {
     console.warn(`Menu-link delete via GHL failed for agency ${agencyInstallId} (continuing):`, e);
   }
