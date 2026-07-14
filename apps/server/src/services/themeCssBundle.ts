@@ -288,10 +288,11 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
   //  - contentBgColor / contentTextColor: optional custom colors. Emitted AFTER the
   //    preset so a custom value wins. When a background is set without an explicit
   //    text color, we auto-pick readable text by luminance.
-  const DARK_TEXT = "#e2e8f0";
+  const DARK_TEXT = "#e5e5e5";
   if (theme.darkMode) {
-    rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)} { background: #0f172a !important; color: ${DARK_TEXT} !important; }`);
-    rules.push(`${scoped(scope, DARK_CARD_SELECTOR)} { background: #1e293b !important; color: ${DARK_TEXT} !important; }`);
+    // Neutral near-black (not slate/blue) so dark mode reads as true dark.
+    rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)} { background: #121212 !important; color: ${DARK_TEXT} !important; }`);
+    rules.push(`${scoped(scope, DARK_CARD_SELECTOR)} { background: #1c1c1c !important; color: ${DARK_TEXT} !important; }`);
     rules.push(`${scoped(scope, contentTextSelector())} { color: ${DARK_TEXT} !important; }`);
   }
   if (theme.contentBgColor) {

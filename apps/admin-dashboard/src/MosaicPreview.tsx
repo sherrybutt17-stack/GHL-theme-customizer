@@ -30,8 +30,8 @@ export function MosaicPreview({ look, logoUrl, brandName, features, hidden, labe
   const radius = typeof look.cornerRadius === "number" ? look.cornerRadius : 8;
   // Content area reflects the custom content background (falls back to dark-mode
   // preset, then light). When a custom bg is set we keep both canvas + card the same.
-  const canvasBg = look.contentBgColor || (look.darkMode ? "#0f172a" : "#f8fafc");
-  const cardBg = look.contentBgColor || (look.darkMode ? "#1e293b" : "#ffffff");
+  const canvasBg = look.contentBgColor || (look.darkMode ? "#121212" : "#f8fafc");
+  const cardBg = look.contentBgColor || (look.darkMode ? "#1c1c1c" : "#ffffff");
 
   // Main sidebar items only; honor explicit order, then drop hidden ones.
   let items = features.filter((f) => f.group !== "settings");
