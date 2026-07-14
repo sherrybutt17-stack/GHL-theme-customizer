@@ -123,17 +123,15 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
 
           <div style={{ marginTop: 20, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
             <button className="btn btn-ghost" onClick={() => setShowJs((v) => !v)}>
-              {showJs ? "Hide" : "Show"} optional JavaScript (favicon + browser-tab title)
+              {showJs ? "Hide" : "Show"} optional JavaScript (browser-tab title)
             </button>
             {showJs && (
               <>
                 <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "8px 0" }}>
-                  CSS can't set a favicon or the browser-tab title. To enable those, paste this{" "}
+                  Optional. CSS can't set the browser-tab title. To brand it, paste this{" "}
                   <strong>once</strong> into GHL's{" "}
-                  <strong>Settings &rarr; Company &rarr; Custom JavaScript</strong>. Like the CSS, it's{" "}
-                  <strong>paste-once</strong> — it fetches each sub-account's theme live, so all changes
-                  reflect automatically. (It's a block, not one line, because GHL blocks loading remote
-                  scripts — so the code rides along directly. You never re-paste it.)
+                  <strong>Settings &rarr; Company &rarr; Custom JavaScript</strong>. Paste-once — it
+                  reads each sub-account's theme live. Skip it if you only need the CSS branding.
                 </p>
                 <pre style={preStyle}>{embed?.jsSnippet ?? "Loading…"}</pre>
                 <button

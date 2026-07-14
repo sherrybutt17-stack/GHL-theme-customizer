@@ -58,13 +58,12 @@ interface VisualTheme {
 const PRIMARY_BUTTON_SELECTOR =
   ".hl-btn.primary, .hl-btn--primary, .btn-primary, button[class*='--primary'], .n-button--primary-type";
 const RADIUS_SELECTOR = ".hl-btn, button, .card, .hl-card, input, select, textarea, .modal";
-const DARK_SURFACE_SELECTOR =
+const CONTENT_SURFACE_SELECTOR =
   ".hl_wrapper, .hl_wrapper--inner, .hl-main, main, .container-fluid, #app-content, .hr-wrapper-container, .hr-config-provider";
-const DARK_CARD_SELECTOR = ".card, .hl-card";
+const CONTENT_CARD_SELECTOR = ".card, .hl-card";
 // Text-bearing descendants of the content surfaces. GHL's inner text nodes set their
 // OWN color, which does not inherit the container color we set - so when the content
-// background changes we must recolor these directly, or text goes invisible (dark on
-// dark). Kept to real text tags so we don't clobber buttons / colored badges / icons.
+// background changes we must recolor these directly, or text goes invisible.
 const CONTENT_TEXT_TAGS = [
   "h1", "h2", "h3", "h4", "h5", "h6", "p", "span", "label", "li", "td", "th", "dt", "dd", "small", "strong", "b", "em",
 ];
@@ -281,33 +280,22 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     );
   }
 
-  // Content area background + text.
-  //  - darkMode: one-click dark preset. We ALSO force text light on descendants,
-  //    because GHL's inner text sets its own dark color that won't inherit ours -
-  //    that's why dark mode used to make card text vanish.
-  //  - contentBgColor / contentTextColor: optional custom colors. Emitted AFTER the
-  //    preset so a custom value wins. When a background is set without an explicit
-  //    text color, we auto-pick readable text by luminance.
-  const DARK_TEXT = "#e5e5e5";
-  if (theme.darkMode) {
-    // Neutral near-black (not slate/blue) so dark mode reads as true dark.
-    rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)} { background: #121212 !important; color: ${DARK_TEXT} !important; }`);
-    rules.push(`${scoped(scope, DARK_CARD_SELECTOR)} { background: #1c1c1c !important; color: ${DARK_TEXT} !important; }`);
-    rules.push(`${scoped(scope, contentTextSelector())} { color: ${DARK_TEXT} !important; }`);
-  }
+  // Content area background + text (optional custom colors). Dark mode was removed;
+  // these give the same capability but with any color the agency picks. When a
+  // background is set without an explicit text color, we auto-pick readable text.
   if (theme.contentBgColor) {
     const bg = cssColor(theme.contentBgColor);
-    rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)} { background: ${bg} !important; }`);
-    rules.push(`${scoped(scope, DARK_CARD_SELECTOR)} { background: ${bg} !important; }`);
+    rules.push(`${scoped(scope, CONTENT_SURFACE_SELECTOR)} { background: ${bg} !important; }`);
+    rules.push(`${scoped(scope, CONTENT_CARD_SELECTOR)} { background: ${bg} !important; }`);
     if (!theme.contentTextColor) {
       const auto = readableTextOn(bg);
-      rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)}, ${scoped(scope, DARK_CARD_SELECTOR)} { color: ${auto} !important; }`);
+      rules.push(`${scoped(scope, CONTENT_SURFACE_SELECTOR)}, ${scoped(scope, CONTENT_CARD_SELECTOR)} { color: ${auto} !important; }`);
       rules.push(`${scoped(scope, contentTextSelector())} { color: ${auto} !important; }`);
     }
   }
   if (theme.contentTextColor) {
     const tc = cssColor(theme.contentTextColor);
-    rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)}, ${scoped(scope, DARK_CARD_SELECTOR)} { color: ${tc} !important; }`);
+    rules.push(`${scoped(scope, CONTENT_SURFACE_SELECTOR)}, ${scoped(scope, CONTENT_CARD_SELECTOR)} { color: ${tc} !important; }`);
     rules.push(`${scoped(scope, contentTextSelector())} { color: ${tc} !important; }`);
   }
 

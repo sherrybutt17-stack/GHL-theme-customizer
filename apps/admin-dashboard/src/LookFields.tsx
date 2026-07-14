@@ -254,20 +254,6 @@ export function LookFields({ value, onChange }: { value: Look; onChange: (patch:
         <div className="look-color-hint">Roundness of buttons, cards, and inputs. 0 = sharp corners.</div>
       </div>
 
-      <div className="look-toggle-row">
-        <label className="toggle">
-          <input
-            type="checkbox"
-            checked={value.darkMode}
-            onChange={(e) => onChange({ darkMode: e.target.checked })}
-          />
-          <span className="toggle-track" />
-        </label>
-        <div>
-          <div className="look-color-label">Dark mode</div>
-          <div className="look-color-hint">Darken the main content area and cards for this client.</div>
-        </div>
-      </div>
 
       <div className="field">
         <label>Font</label>
