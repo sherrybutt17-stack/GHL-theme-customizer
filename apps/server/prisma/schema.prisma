@@ -90,6 +90,7 @@ model ThemeConfig {
   sidebarTextColor    String?
   contentBgColor      String?
   contentTextColor    String?
+  buttonShape         String?
   darkMode            Boolean   @default(false)
   menuOrder           Json?
   hideUpgrade         Boolean   @default(false)
@@ -130,6 +131,7 @@ model AgencyDefaultTheme {
   sidebarTextColor    String?
   contentBgColor      String?
   contentTextColor    String?
+  buttonShape         String?
   darkMode            Boolean   @default(false)
   menuOrder           Json?
   hideUpgrade         Boolean   @default(false)
@@ -164,6 +166,7 @@ model ThemePreset {
   sidebarTextColor    String?
   contentBgColor      String?
   contentTextColor    String?
+  buttonShape         String?
   darkMode            Boolean   @default(false)
   menuOrder           Json?
   createdAt           DateTime  @default(now())

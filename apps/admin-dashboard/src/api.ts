@@ -47,6 +47,7 @@ export interface VisualTheme {
   sidebarTextColor: string | null;
   contentBgColor: string | null;
   contentTextColor: string | null;
+  buttonShape: string | null;
   darkMode: boolean;
   hideUpgrade: boolean;
   alertMessage: string | null;
@@ -86,6 +87,7 @@ export interface ThemePreset {
   sidebarTextColor: string | null;
   contentBgColor: string | null;
   contentTextColor: string | null;
+  buttonShape: string | null;
   darkMode: boolean;
   menuOrder: string[] | null;
 }
@@ -125,6 +127,7 @@ export interface ThemeInput {
   sidebarTextColor: string;
   contentBgColor: string;
   contentTextColor: string;
+  buttonShape: string;
   darkMode: boolean;
   hideUpgrade: boolean;
   alertMessage: string;

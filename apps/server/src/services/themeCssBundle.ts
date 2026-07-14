@@ -36,6 +36,7 @@ interface VisualTheme {
   sidebarTextColor?: string | null;
   contentBgColor?: string | null;
   contentTextColor?: string | null;
+  buttonShape?: string | null;
   menuOrder?: unknown;
   darkMode?: boolean | null;
   hideUpgrade?: boolean | null;
@@ -58,6 +59,7 @@ interface VisualTheme {
 const PRIMARY_BUTTON_SELECTOR =
   ".hl-btn.primary, .hl-btn--primary, .btn-primary, button[class*='--primary'], .n-button--primary-type";
 const RADIUS_SELECTOR = ".hl-btn, button, .card, .hl-card, input, select, textarea, .modal";
+const BUTTON_SHAPE_SELECTOR = ".hl-btn, button, .btn, .n-button";
 const CONTENT_SURFACE_SELECTOR =
   ".hl_wrapper, .hl_wrapper--inner, .hl-main, main, .container-fluid, #app-content, .hr-wrapper-container, .hr-config-provider";
 const CONTENT_CARD_SELECTOR = ".card, .hl-card";
@@ -268,6 +270,14 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
   // Corner radius (buttons, cards, inputs)
   if (typeof theme.cornerRadius === "number") {
     rules.push(`${scoped(scope, RADIUS_SELECTOR)} { border-radius: ${theme.cornerRadius}px !important; }`);
+  }
+
+  // Button shape preset - overrides the button radius specifically (emitted after the
+  // general corner radius so it wins on buttons). Whitelisted values only.
+  const BUTTON_SHAPE_RADIUS: Record<string, string> = { square: "0", rounded: "10px", pill: "999px" };
+  const shapeRadius = theme.buttonShape ? BUTTON_SHAPE_RADIUS[theme.buttonShape] : undefined;
+  if (shapeRadius) {
+    rules.push(`${scoped(scope, BUTTON_SHAPE_SELECTOR)} { border-radius: ${shapeRadius} !important; }`);
   }
 
   // Scrollbar color. WebKit scrollbar pseudo-elements can't hang off a :has()

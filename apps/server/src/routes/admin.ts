@@ -48,6 +48,7 @@ function visualFields(body: any) {
     sidebarTextColor: body?.sidebarTextColor || null,
     contentBgColor: body?.contentBgColor || null,
     contentTextColor: body?.contentTextColor || null,
+    buttonShape: body?.buttonShape || null,
     darkMode: !!body?.darkMode,
     hideUpgrade: !!body?.hideUpgrade,
     alertMessage: body?.alertMessage || null,
@@ -75,6 +76,7 @@ function presetLookFields(body: any) {
     sidebarTextColor: body?.sidebarTextColor || null,
     contentBgColor: body?.contentBgColor || null,
     contentTextColor: body?.contentTextColor || null,
+    buttonShape: body?.buttonShape || null,
     menuOrder: Array.isArray(body?.menuOrder) ? body.menuOrder : null,
     darkMode: !!body?.darkMode,
   };
@@ -393,6 +395,7 @@ adminRouter.post(
             sidebarTextColor: preset.sidebarTextColor,
             contentBgColor: preset.contentBgColor,
             contentTextColor: preset.contentTextColor,
+            buttonShape: preset.buttonShape,
             darkMode: preset.darkMode,
             version: (prev?.version ?? 0) + 1,
           },

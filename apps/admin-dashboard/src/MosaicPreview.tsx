@@ -32,6 +32,14 @@ export function MosaicPreview({ look, logoUrl, brandName, features, hidden, labe
   // preset, then light). When a custom bg is set we keep both canvas + card the same.
   const canvasBg = look.contentBgColor || (look.darkMode ? "#121212" : "#f8fafc");
   const cardBg = look.contentBgColor || (look.darkMode ? "#1c1c1c" : "#ffffff");
+  const btnRadius =
+    look.buttonShape === "square"
+      ? 0
+      : look.buttonShape === "pill"
+        ? 999
+        : look.buttonShape === "rounded"
+          ? 10
+          : radius;
 
   // Main sidebar items only; honor explicit order, then drop hidden ones.
   let items = features.filter((f) => f.group !== "settings");
@@ -90,7 +98,7 @@ export function MosaicPreview({ look, logoUrl, brandName, features, hidden, labe
             <div className="mp-line" style={{ width: "85%" }} />
             <button
               className="mp-btn"
-              style={{ background: look.buttonColor || look.primaryColor, borderRadius: radius }}
+              style={{ background: look.buttonColor || look.primaryColor, borderRadius: btnRadius }}
             >
               Button
             </button>
