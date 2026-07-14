@@ -7,6 +7,8 @@ import {
   GHL_SETTINGS_SIDEBAR_FEATURES,
 } from "../services/ghlSidebarFeatures";
 import { dashboardAuthEnabled, verifyDashboardToken } from "../services/dashboardAuth";
+import { scanBrand } from "../services/brandScan";
+import { generateThemeBundleScript } from "../services/themeBundleScript";
 
 export const adminRouter = Router();
 
@@ -44,6 +46,8 @@ function visualFields(body: any) {
     sidebarImageUrl: body?.sidebarImageUrl || null,
     scrollbarColor: body?.scrollbarColor || null,
     sidebarTextColor: body?.sidebarTextColor || null,
+    contentBgColor: body?.contentBgColor || null,
+    contentTextColor: body?.contentTextColor || null,
     darkMode: !!body?.darkMode,
     hideUpgrade: !!body?.hideUpgrade,
     alertMessage: body?.alertMessage || null,
@@ -69,6 +73,8 @@ function presetLookFields(body: any) {
     cornerRadius: typeof body?.cornerRadius === "number" ? body.cornerRadius : null,
     scrollbarColor: body?.scrollbarColor || null,
     sidebarTextColor: body?.sidebarTextColor || null,
+    contentBgColor: body?.contentBgColor || null,
+    contentTextColor: body?.contentTextColor || null,
     menuOrder: Array.isArray(body?.menuOrder) ? body.menuOrder : null,
     darkMode: !!body?.darkMode,
   };
@@ -118,7 +124,39 @@ adminRouter.get("/admin/api/:agencyInstallId/embed", async (req: Request, res: R
   const importSnippet = `@import url("${publicUrl}/theme-css/${agencyId}?v=${version}");`;
   const fullCss = await generateThemeCssBundle(agencyId);
 
-  res.json({ importSnippet, fullCss });
+  // Optional JS (pasted into GHL's Custom JavaScript) — enables the favicon and
+  // browser-tab title, which CSS can't set. jsSnippet is the raw body to paste
+  // (GHL blocks remote <script> loading, so we hand over the code itself).
+  const jsUrl = `${publicUrl}/theme-bundle/${agencyId}.js`;
+  const jsSnippet = generateThemeBundleScript(agencyId, publicUrl);
+
+  res.json({ importSnippet, fullCss, jsUrl, jsSnippet });
+});
+
+/**
+ * "Brand from website": fetch a URL the agency pastes and return its brand signals
+ * (a theme-color hex and/or the best brand image as a data: URL). The dashboard then
+ * runs the same client-side palette extractor it uses for logo uploads. SSRF-guarded
+ * in services/brandScan.ts. Auth-gated like every other route here.
+ */
+adminRouter.post("/admin/api/:agencyInstallId/brand-scan", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+
+  const url = typeof req.body?.url === "string" ? req.body.url.trim() : "";
+  if (!url) return res.status(400).json({ error: "A website URL is required" });
+
+  try {
+    const result = await scanBrand(url);
+    if (!result.imageDataUrl && !result.themeColor) {
+      return res.status(422).json({ error: "Couldn't find a logo or brand color on that page" });
+    }
+    res.json(result);
+  } catch {
+    // Deliberately generic: don't reveal whether a host was blocked, unresolvable,
+    // etc. (that would turn this into an SSRF probe oracle).
+    return res.status(400).json({ error: "Couldn't scan that website. Check the URL and try again." });
+  }
 });
 
 adminRouter.get("/admin/api/:agencyInstallId/locations", async (req: Request, res: Response) => {
@@ -353,6 +391,8 @@ adminRouter.post(
             cornerRadius: preset.cornerRadius,
             scrollbarColor: preset.scrollbarColor,
             sidebarTextColor: preset.sidebarTextColor,
+            contentBgColor: preset.contentBgColor,
+            contentTextColor: preset.contentTextColor,
             darkMode: preset.darkMode,
             version: (prev?.version ?? 0) + 1,
           },

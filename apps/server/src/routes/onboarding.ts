@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { prisma } from "../services/prisma";
+import { generateThemeBundleScript } from "../services/themeBundleScript";
 
 export const onboardingRouter = Router();
 
@@ -27,6 +28,8 @@ onboardingRouter.get("/onboarding/:agencyInstallId", async (req: Request, res: R
   const appBaseUrl = process.env.APP_PUBLIC_URL ?? `${req.protocol}://${req.get("host")}`;
   // Cache-buster so the first paste isn't shadowed by a previously cached copy.
   const importLine = `@import url("${appBaseUrl}/theme-css/${agency.id}?v=${Date.now()}");`;
+  // Optional Custom JavaScript — enables favicon + browser-tab title (CSS can't).
+  const jsSnippet = generateThemeBundleScript(agency.id, appBaseUrl);
 
   res.send(`<!doctype html>
 <html>
@@ -52,6 +55,8 @@ onboardingRouter.get("/onboarding/:agencyInstallId", async (req: Request, res: R
     .hint { font-size: 12px; color: #888; margin: 6px 0 0; }
     .done { margin-top: 30px; padding: 16px 18px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px; }
     .done strong { color: #15803d; }
+    .optional { margin-top: 24px; border-top: 1px solid #e5e5e5; padding-top: 18px; }
+    .optional summary { cursor: pointer; color: var(--brand); font-size: 14px; }
   </style>
 </head>
 <body>
@@ -81,9 +86,23 @@ onboardingRouter.get("/onboarding/:agencyInstallId", async (req: Request, res: R
     (in your agency sidebar) now applies live &mdash; no need to paste anything again.
   </div>
 
+  <details class="optional">
+    <summary><strong>Optional:</strong> enable favicon &amp; browser-tab title</summary>
+    <p class="hint" style="margin-top:12px">
+      CSS can't change a sub-account's favicon or browser-tab title. To turn those on, paste the
+      code below <strong>once</strong> into <strong>Settings &rarr; Company &rarr; Custom JavaScript</strong>.
+      Like the CSS, it's paste-once &mdash; it updates every sub-account live. (It's a block, not one
+      line, because GHL blocks loading remote scripts.)
+    </p>
+    <div class="embed">
+      <pre id="js-snippet">${escapeHtml(jsSnippet)}</pre>
+      <button id="copy-js-btn" onclick="copyText(this, 'js-snippet')">Copy</button>
+    </div>
+  </details>
+
   <script>
-    function copyImport(btn) {
-      var text = document.getElementById('import-line').textContent;
+    function copyText(btn, id) {
+      var text = document.getElementById(id).textContent;
       var ok = false;
       try {
         var ta = document.createElement('textarea');
@@ -98,6 +117,7 @@ onboardingRouter.get("/onboarding/:agencyInstallId", async (req: Request, res: R
       btn.textContent = ok ? 'Copied!' : 'Select & copy';
       setTimeout(function () { btn.textContent = 'Copy'; }, 2500);
     }
+    function copyImport(btn) { copyText(btn, 'import-line'); }
   </script>
 </body>
 </html>`);

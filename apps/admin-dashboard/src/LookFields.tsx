@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { suggestGradients, suggestAccents } from "./colorUtils";
 
 /** The visual "look" a theme, agency-default, or preset can carry. */
@@ -13,11 +14,14 @@ export interface Look {
   cornerRadius: number;
   scrollbarColor: string;
   sidebarTextColor: string;
+  contentBgColor: string;
+  contentTextColor: string;
   darkMode: boolean;
 }
 
 export const GOOGLE_FONTS = [
   "",
+  // Sans-serif — modern / geometric
   "Inter",
   "Poppins",
   "Montserrat",
@@ -25,11 +29,49 @@ export const GOOGLE_FONTS = [
   "Open Sans",
   "Lato",
   "Nunito",
+  "Nunito Sans",
   "Raleway",
   "Work Sans",
   "DM Sans",
   "Manrope",
+  "Rubik",
+  "Mulish",
+  "Karla",
+  "Sora",
+  "Space Grotesk",
+  "Plus Jakarta Sans",
+  "Figtree",
+  "Outfit",
+  "Quicksand",
+  "Barlow",
+  "Source Sans 3",
+  "PT Sans",
+  "Josefin Sans",
+  // Serif / display
+  "Playfair Display",
+  "Merriweather",
+  "Roboto Slab",
+  "Lora",
+  "Bricolage Grotesque",
 ];
+
+// Fonts already loaded by index.html; everything else is fetched on demand the
+// first time it's previewed so the editor sample matches what GHL will render.
+const PRELOADED_FONTS = new Set(["Inter"]);
+const loadedFonts = new Set<string>();
+
+/** Inject a Google Fonts stylesheet for `family` once, so the preview renders it. */
+function ensureFontLoaded(family: string) {
+  if (!family || PRELOADED_FONTS.has(family) || loadedFonts.has(family)) return;
+  if (typeof document === "undefined") return;
+  loadedFonts.add(family);
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(
+    family
+  )}:wght@400;500;600;700&display=swap`;
+  document.head.appendChild(link);
+}
 
 function ColorRow({
   label,
@@ -60,6 +102,11 @@ function ColorRow({
 }
 
 export function LookFields({ value, onChange }: { value: Look; onChange: (patch: Partial<Look>) => void }) {
+  // Load the picked font so the editor preview matches what GHL will render.
+  useEffect(() => {
+    ensureFontLoaded(value.fontFamily);
+  }, [value.fontFamily]);
+
   return (
     <div className="look-fields">
       <ColorRow
@@ -179,6 +226,20 @@ export function LookFields({ value, onChange }: { value: Look; onChange: (patch:
         hint="Color of the sidebar menu labels. Pick a dark color if you use a light sidebar background."
         value={value.sidebarTextColor || "#ffffff"}
         onChange={(v) => onChange({ sidebarTextColor: v })}
+      />
+
+      <ColorRow
+        label="Content background"
+        hint="Background of the main content area + cards (Dashboard, lists). Text auto-adjusts to stay readable. Leave default to skip."
+        value={value.contentBgColor || "#0f172a"}
+        onChange={(v) => onChange({ contentBgColor: v })}
+      />
+
+      <ColorRow
+        label="Content text"
+        hint="Overrides the content text color. Leave default to let it auto-pick based on the background."
+        value={value.contentTextColor || "#e2e8f0"}
+        onChange={(v) => onChange({ contentTextColor: v })}
       />
 
       <div className="look-angle">

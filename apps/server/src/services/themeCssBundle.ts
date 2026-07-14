@@ -34,6 +34,8 @@ interface VisualTheme {
   sidebarImageUrl?: string | null;
   scrollbarColor?: string | null;
   sidebarTextColor?: string | null;
+  contentBgColor?: string | null;
+  contentTextColor?: string | null;
   menuOrder?: unknown;
   darkMode?: boolean | null;
   hideUpgrade?: boolean | null;
@@ -56,8 +58,31 @@ interface VisualTheme {
 const PRIMARY_BUTTON_SELECTOR =
   ".hl-btn.primary, .hl-btn--primary, .btn-primary, button[class*='--primary'], .n-button--primary-type";
 const RADIUS_SELECTOR = ".hl-btn, button, .card, .hl-card, input, select, textarea, .modal";
-const DARK_SURFACE_SELECTOR = ".hl_wrapper, .hl_wrapper--inner, .hl-main, main";
+const DARK_SURFACE_SELECTOR =
+  ".hl_wrapper, .hl_wrapper--inner, .hl-main, main, .container-fluid, #app-content, .hr-wrapper-container, .hr-config-provider";
 const DARK_CARD_SELECTOR = ".card, .hl-card";
+// Text-bearing descendants of the content surfaces. GHL's inner text nodes set their
+// OWN color, which does not inherit the container color we set - so when the content
+// background changes we must recolor these directly, or text goes invisible (dark on
+// dark). Kept to real text tags so we don't clobber buttons / colored badges / icons.
+const CONTENT_TEXT_TAGS = [
+  "h1", "h2", "h3", "h4", "h5", "h6", "p", "span", "label", "li", "td", "th", "dt", "dd", "small", "strong", "b", "em",
+];
+function contentTextSelector(): string {
+  const bases = [".hl_wrapper--inner", ".hl-main", "main", ".card", ".hl-card", ".hr-wrapper-container"];
+  return bases.flatMap((b) => CONTENT_TEXT_TAGS.map((t) => `${b} ${t}`)).join(", ");
+}
+/** Pick readable text (light vs dark) for a given background color, by luminance. */
+function readableTextOn(hex: string): string {
+  const h = hex.replace("#", "").trim();
+  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  if (!/^[0-9a-f]{6}$/i.test(full)) return "#1a1a1a";
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum < 0.55 ? "#e2e8f0" : "#1a1a1a";
+}
 const UPGRADE_SELECTOR =
   "[class*='upgrade'], [href*='upgrade'], [href*='billing'], .upgrade-banner, [data-testid*='upgrade']";
 
@@ -256,10 +281,34 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     );
   }
 
-  // Dark mode (content area + cards)
+  // Content area background + text.
+  //  - darkMode: one-click dark preset. We ALSO force text light on descendants,
+  //    because GHL's inner text sets its own dark color that won't inherit ours -
+  //    that's why dark mode used to make card text vanish.
+  //  - contentBgColor / contentTextColor: optional custom colors. Emitted AFTER the
+  //    preset so a custom value wins. When a background is set without an explicit
+  //    text color, we auto-pick readable text by luminance.
+  const DARK_TEXT = "#e5e5e5";
   if (theme.darkMode) {
-    rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)} { background: #0f172a !important; color: #e2e8f0 !important; }`);
-    rules.push(`${scoped(scope, DARK_CARD_SELECTOR)} { background: #1e293b !important; color: #e2e8f0 !important; }`);
+    // Neutral near-black (not slate/blue) so dark mode reads as true dark.
+    rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)} { background: #121212 !important; color: ${DARK_TEXT} !important; }`);
+    rules.push(`${scoped(scope, DARK_CARD_SELECTOR)} { background: #1c1c1c !important; color: ${DARK_TEXT} !important; }`);
+    rules.push(`${scoped(scope, contentTextSelector())} { color: ${DARK_TEXT} !important; }`);
+  }
+  if (theme.contentBgColor) {
+    const bg = cssColor(theme.contentBgColor);
+    rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)} { background: ${bg} !important; }`);
+    rules.push(`${scoped(scope, DARK_CARD_SELECTOR)} { background: ${bg} !important; }`);
+    if (!theme.contentTextColor) {
+      const auto = readableTextOn(bg);
+      rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)}, ${scoped(scope, DARK_CARD_SELECTOR)} { color: ${auto} !important; }`);
+      rules.push(`${scoped(scope, contentTextSelector())} { color: ${auto} !important; }`);
+    }
+  }
+  if (theme.contentTextColor) {
+    const tc = cssColor(theme.contentTextColor);
+    rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)}, ${scoped(scope, DARK_CARD_SELECTOR)} { color: ${tc} !important; }`);
+    rules.push(`${scoped(scope, contentTextSelector())} { color: ${tc} !important; }`);
   }
 
   // Hide upgrade / billing prompts (white-label clean-up)

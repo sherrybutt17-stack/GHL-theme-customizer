@@ -88,6 +88,8 @@ model ThemeConfig {
   sidebarImageUrl     String?
   scrollbarColor      String?
   sidebarTextColor    String?
+  contentBgColor      String?
+  contentTextColor    String?
   darkMode            Boolean   @default(false)
   menuOrder           Json?
   hideUpgrade         Boolean   @default(false)
@@ -126,6 +128,8 @@ model AgencyDefaultTheme {
   sidebarImageUrl     String?
   scrollbarColor      String?
   sidebarTextColor    String?
+  contentBgColor      String?
+  contentTextColor    String?
   darkMode            Boolean   @default(false)
   menuOrder           Json?
   hideUpgrade         Boolean   @default(false)
@@ -158,6 +162,8 @@ model ThemePreset {
   cornerRadius        Int?
   scrollbarColor      String?
   sidebarTextColor    String?
+  contentBgColor      String?
+  contentTextColor    String?
   darkMode            Boolean   @default(false)
   menuOrder           Json?
   createdAt           DateTime  @default(now())

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   fetchSidebarFeatures,
   fetchThemeVersions,
+  scanBrandWebsite,
   type SidebarFeature,
   type ThemeConfig,
   type ThemeInput,
@@ -23,6 +24,8 @@ interface Props {
     | null;
   showBrandName: boolean;
   presets: ThemePreset[];
+  /** Agency install id — needed for the "brand from website" server call. */
+  agencyId?: string;
   /** When set (per-location editing), enables the version-history tab. */
   history?: { agencyId: string; locationInstallId: string };
   onSave: (theme: ThemeInput) => Promise<void>;
@@ -87,6 +90,8 @@ function lookFrom(initial: Props["initial"]): Look {
     cornerRadius: initial?.cornerRadius ?? 8,
     scrollbarColor: initial?.scrollbarColor ?? "#94a3b8",
     sidebarTextColor: initial?.sidebarTextColor ?? "#ffffff",
+    contentBgColor: initial?.contentBgColor ?? "",
+    contentTextColor: initial?.contentTextColor ?? "",
     darkMode: initial?.darkMode ?? false,
   };
 }
@@ -96,6 +101,7 @@ export function ThemeEditorModal({
   initial,
   showBrandName,
   presets,
+  agencyId,
   history,
   onSave,
   onSaveAsPreset,
@@ -124,6 +130,9 @@ export function ThemeEditorModal({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [pickingColors, setPickingColors] = useState(false);
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [scanning, setScanning] = useState(false);
+  const [scanMsg, setScanMsg] = useState<string | null>(null);
 
   useEffect(() => {
     // Editing the agency default (no brand name) → show the agency sidebar items;
@@ -168,6 +177,8 @@ export function ThemeEditorModal({
       cornerRadius: p.cornerRadius ?? look.cornerRadius,
       scrollbarColor: p.scrollbarColor ?? look.scrollbarColor,
       sidebarTextColor: p.sidebarTextColor ?? look.sidebarTextColor,
+      contentBgColor: p.contentBgColor ?? look.contentBgColor,
+      contentTextColor: p.contentTextColor ?? look.contentTextColor,
       darkMode: p.darkMode,
     });
   }
@@ -200,6 +211,42 @@ export function ThemeEditorModal({
       else setLogoErr("Couldn't read colors from this image — try uploading it instead of a URL.");
     } finally {
       setPickingColors(false);
+    }
+  }
+
+  // "Brand from website": the server fetches the site and returns its theme-color
+  // and/or best brand image (as a data: URL); we then run the same palette extractor
+  // used for logo uploads. The image half only works if the agencyId is known.
+  async function scanWebsite() {
+    const raw = websiteUrl.trim();
+    if (!raw || !agencyId) return;
+    const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    setScanMsg(null);
+    setScanning(true);
+    try {
+      const res = await scanBrandWebsite(agencyId, url);
+      let primary = res.themeColor;
+      let accent: string | undefined;
+      if (res.imageDataUrl) {
+        const pal = await paletteFromImage(res.imageDataUrl);
+        if (pal) {
+          primary = primary || pal.primary;
+          accent = pal.accent;
+        }
+      }
+      if (!primary && !accent) {
+        setScanMsg("Found the site, but couldn't read a usable brand color from it.");
+        return;
+      }
+      patchLook({
+        ...(primary ? { primaryColor: primary } : {}),
+        ...(accent ? { accentColor: accent } : {}),
+      });
+      setScanMsg(`Applied colors from ${res.siteName || url}. Tweak them below if needed.`);
+    } catch (e) {
+      setScanMsg((e as Error).message || "Couldn't scan that website.");
+    } finally {
+      setScanning(false);
     }
   }
 
@@ -291,6 +338,8 @@ export function ThemeEditorModal({
         cornerRadius: look.cornerRadius,
         scrollbarColor: look.scrollbarColor,
         sidebarTextColor: look.sidebarTextColor,
+        contentBgColor: look.contentBgColor,
+        contentTextColor: look.contentTextColor,
         darkMode: look.darkMode,
         sidebarImageUrl,
         hideUpgrade,
@@ -433,6 +482,39 @@ export function ThemeEditorModal({
                 >
                   {pickingColors ? "Reading logo…" : "🎨 Use colors from logo"}
                 </button>
+              )}
+
+              {agencyId && (
+                <div className="field">
+                  <label>Brand from website</label>
+                  <div className="logo-upload-row">
+                    <input
+                      type="url"
+                      value={websiteUrl}
+                      onChange={(e) => setWebsiteUrl(e.target.value)}
+                      placeholder="yourclient.com"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          scanWebsite();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={scanWebsite}
+                      disabled={scanning || !websiteUrl.trim()}
+                    >
+                      {scanning ? "Scanning…" : "🌐 Fetch colors"}
+                    </button>
+                  </div>
+                  <p className="logo-hint">
+                    Paste a client's website and we'll pull their logo &amp; brand color to prefill{" "}
+                    <strong>primary</strong> and <strong>accent</strong>. You can fine-tune after.
+                  </p>
+                  {scanMsg && <div className="field-error">{scanMsg}</div>}
+                </div>
               )}
 
               <div className="field">
