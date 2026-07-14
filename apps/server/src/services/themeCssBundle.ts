@@ -58,7 +58,8 @@ interface VisualTheme {
 const PRIMARY_BUTTON_SELECTOR =
   ".hl-btn.primary, .hl-btn--primary, .btn-primary, button[class*='--primary'], .n-button--primary-type";
 const RADIUS_SELECTOR = ".hl-btn, button, .card, .hl-card, input, select, textarea, .modal";
-const DARK_SURFACE_SELECTOR = ".hl_wrapper, .hl_wrapper--inner, .hl-main, main, .container-fluid, #app-content";
+const DARK_SURFACE_SELECTOR =
+  ".hl_wrapper, .hl_wrapper--inner, .hl-main, main, .container-fluid, #app-content, .hr-wrapper-container, .hr-config-provider";
 const DARK_CARD_SELECTOR = ".card, .hl-card";
 // Text-bearing descendants of the content surfaces. GHL's inner text nodes set their
 // OWN color, which does not inherit the container color we set - so when the content
@@ -68,7 +69,7 @@ const CONTENT_TEXT_TAGS = [
   "h1", "h2", "h3", "h4", "h5", "h6", "p", "span", "label", "li", "td", "th", "dt", "dd", "small", "strong", "b", "em",
 ];
 function contentTextSelector(): string {
-  const bases = [".hl_wrapper--inner", ".hl-main", "main", ".card", ".hl-card"];
+  const bases = [".hl_wrapper--inner", ".hl-main", "main", ".card", ".hl-card", ".hr-wrapper-container"];
   return bases.flatMap((b) => CONTENT_TEXT_TAGS.map((t) => `${b} ${t}`)).join(", ");
 }
 /** Pick readable text (light vs dark) for a given background color, by luminance. */
