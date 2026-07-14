@@ -60,6 +60,17 @@ export function validateEnv(): void {
           "Set DASHBOARD_AUTH_ENABLED=true and a strong DASHBOARD_TOKEN_SECRET."
       );
     }
+    if (!process.env.WEBHOOK_SIGNATURE_PUBLIC_KEY?.trim()) {
+      // Fatal in production: without the signing key, /webhooks/ghl processes events
+      // WITHOUT signature verification (fail-open). A forged UninstallCompany with a
+      // known companyId would then mark an agency uninstalled + delete its menu link -
+      // an unauthenticated cross-tenant integrity/DoS attack. Fail boot instead.
+      throw new Error(
+        "WEBHOOK_SIGNATURE_PUBLIC_KEY is required in production (APP_PUBLIC_URL is https). " +
+          "Without it incoming GHL webhooks are NOT signature-verified and forged lifecycle " +
+          "events (e.g. UninstallCompany) are accepted. Set the app's Ed25519 public key."
+      );
+    }
     if (!process.env.DASHBOARD_TOKEN_SECRET?.trim()) {
       // Not fatal: dashboardAuth falls back to TOKEN_ENCRYPTION_KEY (itself a required,
       // strong secret), so tokens are still signed with a strong key - just reused

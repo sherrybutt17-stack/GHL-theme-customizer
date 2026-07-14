@@ -54,6 +54,17 @@ export async function syncLocationsForAgency(agencyInstallId: string) {
 
   for (const loc of locations) {
     if (!loc.id) continue;
+    const existing = await prisma.locationInstall.findUnique({ where: { ghlLocationId: loc.id } });
+    if (existing?.status === "removed") {
+      // A location we previously soft-removed (UninstallLocation/LocationDelete) is
+      // still present in GHL's list. Do NOT resurrect it just because a sibling
+      // triggered a re-sync - only refresh its name; keep it removed + disabled.
+      await prisma.locationInstall.update({
+        where: { ghlLocationId: loc.id },
+        data: { locationName: loc.name },
+      });
+      continue;
+    }
     await prisma.locationInstall.upsert({
       where: { ghlLocationId: loc.id },
       update: { locationName: loc.name, status: "active" },

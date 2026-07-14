@@ -83,6 +83,28 @@ function presetLookFields(body: any) {
 }
 
 /**
+ * Create the next ThemeConfig version for a location, retrying if a concurrent save
+ * grabbed the same version number (the (locationInstallId, version) unique index
+ * throws P2002). Recompute the max version and retry a few times.
+ */
+async function createThemeVersion(locationInstallId: string, data: Record<string, any>) {
+  for (let attempt = 0; ; attempt++) {
+    const latest = await prisma.themeConfig.findFirst({
+      where: { locationInstallId },
+      orderBy: [{ version: "desc" }, { createdAt: "desc" }],
+      select: { version: true },
+    });
+    const version = (latest?.version ?? 0) + 1;
+    try {
+      return await prisma.themeConfig.create({ data: { ...data, locationInstallId, version } });
+    } catch (e: any) {
+      if (e?.code === "P2002" && attempt < 5) continue; // version taken concurrently, retry
+      throw e;
+    }
+  }
+}
+
+/**
  * Every route here is scoped by :agencyInstallId in the path. When
  * DASHBOARD_AUTH_ENABLED=true, we additionally require a valid HMAC token
  * (minted at /admin-embed, sent by the dashboard as x-mosaic-token) that matches
@@ -167,7 +189,7 @@ adminRouter.get("/admin/api/:agencyInstallId/locations", async (req: Request, re
 
   const locations = await prisma.locationInstall.findMany({
     where: { agencyInstallId: agencyId, status: "active" },
-    include: { themeConfigs: { orderBy: { version: "desc" }, take: 1 } },
+    include: { themeConfigs: { orderBy: [{ version: "desc" }, { createdAt: "desc" }], take: 1 } },
     orderBy: { locationName: "asc" },
   });
 
@@ -192,21 +214,16 @@ adminRouter.put(
     // not just exist somewhere in the DB (cross-agency IDOR check).
     const location = await prisma.locationInstall.findFirst({
       where: { id: req.params.locationInstallId, agencyInstallId: agencyId },
-      include: { themeConfigs: { orderBy: { version: "desc" }, take: 1 } },
+      include: { themeConfigs: { orderBy: [{ version: "desc" }, { createdAt: "desc" }], take: 1 } },
     });
     if (!location) {
       return res.status(403).json({ error: "Location does not belong to this agency install" });
     }
 
-    const nextVersion = (location.themeConfigs[0]?.version ?? 0) + 1;
-    const theme = await prisma.themeConfig.create({
-      data: {
-        locationInstallId: location.id,
-        brandName: req.body?.brandName,
-        ...visualFields(req.body),
-        customCssOverride: req.body?.customCss || null,
-        version: nextVersion,
-      },
+    const theme = await createThemeVersion(location.id, {
+      brandName: req.body?.brandName,
+      ...visualFields(req.body),
+      customCssOverride: req.body?.customCss || null,
     });
 
     res.json(theme);
@@ -234,7 +251,7 @@ adminRouter.get(
 
     const versions = await prisma.themeConfig.findMany({
       where: { locationInstallId: location.id },
-      orderBy: { version: "desc" },
+      orderBy: [{ version: "desc" }, { createdAt: "desc" }],
       take: 50,
     });
     res.json(versions);
@@ -373,46 +390,42 @@ adminRouter.post(
 
     const locations = await prisma.locationInstall.findMany({
       where: { id: { in: ids }, agencyInstallId: agencyId },
-      include: { themeConfigs: { orderBy: { version: "desc" }, take: 1 } },
+      include: { themeConfigs: { orderBy: [{ version: "desc" }, { createdAt: "desc" }], take: 1 } },
     });
 
     const updated = await Promise.all(
       locations.map(async (loc) => {
         const prev = loc.themeConfigs[0];
-        const theme = await prisma.themeConfig.create({
-          data: {
-            locationInstallId: loc.id,
-            // Preserve client identity + policy from the prior version.
-            brandName: prev?.brandName ?? null,
-            logoUrl: prev?.logoUrl ?? null,
-            faviconUrl: prev?.faviconUrl ?? null,
-            sidebarImageUrl: prev?.sidebarImageUrl ?? null,
-            hideUpgrade: prev?.hideUpgrade ?? false,
-            menuLabelOverrides: prev?.menuLabelOverrides ?? undefined,
-            hiddenFeatures: prev?.hiddenFeatures ?? undefined,
-            // Menu order is structural, not part of a color preset - keep the
-            // sub-account's existing order instead of wiping it on preset apply.
-            menuOrder: prev?.menuOrder ?? undefined,
-            customCssOverride: prev?.customCssOverride ?? null,
-            // Overlay the preset look.
-            primaryColor: preset.primaryColor,
-            secondaryColor: preset.secondaryColor,
-            accentColor: preset.accentColor,
-            fontFamily: preset.fontFamily,
-            gradientEnabled: preset.gradientEnabled,
-            gradientColor: preset.gradientColor,
-            gradientAngle: preset.gradientAngle,
-            topBarColor: preset.topBarColor,
-            buttonColor: preset.buttonColor,
-            cornerRadius: preset.cornerRadius,
-            scrollbarColor: preset.scrollbarColor,
-            sidebarTextColor: preset.sidebarTextColor,
-            contentBgColor: preset.contentBgColor,
-            contentTextColor: preset.contentTextColor,
-            buttonShape: preset.buttonShape,
-            darkMode: preset.darkMode,
-            version: (prev?.version ?? 0) + 1,
-          },
+        const theme = await createThemeVersion(loc.id, {
+          // Preserve client identity + policy from the prior version.
+          brandName: prev?.brandName ?? null,
+          logoUrl: prev?.logoUrl ?? null,
+          faviconUrl: prev?.faviconUrl ?? null,
+          sidebarImageUrl: prev?.sidebarImageUrl ?? null,
+          hideUpgrade: prev?.hideUpgrade ?? false,
+          menuLabelOverrides: prev?.menuLabelOverrides ?? undefined,
+          hiddenFeatures: prev?.hiddenFeatures ?? undefined,
+          // Menu order is structural, not part of a color preset - keep the
+          // sub-account's existing order instead of wiping it on preset apply.
+          menuOrder: prev?.menuOrder ?? undefined,
+          customCssOverride: prev?.customCssOverride ?? null,
+          // Overlay the preset look.
+          primaryColor: preset.primaryColor,
+          secondaryColor: preset.secondaryColor,
+          accentColor: preset.accentColor,
+          fontFamily: preset.fontFamily,
+          gradientEnabled: preset.gradientEnabled,
+          gradientColor: preset.gradientColor,
+          gradientAngle: preset.gradientAngle,
+          topBarColor: preset.topBarColor,
+          buttonColor: preset.buttonColor,
+          cornerRadius: preset.cornerRadius,
+          scrollbarColor: preset.scrollbarColor,
+          sidebarTextColor: preset.sidebarTextColor,
+          contentBgColor: preset.contentBgColor,
+          contentTextColor: preset.contentTextColor,
+          buttonShape: preset.buttonShape,
+          darkMode: preset.darkMode,
         });
         await prisma.locationInstall.update({ where: { id: loc.id }, data: { enabled: true } });
         return { locationInstallId: loc.id, theme };

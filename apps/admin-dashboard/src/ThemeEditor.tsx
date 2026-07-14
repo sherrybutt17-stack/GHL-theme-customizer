@@ -12,6 +12,7 @@ import {
 } from "./api";
 import { LookFields, type Look } from "./LookFields";
 import { MosaicPreview } from "./MosaicPreview";
+import { PromptDialog } from "./Dialog";
 import { paletteFromImage } from "./colorUtils";
 
 interface Props {
@@ -32,7 +33,7 @@ interface Props {
   /** When set (per-location editing), enables the version-history tab. */
   history?: { agencyId: string; locationInstallId: string };
   onSave: (theme: ThemeInput) => Promise<void>;
-  onSaveAsPreset: (name: string, look: Look) => Promise<void>;
+  onSaveAsPreset: (name: string, look: Look, menuOrder: string[]) => Promise<void>;
   onCancel: () => void;
 }
 
@@ -138,6 +139,7 @@ export function ThemeEditorModal({
   const [websiteUrl, setWebsiteUrl] = useState("");
   const [scanning, setScanning] = useState(false);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
+  const [presetPromptOpen, setPresetPromptOpen] = useState(false);
   // Login-page branding (agency default only).
   const [loginBgColor, setLoginBgColor] = useState(initial?.loginBgColor ?? "");
   const [loginBgImage, setLoginBgImage] = useState(initial?.loginBgImage ?? "");
@@ -148,10 +150,14 @@ export function ThemeEditorModal({
   const [loginButtonColor, setLoginButtonColor] = useState(initial?.loginButtonColor ?? "");
   const [loginLogoUrl, setLoginLogoUrl] = useState(initial?.loginLogoUrl ?? "");
 
+  const [featuresError, setFeaturesError] = useState<string | null>(null);
   useEffect(() => {
     // Editing the agency default (no brand name) → show the agency sidebar items;
     // editing a sub-account → show the sub-account items.
-    fetchSidebarFeatures(showBrandName ? undefined : "agency").then(setFeatures);
+    setFeaturesError(null);
+    fetchSidebarFeatures(showBrandName ? undefined : "agency")
+      .then(setFeatures)
+      .catch((e) => setFeaturesError((e as Error).message || "Couldn't load the sidebar items."));
   }, [showBrandName]);
 
   useEffect(() => {
@@ -199,6 +205,8 @@ export function ThemeEditorModal({
       buttonShape: p.buttonShape ?? look.buttonShape,
       darkMode: p.darkMode,
     });
+    // Presets can carry a saved sidebar order; apply it if present.
+    if (Array.isArray(p.menuOrder)) setMenuOrder(p.menuOrder as string[]);
   }
 
   function toggleHidden(key: string) {
@@ -400,18 +408,21 @@ export function ThemeEditorModal({
     }
   }
 
-  async function handleSaveAsPreset() {
-    const name = prompt("Name this preset (e.g. “Dark Gold”):");
-    if (!name) return;
+  // window.prompt is a no-op in GHL's cross-origin iframe → open an in-app dialog.
+  async function doSaveAsPreset(name: string) {
+    setPresetPromptOpen(false);
     try {
-      await onSaveAsPreset(name, look);
+      await onSaveAsPreset(name, look, menuOrder);
     } catch (e) {
       setSaveError((e as Error).message || "Could not save preset.");
     }
   }
 
   return (
-    <div className="modal-overlay" onClick={onCancel}>
+    <>
+    {/* No overlay-click-to-close here: this is a big form and a stray misclick would
+        discard all unsaved edits. Close only via the X or Cancel button. */}
+    <div className="modal-overlay">
       <div className="modal modal-lg" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>{title}</h2>
@@ -727,7 +738,7 @@ export function ThemeEditorModal({
                 </div>
               )}
 
-              <button className="btn btn-ghost" style={{ marginTop: 4 }} onClick={handleSaveAsPreset}>
+              <button className="btn btn-ghost" style={{ marginTop: 4 }} onClick={() => setPresetPromptOpen(true)}>
                 + Save this look as a preset
               </button>
             </>
@@ -739,6 +750,7 @@ export function ThemeEditorModal({
               <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px" }}>
                 Drag <span className="drag-handle-inline">⠿</span> to reorder, or hide/rename items.
               </p>
+              {featuresError && <div className="field-error" style={{ marginBottom: 10 }}>{featuresError}</div>}
               <div className="feature-list">
                 {mainFeaturesInOrder().map((f) => (
                   <div
@@ -908,5 +920,16 @@ export function ThemeEditorModal({
         </div>
       </div>
     </div>
+    {presetPromptOpen && (
+      <PromptDialog
+        title="Save as preset"
+        label="Preset name"
+        placeholder="e.g. Dark Gold"
+        submitLabel="Save preset"
+        onSubmit={doSaveAsPreset}
+        onCancel={() => setPresetPromptOpen(false)}
+      />
+    )}
+    </>
   );
 }

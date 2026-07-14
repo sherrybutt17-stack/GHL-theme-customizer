@@ -22,7 +22,11 @@ const app: Express = express();
 // req.protocol resolves to "https" (not "http") - this keeps any APP_PUBLIC_URL
 // fallback from emitting insecure http:// links that GHL blocks as mixed content.
 // Also makes req.ip the real client IP, which the rate limiter keys on.
-app.set("trust proxy", true);
+// IMPORTANT: trust a FIXED number of hops, not `true`. `true` trusts the entire
+// X-Forwarded-For chain, letting a client spoof req.ip and get a fresh rate-limit
+// bucket per request. Default 1 (Render's single TLS proxy); override if more hops
+// (e.g. Cloudflare in front → 2).
+app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS ?? 1));
 app.use(securityHeaders);
 app.use(json({ type: "application/json" }));
 
@@ -39,6 +43,11 @@ app.use("/theme-bundle", rateLimit({ windowMs: 60_000, max: 300, name: "theme-bu
 const adminDashboardCors = cors({ origin: process.env.ADMIN_DASHBOARD_URL ?? "http://localhost:5173" });
 app.use("/admin/api", adminDashboardCors);
 app.use("/theme-css", adminDashboardCors);
+// The optional Custom-JS bundle fetches /theme-bundle/:agency/config/:loc from GHL's
+// origin. It's unauthenticated, non-credentialed public branding data, so allow any
+// origin - without this the browser blocks the cross-origin fetch and the JS theme
+// (browser-tab title) silently never applies.
+app.use("/theme-bundle", cors({ origin: "*" }));
 
 app.use(oauthRouter);
 app.use(onboardingRouter);

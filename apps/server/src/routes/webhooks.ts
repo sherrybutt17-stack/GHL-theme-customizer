@@ -128,6 +128,12 @@ async function handleLifecycle(eventType: string, body: any): Promise<void> {
         await deleteMenuLinkForAgency(agency.id).catch((e) =>
           console.error("Menu-link cleanup on uninstall failed:", e)
         );
+        // Also deactivate the agency's sub-accounts so no location-scoped theme is
+        // emitted even if the CSS endpoint is somehow reached (defense in depth).
+        await prisma.locationInstall.updateMany({
+          where: { agencyInstallId: agency.id },
+          data: { status: "removed", enabled: false },
+        });
       }
       await prisma.agencyInstall.updateMany({
         where: { ghlCompanyId: companyId },

@@ -104,7 +104,10 @@ function globalScope(): Scope {
   return { bases: ["#sidebar-v2", ".hl_sidebar"], prefix: "" };
 }
 
-function locationScope(locationId: string): Scope {
+function locationScope(rawLocationId: string): Scope {
+  // GHL location ids are alphanumeric; strip anything else so the id can't break out
+  // of the attribute/class selectors below and corrupt scoping or the whole bundle.
+  const locationId = rawLocationId.replace(/[^A-Za-z0-9_-]/g, "");
   const has = `:has(a[href*="/location/${locationId}/"])`;
   return {
     bases: [`#sidebar-v2${has}`, `.hl_sidebar${has}`],
@@ -243,9 +246,12 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
     rules.push(`${sel} { color: ${txt} !important; }`);
   }
 
-  // Font family (applies to the whole scoped subtree; for global, to sidebar + body)
-  if (theme.fontFamily) {
-    const stack = `'${theme.fontFamily}', sans-serif`;
+  // Font family (applies to the whole scoped subtree; for global, to sidebar + body).
+  // Sanitize to a safe identifier charset FIRST - an unescaped quote/brace here would
+  // otherwise break out of the declaration and inject arbitrary (unscoped) CSS.
+  const fontFamily = theme.fontFamily ? theme.fontFamily.replace(/[^a-zA-Z0-9 _-]/g, "").trim() : "";
+  if (fontFamily) {
+    const stack = `'${fontFamily}', sans-serif`;
     if (scope.prefix) {
       rules.push(`${scope.prefix} { font-family: ${stack} !important; }`);
     } else {
@@ -470,7 +476,7 @@ export async function generateThemeCssBundle(agencyInstallId: string): Promise<s
     prisma.agencyDefaultTheme.findUnique({ where: { agencyInstallId } }),
     prisma.locationInstall.findMany({
       where: { agencyInstallId, status: "active", enabled: true },
-      include: { themeConfigs: { orderBy: { version: "desc" }, take: 1 } },
+      include: { themeConfigs: { orderBy: [{ version: "desc" }, { createdAt: "desc" }], take: 1 } },
     }),
   ]);
 
