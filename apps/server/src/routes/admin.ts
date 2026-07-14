@@ -7,6 +7,7 @@ import {
   GHL_SETTINGS_SIDEBAR_FEATURES,
 } from "../services/ghlSidebarFeatures";
 import { dashboardAuthEnabled, verifyDashboardToken } from "../services/dashboardAuth";
+import { scanBrand } from "../services/brandScan";
 
 export const adminRouter = Router();
 
@@ -119,6 +120,32 @@ adminRouter.get("/admin/api/:agencyInstallId/embed", async (req: Request, res: R
   const fullCss = await generateThemeCssBundle(agencyId);
 
   res.json({ importSnippet, fullCss });
+});
+
+/**
+ * "Brand from website": fetch a URL the agency pastes and return its brand signals
+ * (a theme-color hex and/or the best brand image as a data: URL). The dashboard then
+ * runs the same client-side palette extractor it uses for logo uploads. SSRF-guarded
+ * in services/brandScan.ts. Auth-gated like every other route here.
+ */
+adminRouter.post("/admin/api/:agencyInstallId/brand-scan", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+
+  const url = typeof req.body?.url === "string" ? req.body.url.trim() : "";
+  if (!url) return res.status(400).json({ error: "A website URL is required" });
+
+  try {
+    const result = await scanBrand(url);
+    if (!result.imageDataUrl && !result.themeColor) {
+      return res.status(422).json({ error: "Couldn't find a logo or brand color on that page" });
+    }
+    res.json(result);
+  } catch {
+    // Deliberately generic: don't reveal whether a host was blocked, unresolvable,
+    // etc. (that would turn this into an SSRF probe oracle).
+    return res.status(400).json({ error: "Couldn't scan that website. Check the URL and try again." });
+  }
 });
 
 adminRouter.get("/admin/api/:agencyInstallId/locations", async (req: Request, res: Response) => {

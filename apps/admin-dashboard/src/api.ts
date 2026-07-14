@@ -195,3 +195,13 @@ export interface EmbedInfo {
 
 export const fetchEmbedInfo = (a: string): Promise<EmbedInfo> =>
   fetch(`${API_BASE}/admin/api/${a}/embed`, g()).then(handle);
+
+export interface BrandScanResult {
+  sourceUrl: string;
+  siteName?: string;
+  themeColor?: string;
+  imageDataUrl?: string;
+}
+
+export const scanBrandWebsite = (a: string, url: string): Promise<BrandScanResult> =>
+  fetch(`${API_BASE}/admin/api/${a}/brand-scan`, j("POST", { url })).then(handle);
