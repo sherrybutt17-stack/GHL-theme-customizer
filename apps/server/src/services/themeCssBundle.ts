@@ -34,8 +34,7 @@ interface VisualTheme {
   sidebarImageUrl?: string | null;
   scrollbarColor?: string | null;
   sidebarTextColor?: string | null;
-  contentBgColor?: string | null;
-  contentTextColor?: string | null;
+  sidebarIconColor?: string | null;
   buttonShape?: string | null;
   menuOrder?: unknown;
   darkMode?: boolean | null;
@@ -60,30 +59,6 @@ const PRIMARY_BUTTON_SELECTOR =
   ".hl-btn.primary, .hl-btn--primary, .btn-primary, button[class*='--primary'], .n-button--primary-type";
 const RADIUS_SELECTOR = ".hl-btn, button, .card, .hl-card, input, select, textarea, .modal";
 const BUTTON_SHAPE_SELECTOR = ".hl-btn, button, .btn, .n-button";
-const CONTENT_SURFACE_SELECTOR =
-  ".hl_wrapper, .hl_wrapper--inner, .hl-main, main, .container-fluid, #app-content, .hr-wrapper-container, .hr-config-provider";
-const CONTENT_CARD_SELECTOR = ".card, .hl-card";
-// Text-bearing descendants of the content surfaces. GHL's inner text nodes set their
-// OWN color, which does not inherit the container color we set - so when the content
-// background changes we must recolor these directly, or text goes invisible.
-const CONTENT_TEXT_TAGS = [
-  "h1", "h2", "h3", "h4", "h5", "h6", "p", "span", "label", "li", "td", "th", "dt", "dd", "small", "strong", "b", "em",
-];
-function contentTextSelector(): string {
-  const bases = [".hl_wrapper--inner", ".hl-main", "main", ".card", ".hl-card", ".hr-wrapper-container"];
-  return bases.flatMap((b) => CONTENT_TEXT_TAGS.map((t) => `${b} ${t}`)).join(", ");
-}
-/** Pick readable text (light vs dark) for a given background color, by luminance. */
-function readableTextOn(hex: string): string {
-  const h = hex.replace("#", "").trim();
-  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
-  if (!/^[0-9a-f]{6}$/i.test(full)) return "#1a1a1a";
-  const r = parseInt(full.slice(0, 2), 16);
-  const g = parseInt(full.slice(2, 4), 16);
-  const b = parseInt(full.slice(4, 6), 16);
-  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return lum < 0.55 ? "#e2e8f0" : "#1a1a1a";
-}
 const UPGRADE_SELECTOR =
   "[class*='upgrade'], [href*='upgrade'], [href*='billing'], .upgrade-banner, [data-testid*='upgrade']";
 
@@ -234,7 +209,11 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
       .map((b) => `${b} .active`)
       .join(", ")} { background: ${accent} !important; color: #fff !important; }`
   );
-  rules.push(`${scope.bases.map((b) => `${b} a i`).join(", ")} { color: ${accent} !important; }`);
+  // Icons default to the accent color. GHL renders them as <svg> (usually
+  // fill/stroke: currentColor) or <i>, so set `color` (drives currentColor) plus a
+  // best-effort fill/stroke on the svg paths.
+  const iconSel = scope.bases.flatMap((b) => [`${b} a i`, `${b} a svg`]).join(", ");
+  rules.push(`${iconSel} { color: ${accent} !important; }`);
 
   // Sidebar menu text color. Scoped to inactive links (`:not(.active)`) so active
   // items keep the white contrast color set against the accent background above.
@@ -244,6 +223,24 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
       .flatMap((b) => [`${b} a:not(.active)`, `${b} a:not(.active) .nav-title`])
       .join(", ");
     rules.push(`${sel} { color: ${txt} !important; }`);
+  }
+
+  // Dedicated sidebar icon color (overrides the accent default above). Applies to
+  // inactive items only so the active item keeps its white-on-accent contrast. Sets
+  // color (currentColor icons) + fill/stroke (explicit-color icons); harmless on the
+  // other type since a fill:none / no-stroke icon ignores the unused property.
+  if (theme.sidebarIconColor) {
+    const ic = cssColor(theme.sidebarIconColor);
+    const sel = scope.bases
+      .flatMap((b) => [`${b} a:not(.active) i`, `${b} a:not(.active) svg`, `${b} a:not(.active) svg path`])
+      .join(", ");
+    rules.push(`${sel} { color: ${ic} !important; }`);
+    // Only recolor a real fill / a real stroke - never force fill on a fill="none"
+    // line icon (that would turn it into a solid blob), and vice-versa.
+    const fillSel = scope.bases.map((b) => `${b} a:not(.active) svg [fill]:not([fill="none"])`).join(", ");
+    const strokeSel = scope.bases.map((b) => `${b} a:not(.active) svg [stroke]:not([stroke="none"])`).join(", ");
+    rules.push(`${fillSel} { fill: ${ic} !important; }`);
+    rules.push(`${strokeSel} { stroke: ${ic} !important; }`);
   }
 
   // Font family (applies to the whole scoped subtree; for global, to sidebar + body).
@@ -302,24 +299,10 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
     );
   }
 
-  // Content area background + text (optional custom colors). Dark mode was removed;
-  // these give the same capability but with any color the agency picks. When a
-  // background is set without an explicit text color, we auto-pick readable text.
-  if (theme.contentBgColor) {
-    const bg = cssColor(theme.contentBgColor);
-    rules.push(`${scoped(scope, CONTENT_SURFACE_SELECTOR)} { background: ${bg} !important; }`);
-    rules.push(`${scoped(scope, CONTENT_CARD_SELECTOR)} { background: ${bg} !important; }`);
-    if (!theme.contentTextColor) {
-      const auto = readableTextOn(bg);
-      rules.push(`${scoped(scope, CONTENT_SURFACE_SELECTOR)}, ${scoped(scope, CONTENT_CARD_SELECTOR)} { color: ${auto} !important; }`);
-      rules.push(`${scoped(scope, contentTextSelector())} { color: ${auto} !important; }`);
-    }
-  }
-  if (theme.contentTextColor) {
-    const tc = cssColor(theme.contentTextColor);
-    rules.push(`${scoped(scope, CONTENT_SURFACE_SELECTOR)}, ${scoped(scope, CONTENT_CARD_SELECTOR)} { color: ${tc} !important; }`);
-    rules.push(`${scoped(scope, contentTextSelector())} { color: ${tc} !important; }`);
-  }
+  // NOTE: content-area background/text theming was removed - GHL renders card/body
+  // text in elements we can't reliably recolor, so the background changed but text
+  // stayed dark (unreadable). Same reason dark mode was dropped. Sidebar/logo/colors/
+  // fonts/buttons remain the reliable, CSS-only surface.
 
   // Hide upgrade / billing prompts (white-label clean-up)
   if (theme.hideUpgrade) {

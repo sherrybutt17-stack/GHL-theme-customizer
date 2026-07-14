@@ -14,8 +14,7 @@ export interface Look {
   cornerRadius: number;
   scrollbarColor: string;
   sidebarTextColor: string;
-  contentBgColor: string;
-  contentTextColor: string;
+  sidebarIconColor: string;
   buttonShape: string;
   darkMode: boolean;
 }
@@ -230,18 +229,12 @@ export function LookFields({ value, onChange }: { value: Look; onChange: (patch:
       />
 
       <ColorRow
-        label="Content background"
-        hint="Background of the main content area + cards (Dashboard, lists). Text auto-adjusts to stay readable. Leave default to skip."
-        value={value.contentBgColor || "#0f172a"}
-        onChange={(v) => onChange({ contentBgColor: v })}
+        label="Sidebar icons"
+        hint="Color of the menu icons. Defaults to the accent color. Leave default to skip."
+        value={value.sidebarIconColor || value.accentColor || "#f59e0b"}
+        onChange={(v) => onChange({ sidebarIconColor: v })}
       />
 
-      <ColorRow
-        label="Content text"
-        hint="Overrides the content text color. Leave default to let it auto-pick based on the background."
-        value={value.contentTextColor || "#e2e8f0"}
-        onChange={(v) => onChange({ contentTextColor: v })}
-      />
 
       <div className="look-angle">
         <label>Corner radius: {value.cornerRadius}px</label>

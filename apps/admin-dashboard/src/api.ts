@@ -47,8 +47,7 @@ export interface VisualTheme {
   sidebarImageUrl: string | null;
   scrollbarColor: string | null;
   sidebarTextColor: string | null;
-  contentBgColor: string | null;
-  contentTextColor: string | null;
+  sidebarIconColor: string | null;
   buttonShape: string | null;
   darkMode: boolean;
   hideUpgrade: boolean;
@@ -99,8 +98,7 @@ export interface ThemePreset {
   cornerRadius: number | null;
   scrollbarColor: string | null;
   sidebarTextColor: string | null;
-  contentBgColor: string | null;
-  contentTextColor: string | null;
+  sidebarIconColor: string | null;
   buttonShape: string | null;
   darkMode: boolean;
   menuOrder: string[] | null;
@@ -138,8 +136,7 @@ export interface ThemeInput {
   sidebarImageUrl: string;
   scrollbarColor: string;
   sidebarTextColor: string;
-  contentBgColor: string;
-  contentTextColor: string;
+  sidebarIconColor: string;
   buttonShape: string;
   darkMode: boolean;
   hideUpgrade: boolean;

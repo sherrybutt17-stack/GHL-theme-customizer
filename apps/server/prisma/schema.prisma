@@ -89,6 +89,7 @@ model ThemeConfig {
   sidebarImageUrl     String?
   scrollbarColor      String?
   sidebarTextColor    String?
+  sidebarIconColor    String?
   contentBgColor      String?
   contentTextColor    String?
   buttonShape         String?
@@ -133,6 +134,7 @@ model AgencyDefaultTheme {
   sidebarImageUrl     String?
   scrollbarColor      String?
   sidebarTextColor    String?
+  sidebarIconColor    String?
   contentBgColor      String?
   contentTextColor    String?
   buttonShape         String?
@@ -177,6 +179,7 @@ model ThemePreset {
   cornerRadius        Int?
   scrollbarColor      String?
   sidebarTextColor    String?
+  sidebarIconColor    String?
   contentBgColor      String?
   contentTextColor    String?
   buttonShape         String?

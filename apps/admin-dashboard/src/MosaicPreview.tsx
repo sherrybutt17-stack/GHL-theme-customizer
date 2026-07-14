@@ -28,11 +28,8 @@ export function MosaicPreview({ look, logoUrl, brandName, features, hidden, labe
   const font = look.fontFamily ? `'${look.fontFamily}', sans-serif` : "inherit";
   const textColor = look.sidebarTextColor || "#ffffff";
   const radius = typeof look.cornerRadius === "number" ? look.cornerRadius : 8;
-  // Content area reflects the custom content background (default light). Dark mode
-  // was removed, so there's no preset fallback - the custom color is the only driver.
-  const canvasBg = look.contentBgColor || "#f8fafc";
-  const cardBg = look.contentBgColor || "#ffffff";
-  const contentText = look.contentTextColor || (look.contentBgColor ? "#e5e5e5" : "#334155");
+  const canvasBg = "#f8fafc";
+  const cardBg = "#ffffff";
   const btnRadius =
     look.buttonShape === "square"
       ? 0
@@ -79,7 +76,7 @@ export function MosaicPreview({ look, logoUrl, brandName, features, hidden, labe
                 >
                   <span
                     className="mp-icon"
-                    style={{ color: active ? "#fff" : look.accentColor }}
+                    style={{ color: active ? "#fff" : look.sidebarIconColor || look.accentColor }}
                   >
                     {GLYPHS[i % GLYPHS.length]}
                   </span>
@@ -94,18 +91,9 @@ export function MosaicPreview({ look, logoUrl, brandName, features, hidden, labe
         </div>
         <div className="mp-canvas" style={{ background: canvasBg }}>
           <div className="mp-topbar" style={{ background: look.topBarColor || "#ffffff" }} />
-          <div
-            className="mp-card"
-            style={{
-              background: cardBg,
-              borderRadius: radius,
-              // When a custom content bg makes the card match the canvas, add a hairline
-              // so the card stays visible in the preview.
-              border: look.contentBgColor ? `1px solid ${contentText}33` : undefined,
-            }}
-          >
-            <div className="mp-line" style={{ width: "60%", background: contentText, opacity: 0.85 }} />
-            <div className="mp-line" style={{ width: "85%", background: contentText, opacity: 0.55 }} />
+          <div className="mp-card" style={{ background: cardBg, borderRadius: radius }}>
+            <div className="mp-line" style={{ width: "60%" }} />
+            <div className="mp-line" style={{ width: "85%" }} />
             <button
               className="mp-btn"
               style={{ background: look.buttonColor || look.primaryColor, borderRadius: btnRadius }}
