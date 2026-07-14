@@ -211,7 +211,7 @@ function scopeCustomCss(css: string, prefix: string): string {
 }
 
 /** Render the CSS rules for one theme under one scope. */
-function renderRules(scope: Scope, theme: VisualTheme): string[] {
+export function renderRules(scope: Scope, theme: VisualTheme): string[] {
   const rules: string[] = [];
   const primary = cssColor(theme.primaryColor || "#4f46e5");
   const accent = cssColor(theme.accentColor || theme.primaryColor || "#4f46e5");
@@ -427,7 +427,7 @@ const LOGIN_BUTTON_SELECTOR =
   ".hl_login .card-body button, .hl_login button[type='submit'], .hl_login .btn, .hl_login .n-button--primary-type";
 const LOGIN_HEADER_SELECTOR = ".hl_login--header";
 
-function renderLoginRules(t: LoginTheme): string[] {
+export function renderLoginRules(t: LoginTheme): string[] {
   const rules: string[] = [];
 
   // Full-page background: image wins, then gradient, then solid color.

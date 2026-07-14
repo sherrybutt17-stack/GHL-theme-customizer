@@ -605,7 +605,13 @@ export function ThemeEditorModal({
                       <input
                         type="checkbox"
                         checked={loginGradientEnabled}
-                        onChange={(e) => setLoginGradientEnabled(e.target.checked)}
+                        onChange={(e) => {
+                          const on = e.target.checked;
+                          setLoginGradientEnabled(on);
+                          // The gradient needs a base color; if the picker was never
+                          // touched (empty), seed it so the gradient actually renders.
+                          if (on && !loginBgColor) setLoginBgColor("#0f172a");
+                        }}
                       />
                       <span className="toggle-track" />
                     </label>
