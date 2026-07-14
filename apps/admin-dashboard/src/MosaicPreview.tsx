@@ -28,6 +28,10 @@ export function MosaicPreview({ look, logoUrl, brandName, features, hidden, labe
   const font = look.fontFamily ? `'${look.fontFamily}', sans-serif` : "inherit";
   const textColor = look.sidebarTextColor || "#ffffff";
   const radius = typeof look.cornerRadius === "number" ? look.cornerRadius : 8;
+  // Content area reflects the custom content background (falls back to dark-mode
+  // preset, then light). When a custom bg is set we keep both canvas + card the same.
+  const canvasBg = look.contentBgColor || (look.darkMode ? "#0f172a" : "#f8fafc");
+  const cardBg = look.contentBgColor || (look.darkMode ? "#1e293b" : "#ffffff");
 
   // Main sidebar items only; honor explicit order, then drop hidden ones.
   let items = features.filter((f) => f.group !== "settings");
@@ -79,9 +83,9 @@ export function MosaicPreview({ look, logoUrl, brandName, features, hidden, labe
             )}
           </div>
         </div>
-        <div className="mp-canvas" style={{ background: look.darkMode ? "#0f172a" : "#f8fafc" }}>
+        <div className="mp-canvas" style={{ background: canvasBg }}>
           <div className="mp-topbar" style={{ background: look.topBarColor || "#ffffff" }} />
-          <div className="mp-card" style={{ background: look.darkMode ? "#1e293b" : "#ffffff", borderRadius: radius }}>
+          <div className="mp-card" style={{ background: cardBg, borderRadius: radius }}>
             <div className="mp-line" style={{ width: "60%" }} />
             <div className="mp-line" style={{ width: "85%" }} />
             <button

@@ -14,6 +14,8 @@ export interface Look {
   cornerRadius: number;
   scrollbarColor: string;
   sidebarTextColor: string;
+  contentBgColor: string;
+  contentTextColor: string;
   darkMode: boolean;
 }
 
@@ -224,6 +226,20 @@ export function LookFields({ value, onChange }: { value: Look; onChange: (patch:
         hint="Color of the sidebar menu labels. Pick a dark color if you use a light sidebar background."
         value={value.sidebarTextColor || "#ffffff"}
         onChange={(v) => onChange({ sidebarTextColor: v })}
+      />
+
+      <ColorRow
+        label="Content background"
+        hint="Background of the main content area + cards (Dashboard, lists). Text auto-adjusts to stay readable. Leave default to skip."
+        value={value.contentBgColor || "#0f172a"}
+        onChange={(v) => onChange({ contentBgColor: v })}
+      />
+
+      <ColorRow
+        label="Content text"
+        hint="Overrides the content text color. Leave default to let it auto-pick based on the background."
+        value={value.contentTextColor || "#e2e8f0"}
+        onChange={(v) => onChange({ contentTextColor: v })}
       />
 
       <div className="look-angle">
