@@ -8,6 +8,7 @@ import {
 } from "../services/ghlSidebarFeatures";
 import { dashboardAuthEnabled, verifyDashboardToken } from "../services/dashboardAuth";
 import { scanBrand } from "../services/brandScan";
+import { generateThemeBundleScript } from "../services/themeBundleScript";
 
 export const adminRouter = Router();
 
@@ -119,7 +120,13 @@ adminRouter.get("/admin/api/:agencyInstallId/embed", async (req: Request, res: R
   const importSnippet = `@import url("${publicUrl}/theme-css/${agencyId}?v=${version}");`;
   const fullCss = await generateThemeCssBundle(agencyId);
 
-  res.json({ importSnippet, fullCss });
+  // Optional JS (pasted into GHL's Custom JavaScript) — enables the favicon and
+  // browser-tab title, which CSS can't set. jsSnippet is the raw body to paste
+  // (GHL blocks remote <script> loading, so we hand over the code itself).
+  const jsUrl = `${publicUrl}/theme-bundle/${agencyId}.js`;
+  const jsSnippet = generateThemeBundleScript(agencyId, publicUrl);
+
+  res.json({ importSnippet, fullCss, jsUrl, jsSnippet });
 });
 
 /**

@@ -9,7 +9,8 @@ interface Props {
 export function CssExportModal({ agencyInstallId, onClose }: Props) {
   const [embed, setEmbed] = useState<EmbedInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [copied, setCopied] = useState<"import" | "full" | null>(null);
+  const [copied, setCopied] = useState<"import" | "full" | "js" | null>(null);
+  const [showJs, setShowJs] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
   const [showFull, setShowFull] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
@@ -54,7 +55,7 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
     }
   }
 
-  function copy(text: string, which: "import" | "full") {
+  function copy(text: string, which: "import" | "full" | "js") {
     if (writeClipboard(text)) {
       setCopied(which);
       setTimeout(() => setCopied(null), 2000);
@@ -119,6 +120,32 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
               Couldn't copy automatically — select the line above and press ⌘/Ctrl+C.
             </p>
           )}
+
+          <div style={{ marginTop: 20, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+            <button className="btn btn-ghost" onClick={() => setShowJs((v) => !v)}>
+              {showJs ? "Hide" : "Show"} optional JavaScript (favicon + browser-tab title)
+            </button>
+            {showJs && (
+              <>
+                <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "8px 0" }}>
+                  CSS can't set a favicon or the browser-tab title. To enable those, paste this{" "}
+                  <strong>once</strong> into GHL's{" "}
+                  <strong>Settings &rarr; Company &rarr; Custom JavaScript</strong>. Like the CSS, it's{" "}
+                  <strong>paste-once</strong> — it fetches each sub-account's theme live, so all changes
+                  reflect automatically. (It's a block, not one line, because GHL blocks loading remote
+                  scripts — so the code rides along directly. You never re-paste it.)
+                </p>
+                <pre style={preStyle}>{embed?.jsSnippet ?? "Loading…"}</pre>
+                <button
+                  className="btn"
+                  disabled={!embed}
+                  onClick={() => embed && copy(embed.jsSnippet, "js")}
+                >
+                  {copied === "js" ? "Copied!" : "Copy JavaScript"}
+                </button>
+              </>
+            )}
+          </div>
 
           <div style={{ marginTop: 20, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
             <button className="btn btn-ghost" onClick={() => setShowFull((v) => !v)}>

@@ -191,6 +191,8 @@ export const applyPreset = (
 export interface EmbedInfo {
   importSnippet: string;
   fullCss: string;
+  jsUrl: string;
+  jsSnippet: string;
 }
 
 export const fetchEmbedInfo = (a: string): Promise<EmbedInfo> =>
