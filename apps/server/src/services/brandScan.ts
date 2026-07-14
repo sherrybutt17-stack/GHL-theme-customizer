@@ -10,9 +10,17 @@
  * (2) resolving the hostname and rejecting any private / loopback / link-local /
  * reserved IP, (3) handling redirects manually and re-validating every hop, and
  * (4) capping response size + total time. Never relax these without care.
+ *
+ * DNS rebinding / TOCTOU is closed by a custom undici dispatcher whose connect-time
+ * `lookup` re-validates the resolved IP for the ACTUAL connection (not a separate
+ * earlier resolution), so an attacker's low-TTL domain can't pass validation on a
+ * public IP then connect to a private one. The pre-fetch assertPublicHost + per-hop
+ * redirect re-validation remain as belt-and-suspenders.
  */
 import dns from "node:dns/promises";
+import { lookup as dnsLookupCb } from "node:dns";
 import net from "node:net";
+import { Agent } from "undici";
 
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_HTML_BYTES = 2_000_000;
@@ -106,6 +114,24 @@ async function readCapped(resp: Response, maxBytes: number): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+/**
+ * A DNS lookup that rejects any hostname resolving to a non-public IP. Used as the
+ * undici connect-time lookup so the IP we validate is the exact one connected to
+ * (closes DNS-rebinding: no separate earlier resolution to race).
+ */
+function guardedLookup(hostname: string, options: any, callback: any) {
+  dnsLookupCb(hostname, { all: true, verbatim: true }, (err, addresses: any) => {
+    if (err) return callback(err, undefined, undefined);
+    const addrs = Array.isArray(addresses) ? addresses : [addresses];
+    for (const a of addrs) {
+      if (isPrivateIp(a.address)) return callback(new Error("blocked host (private IP)"), undefined, undefined);
+    }
+    if (options && options.all) callback(null, addrs, undefined);
+    else callback(null, addrs[0].address, addrs[0].family);
+  });
+}
+const ssrfAgent = new Agent({ connect: { lookup: guardedLookup } });
+
 /** Fetch with SSRF re-validation on every redirect hop + size/time caps. */
 async function safeFetch(
   rawUrl: string,
@@ -124,7 +150,10 @@ async function safeFetch(
         redirect: "manual",
         signal: ac.signal,
         headers: { "user-agent": "MosaicBrandScan/1.0", accept },
-      });
+        // Connect-time IP guard (closes DNS rebinding). `dispatcher` is a valid undici
+        // fetch option not yet in the DOM lib types, hence the cast.
+        dispatcher: ssrfAgent,
+      } as any);
     } finally {
       clearTimeout(timer);
     }

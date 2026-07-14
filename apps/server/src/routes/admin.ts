@@ -48,6 +48,7 @@ function visualFields(body: any) {
     sidebarTextColor: body?.sidebarTextColor || null,
     contentBgColor: body?.contentBgColor || null,
     contentTextColor: body?.contentTextColor || null,
+    buttonShape: body?.buttonShape || null,
     darkMode: !!body?.darkMode,
     hideUpgrade: !!body?.hideUpgrade,
     alertMessage: body?.alertMessage || null,
@@ -75,9 +76,32 @@ function presetLookFields(body: any) {
     sidebarTextColor: body?.sidebarTextColor || null,
     contentBgColor: body?.contentBgColor || null,
     contentTextColor: body?.contentTextColor || null,
+    buttonShape: body?.buttonShape || null,
     menuOrder: Array.isArray(body?.menuOrder) ? body.menuOrder : null,
     darkMode: !!body?.darkMode,
   };
+}
+
+/**
+ * Create the next ThemeConfig version for a location, retrying if a concurrent save
+ * grabbed the same version number (the (locationInstallId, version) unique index
+ * throws P2002). Recompute the max version and retry a few times.
+ */
+async function createThemeVersion(locationInstallId: string, data: Record<string, any>) {
+  for (let attempt = 0; ; attempt++) {
+    const latest = await prisma.themeConfig.findFirst({
+      where: { locationInstallId },
+      orderBy: [{ version: "desc" }, { createdAt: "desc" }],
+      select: { version: true },
+    });
+    const version = (latest?.version ?? 0) + 1;
+    try {
+      return await prisma.themeConfig.create({ data: { ...data, locationInstallId, version } });
+    } catch (e: any) {
+      if (e?.code === "P2002" && attempt < 5) continue; // version taken concurrently, retry
+      throw e;
+    }
+  }
 }
 
 /**
@@ -165,7 +189,7 @@ adminRouter.get("/admin/api/:agencyInstallId/locations", async (req: Request, re
 
   const locations = await prisma.locationInstall.findMany({
     where: { agencyInstallId: agencyId, status: "active" },
-    include: { themeConfigs: { orderBy: { version: "desc" }, take: 1 } },
+    include: { themeConfigs: { orderBy: [{ version: "desc" }, { createdAt: "desc" }], take: 1 } },
     orderBy: { locationName: "asc" },
   });
 
@@ -190,21 +214,31 @@ adminRouter.put(
     // not just exist somewhere in the DB (cross-agency IDOR check).
     const location = await prisma.locationInstall.findFirst({
       where: { id: req.params.locationInstallId, agencyInstallId: agencyId },
-      include: { themeConfigs: { orderBy: { version: "desc" }, take: 1 } },
+      include: { themeConfigs: { orderBy: [{ version: "desc" }, { createdAt: "desc" }], take: 1 } },
     });
     if (!location) {
       return res.status(403).json({ error: "Location does not belong to this agency install" });
     }
 
-    const nextVersion = (location.themeConfigs[0]?.version ?? 0) + 1;
-    const theme = await prisma.themeConfig.create({
-      data: {
-        locationInstallId: location.id,
-        brandName: req.body?.brandName,
-        ...visualFields(req.body),
-        customCssOverride: req.body?.customCss || null,
-        version: nextVersion,
-      },
+    // A save writes a whole new version from the body. The dashboard sends a complete
+    // snapshot, but defensively carry client identity/policy forward from the previous
+    // version for any field the body OMITS (undefined) - so a partial PATCH from some
+    // other client can't silently null out the logo, hidden features, labels, or order.
+    const prev = location.themeConfigs[0];
+    const fields = visualFields(req.body);
+    const keep = (bodyKey: string, current: any, prevVal: any) =>
+      req.body?.[bodyKey] === undefined ? (prevVal ?? undefined) : current;
+
+    const theme = await createThemeVersion(location.id, {
+      brandName: req.body?.brandName === undefined ? (prev?.brandName ?? null) : req.body.brandName,
+      ...fields,
+      logoUrl: keep("logoUrl", fields.logoUrl, prev?.logoUrl),
+      faviconUrl: keep("faviconUrl", fields.faviconUrl, prev?.faviconUrl),
+      sidebarImageUrl: keep("sidebarImageUrl", fields.sidebarImageUrl, prev?.sidebarImageUrl),
+      hiddenFeatures: keep("hiddenFeatures", fields.hiddenFeatures, prev?.hiddenFeatures),
+      menuLabelOverrides: keep("menuLabelOverrides", fields.menuLabelOverrides, prev?.menuLabelOverrides),
+      menuOrder: keep("menuOrder", fields.menuOrder, prev?.menuOrder),
+      customCssOverride: req.body?.customCss === undefined ? (prev?.customCssOverride ?? null) : (req.body.customCss || null),
     });
 
     res.json(theme);
@@ -232,7 +266,7 @@ adminRouter.get(
 
     const versions = await prisma.themeConfig.findMany({
       where: { locationInstallId: location.id },
-      orderBy: { version: "desc" },
+      orderBy: [{ version: "desc" }, { createdAt: "desc" }],
       take: 50,
     });
     res.json(versions);
@@ -294,10 +328,24 @@ adminRouter.get("/admin/api/:agencyInstallId/default-theme", async (req: Request
   res.json(theme);
 });
 
+/** Login-page branding fields (agency default only; login is pre-sub-account). */
+function loginFields(body: any) {
+  return {
+    loginBgColor: body?.loginBgColor || null,
+    loginBgImage: body?.loginBgImage || null,
+    loginGradientEnabled: !!body?.loginGradientEnabled,
+    loginGradientColor: body?.loginGradientColor || null,
+    loginGradientAngle: typeof body?.loginGradientAngle === "number" ? body.loginGradientAngle : 135,
+    loginCardColor: body?.loginCardColor || null,
+    loginButtonColor: body?.loginButtonColor || null,
+    loginLogoUrl: body?.loginLogoUrl || null,
+  };
+}
+
 adminRouter.put("/admin/api/:agencyInstallId/default-theme", async (req: Request, res: Response) => {
   const agencyId = await requireAgency(req, res);
   if (!agencyId) return;
-  const fields = { ...visualFields(req.body), customCss: req.body?.customCss || null };
+  const fields = { ...visualFields(req.body), ...loginFields(req.body), customCss: req.body?.customCss || null };
   const theme = await prisma.agencyDefaultTheme.upsert({
     where: { agencyInstallId: agencyId },
     update: fields,
@@ -357,45 +405,42 @@ adminRouter.post(
 
     const locations = await prisma.locationInstall.findMany({
       where: { id: { in: ids }, agencyInstallId: agencyId },
-      include: { themeConfigs: { orderBy: { version: "desc" }, take: 1 } },
+      include: { themeConfigs: { orderBy: [{ version: "desc" }, { createdAt: "desc" }], take: 1 } },
     });
 
     const updated = await Promise.all(
       locations.map(async (loc) => {
         const prev = loc.themeConfigs[0];
-        const theme = await prisma.themeConfig.create({
-          data: {
-            locationInstallId: loc.id,
-            // Preserve client identity + policy from the prior version.
-            brandName: prev?.brandName ?? null,
-            logoUrl: prev?.logoUrl ?? null,
-            faviconUrl: prev?.faviconUrl ?? null,
-            sidebarImageUrl: prev?.sidebarImageUrl ?? null,
-            hideUpgrade: prev?.hideUpgrade ?? false,
-            menuLabelOverrides: prev?.menuLabelOverrides ?? undefined,
-            hiddenFeatures: prev?.hiddenFeatures ?? undefined,
-            // Menu order is structural, not part of a color preset - keep the
-            // sub-account's existing order instead of wiping it on preset apply.
-            menuOrder: prev?.menuOrder ?? undefined,
-            customCssOverride: prev?.customCssOverride ?? null,
-            // Overlay the preset look.
-            primaryColor: preset.primaryColor,
-            secondaryColor: preset.secondaryColor,
-            accentColor: preset.accentColor,
-            fontFamily: preset.fontFamily,
-            gradientEnabled: preset.gradientEnabled,
-            gradientColor: preset.gradientColor,
-            gradientAngle: preset.gradientAngle,
-            topBarColor: preset.topBarColor,
-            buttonColor: preset.buttonColor,
-            cornerRadius: preset.cornerRadius,
-            scrollbarColor: preset.scrollbarColor,
-            sidebarTextColor: preset.sidebarTextColor,
-            contentBgColor: preset.contentBgColor,
-            contentTextColor: preset.contentTextColor,
-            darkMode: preset.darkMode,
-            version: (prev?.version ?? 0) + 1,
-          },
+        const theme = await createThemeVersion(loc.id, {
+          // Preserve client identity + policy from the prior version.
+          brandName: prev?.brandName ?? null,
+          logoUrl: prev?.logoUrl ?? null,
+          faviconUrl: prev?.faviconUrl ?? null,
+          sidebarImageUrl: prev?.sidebarImageUrl ?? null,
+          hideUpgrade: prev?.hideUpgrade ?? false,
+          menuLabelOverrides: prev?.menuLabelOverrides ?? undefined,
+          hiddenFeatures: prev?.hiddenFeatures ?? undefined,
+          // Menu order is structural, not part of a color preset - keep the
+          // sub-account's existing order instead of wiping it on preset apply.
+          menuOrder: prev?.menuOrder ?? undefined,
+          customCssOverride: prev?.customCssOverride ?? null,
+          // Overlay the preset look.
+          primaryColor: preset.primaryColor,
+          secondaryColor: preset.secondaryColor,
+          accentColor: preset.accentColor,
+          fontFamily: preset.fontFamily,
+          gradientEnabled: preset.gradientEnabled,
+          gradientColor: preset.gradientColor,
+          gradientAngle: preset.gradientAngle,
+          topBarColor: preset.topBarColor,
+          buttonColor: preset.buttonColor,
+          cornerRadius: preset.cornerRadius,
+          scrollbarColor: preset.scrollbarColor,
+          sidebarTextColor: preset.sidebarTextColor,
+          contentBgColor: preset.contentBgColor,
+          contentTextColor: preset.contentTextColor,
+          buttonShape: preset.buttonShape,
+          darkMode: preset.darkMode,
         });
         await prisma.locationInstall.update({ where: { id: loc.id }, data: { enabled: true } });
         return { locationInstallId: loc.id, theme };

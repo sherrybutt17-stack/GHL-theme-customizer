@@ -16,6 +16,7 @@ export interface Look {
   sidebarTextColor: string;
   contentBgColor: string;
   contentTextColor: string;
+  buttonShape: string;
   darkMode: boolean;
 }
 
@@ -254,19 +255,19 @@ export function LookFields({ value, onChange }: { value: Look; onChange: (patch:
         <div className="look-color-hint">Roundness of buttons, cards, and inputs. 0 = sharp corners.</div>
       </div>
 
-      <div className="look-toggle-row">
-        <label className="toggle">
-          <input
-            type="checkbox"
-            checked={value.darkMode}
-            onChange={(e) => onChange({ darkMode: e.target.checked })}
-          />
-          <span className="toggle-track" />
-        </label>
-        <div>
-          <div className="look-color-label">Dark mode</div>
-          <div className="look-color-hint">Darken the main content area and cards for this client.</div>
-        </div>
+      <div className="field">
+        <label>Button shape</label>
+        <select
+          className="look-select"
+          value={value.buttonShape || ""}
+          onChange={(e) => onChange({ buttonShape: e.target.value })}
+        >
+          <option value="">Default (follow corner radius)</option>
+          <option value="square">Square — sharp corners</option>
+          <option value="rounded">Rounded — soft corners</option>
+          <option value="pill">Pill — fully rounded</option>
+        </select>
+        <div className="look-color-hint">Overrides the shape of buttons specifically.</div>
       </div>
 
       <div className="field">

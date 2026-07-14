@@ -15,6 +15,7 @@ enum LocationStatus {
 
 enum WebhookStatus {
   received
+  processing
   processed
   failed
 }
@@ -90,6 +91,7 @@ model ThemeConfig {
   sidebarTextColor    String?
   contentBgColor      String?
   contentTextColor    String?
+  buttonShape         String?
   darkMode            Boolean   @default(false)
   menuOrder           Json?
   hideUpgrade         Boolean   @default(false)
@@ -104,6 +106,9 @@ model ThemeConfig {
   createdAt           DateTime  @default(now())
 
   @@index([locationInstallId])
+  // One row per (location, version): blocks a concurrent-save race from writing two
+  // rows with the same version (which made "latest" ambiguous). Creates retry on P2002.
+  @@unique([locationInstallId, version])
 }
 
 // One agency-wide default look. Applied to every sub-account UNLESS that
@@ -130,6 +135,7 @@ model AgencyDefaultTheme {
   sidebarTextColor    String?
   contentBgColor      String?
   contentTextColor    String?
+  buttonShape         String?
   darkMode            Boolean   @default(false)
   menuOrder           Json?
   hideUpgrade         Boolean   @default(false)
@@ -138,6 +144,15 @@ model AgencyDefaultTheme {
   customCss           String?
   menuLabelOverrides  Json?
   hiddenFeatures      Json?
+  // Login page branding (agency-level; the login page is pre-sub-account).
+  loginBgColor        String?
+  loginBgImage        String?
+  loginGradientEnabled Boolean  @default(false)
+  loginGradientColor  String?
+  loginGradientAngle  Int       @default(135)
+  loginCardColor      String?
+  loginButtonColor    String?
+  loginLogoUrl        String?
   updatedAt           DateTime  @updatedAt
   createdAt           DateTime  @default(now())
 }
@@ -164,6 +179,7 @@ model ThemePreset {
   sidebarTextColor    String?
   contentBgColor      String?
   contentTextColor    String?
+  buttonShape         String?
   darkMode            Boolean   @default(false)
   menuOrder           Json?
   createdAt           DateTime  @default(now())

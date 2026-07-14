@@ -3,6 +3,7 @@ import {
   fetchSidebarFeatures,
   fetchThemeVersions,
   scanBrandWebsite,
+  type LoginBranding,
   type SidebarFeature,
   type ThemeConfig,
   type ThemeInput,
@@ -11,25 +12,28 @@ import {
 } from "./api";
 import { LookFields, type Look } from "./LookFields";
 import { MosaicPreview } from "./MosaicPreview";
+import { PromptDialog } from "./Dialog";
 import { paletteFromImage } from "./colorUtils";
 
 interface Props {
   title: string;
   initial:
-    | (Partial<VisualTheme> & {
+    | (Partial<VisualTheme> & Partial<LoginBranding> & {
         brandName?: string | null;
         customCss?: string | null;
         customCssOverride?: string | null;
       })
     | null;
   showBrandName: boolean;
+  /** True for the agency default theme editor — unlocks the Login page section. */
+  isAgencyDefault?: boolean;
   presets: ThemePreset[];
   /** Agency install id — needed for the "brand from website" server call. */
   agencyId?: string;
   /** When set (per-location editing), enables the version-history tab. */
   history?: { agencyId: string; locationInstallId: string };
   onSave: (theme: ThemeInput) => Promise<void>;
-  onSaveAsPreset: (name: string, look: Look) => Promise<void>;
+  onSaveAsPreset: (name: string, look: Look, menuOrder: string[]) => Promise<void>;
   onCancel: () => void;
 }
 
@@ -92,6 +96,7 @@ function lookFrom(initial: Props["initial"]): Look {
     sidebarTextColor: initial?.sidebarTextColor ?? "#ffffff",
     contentBgColor: initial?.contentBgColor ?? "",
     contentTextColor: initial?.contentTextColor ?? "",
+    buttonShape: initial?.buttonShape ?? "",
     darkMode: initial?.darkMode ?? false,
   };
 }
@@ -100,6 +105,7 @@ export function ThemeEditorModal({
   title,
   initial,
   showBrandName,
+  isAgencyDefault,
   presets,
   agencyId,
   history,
@@ -109,9 +115,9 @@ export function ThemeEditorModal({
 }: Props) {
   const [tab, setTab] = useState<"branding" | "features" | "advanced" | "history">("branding");
   const [versions, setVersions] = useState<ThemeConfig[] | null>(null);
+  const [previewingVersion, setPreviewingVersion] = useState<number | null>(null);
   const [brandName, setBrandName] = useState(initial?.brandName ?? "");
   const [logoUrl, setLogoUrl] = useState(initial?.logoUrl ?? "");
-  const [faviconUrl, setFaviconUrl] = useState(initial?.faviconUrl ?? "");
   const [look, setLook] = useState<Look>(lookFrom(initial));
   const [hidden, setHidden] = useState<Set<string>>(new Set(initial?.hiddenFeatures ?? []));
   const [labels, setLabels] = useState<Record<string, string>>(initial?.menuLabelOverrides ?? {});
@@ -133,12 +139,35 @@ export function ThemeEditorModal({
   const [websiteUrl, setWebsiteUrl] = useState("");
   const [scanning, setScanning] = useState(false);
   const [scanMsg, setScanMsg] = useState<string | null>(null);
+  const [presetPromptOpen, setPresetPromptOpen] = useState(false);
+  // Login-page branding (agency default only).
+  const [loginBgColor, setLoginBgColor] = useState(initial?.loginBgColor ?? "");
+  const [loginBgImage, setLoginBgImage] = useState(initial?.loginBgImage ?? "");
+  const [loginGradientEnabled, setLoginGradientEnabled] = useState(initial?.loginGradientEnabled ?? false);
+  const [loginGradientColor, setLoginGradientColor] = useState(initial?.loginGradientColor ?? "#1e293b");
+  const [loginGradientAngle, setLoginGradientAngle] = useState(initial?.loginGradientAngle ?? 135);
+  const [loginCardColor, setLoginCardColor] = useState(initial?.loginCardColor ?? "");
+  const [loginButtonColor, setLoginButtonColor] = useState(initial?.loginButtonColor ?? "");
+  const [loginLogoUrl, setLoginLogoUrl] = useState(initial?.loginLogoUrl ?? "");
 
+  const [featuresError, setFeaturesError] = useState<string | null>(null);
   useEffect(() => {
     // Editing the agency default (no brand name) → show the agency sidebar items;
     // editing a sub-account → show the sub-account items.
-    fetchSidebarFeatures(showBrandName ? undefined : "agency").then(setFeatures);
+    setFeaturesError(null);
+    fetchSidebarFeatures(showBrandName ? undefined : "agency")
+      .then(setFeatures)
+      .catch((e) => setFeaturesError((e as Error).message || "Couldn't load the sidebar items."));
   }, [showBrandName]);
+
+  // Escape closes the editor (unless a nested dialog is open, which handles its own).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !presetPromptOpen) onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel, presetPromptOpen]);
 
   useEffect(() => {
     if (tab === "history" && history && versions === null) {
@@ -148,7 +177,10 @@ export function ThemeEditorModal({
     }
   }, [tab, history, versions]);
 
-  const patchLook = (p: Partial<Look>) => setLook((l) => ({ ...l, ...p }));
+  const patchLook = (p: Partial<Look>) => {
+    setLook((l) => ({ ...l, ...p }));
+    setPreviewingVersion(null); // any edit means we're no longer just viewing an old version
+  };
 
   async function handleLogoFile(file: File | undefined) {
     if (!file) return;
@@ -179,11 +211,18 @@ export function ThemeEditorModal({
       sidebarTextColor: p.sidebarTextColor ?? look.sidebarTextColor,
       contentBgColor: p.contentBgColor ?? look.contentBgColor,
       contentTextColor: p.contentTextColor ?? look.contentTextColor,
+      buttonShape: p.buttonShape ?? look.buttonShape,
       darkMode: p.darkMode,
     });
+    // Presets can carry a saved sidebar order; apply it if present.
+    if (Array.isArray(p.menuOrder)) setMenuOrder(p.menuOrder as string[]);
   }
 
+  // Any edit means we're no longer just viewing an old version — drop the banner.
+  const markEdited = () => setPreviewingVersion(null);
+
   function toggleHidden(key: string) {
+    markEdited();
     setHidden((prev) => {
       const next = new Set(prev);
       next.has(key) ? next.delete(key) : next.add(key);
@@ -191,11 +230,21 @@ export function ThemeEditorModal({
     });
   }
 
-  async function handleFaviconFile(file: File | undefined) {
+  async function handleLoginBgFile(file: File | undefined) {
     if (!file) return;
     try {
-      const img = await fileToDownscaledDataUrl(file, 128);
-      setFaviconUrl(img.dataUrl);
+      const img = await fileToDownscaledDataUrl(file, 1600);
+      setLoginBgImage(img.dataUrl);
+    } catch (e) {
+      setLogoErr((e as Error).message);
+    }
+  }
+
+  async function handleLoginLogoFile(file: File | undefined) {
+    if (!file) return;
+    try {
+      const img = await fileToDownscaledDataUrl(file, 512);
+      setLoginLogoUrl(img.dataUrl);
     } catch (e) {
       setLogoErr((e as Error).message);
     }
@@ -252,11 +301,10 @@ export function ThemeEditorModal({
 
   // Load an older version's values back into the form. Saving then writes a NEW
   // version (history stays append-only; a restore is itself an auditable version).
-  function loadVersion(v: ThemeConfig) {
+  function loadVersion(v: ThemeConfig, isCurrent = false) {
     setLook(lookFrom(v));
     setBrandName(v.brandName ?? "");
     setLogoUrl(v.logoUrl ?? "");
-    setFaviconUrl(v.faviconUrl ?? "");
     setHidden(new Set(v.hiddenFeatures ?? []));
     setLabels((v.menuLabelOverrides as Record<string, string>) ?? {});
     setMenuOrder(Array.isArray(v.menuOrder) ? v.menuOrder : []);
@@ -265,6 +313,8 @@ export function ThemeEditorModal({
     setCustomCss(v.customCssOverride ?? "");
     setAlertMessage(v.alertMessage ?? "");
     setAlertColor(v.alertColor ?? "#4f46e5");
+    // Only show the "previewing an OLD version" banner for non-current versions.
+    setPreviewingVersion(isCurrent ? null : v.version);
     setTab("branding");
   }
 
@@ -279,10 +329,13 @@ export function ThemeEditorModal({
     if (fromKey === toKey) return;
     const keys = mainFeaturesInOrder().map((f) => f.key);
     const from = keys.indexOf(fromKey);
-    const to = keys.indexOf(toKey);
-    if (from < 0 || to < 0) return;
-    keys.splice(to, 0, keys.splice(from, 1)[0]);
+    if (from < 0 || keys.indexOf(toKey) < 0) return;
+    // Remove first, THEN find the target's new index so the drop lands consistently
+    // just before the target row regardless of drag direction (fixes off-by-one).
+    const [item] = keys.splice(from, 1);
+    keys.splice(keys.indexOf(toKey), 0, item);
     setMenuOrder(keys);
+    markEdited();
   }
 
   function renderFeatureRow(f: SidebarFeature) {
@@ -295,7 +348,10 @@ export function ThemeEditorModal({
           placeholder="Rename…"
           value={labels[f.key] ?? ""}
           disabled={isHidden}
-          onChange={(e) => setLabels((p) => ({ ...p, [f.key]: e.target.value }))}
+          onChange={(e) => {
+            markEdited();
+            setLabels((p) => ({ ...p, [f.key]: e.target.value }));
+          }}
           // Stop password managers (1Password/LastPass) injecting an inline icon
           // into the focused field — as a DOM sibling it stole a grid cell and
           // bumped the "Visible" toggle onto its own line.
@@ -325,7 +381,6 @@ export function ThemeEditorModal({
       await onSave({
         ...(showBrandName ? { brandName } : {}),
         logoUrl,
-        faviconUrl,
         primaryColor: look.primaryColor,
         secondaryColor: look.primaryColor,
         accentColor: look.accentColor,
@@ -340,6 +395,7 @@ export function ThemeEditorModal({
         sidebarTextColor: look.sidebarTextColor,
         contentBgColor: look.contentBgColor,
         contentTextColor: look.contentTextColor,
+        buttonShape: look.buttonShape,
         darkMode: look.darkMode,
         sidebarImageUrl,
         hideUpgrade,
@@ -349,6 +405,18 @@ export function ThemeEditorModal({
         hiddenFeatures: [...hidden],
         menuLabelOverrides: cleanedLabels,
         menuOrder,
+        ...(isAgencyDefault
+          ? {
+              loginBgColor,
+              loginBgImage,
+              loginGradientEnabled,
+              loginGradientColor,
+              loginGradientAngle,
+              loginCardColor,
+              loginButtonColor,
+              loginLogoUrl,
+            }
+          : {}),
       });
     } catch (e) {
       // Surface the failure inside the modal instead of closing it (the caller only
@@ -359,18 +427,21 @@ export function ThemeEditorModal({
     }
   }
 
-  async function handleSaveAsPreset() {
-    const name = prompt("Name this preset (e.g. “Dark Gold”):");
-    if (!name) return;
+  // window.prompt is a no-op in GHL's cross-origin iframe → open an in-app dialog.
+  async function doSaveAsPreset(name: string) {
+    setPresetPromptOpen(false);
     try {
-      await onSaveAsPreset(name, look);
+      await onSaveAsPreset(name, look, menuOrder);
     } catch (e) {
       setSaveError((e as Error).message || "Could not save preset.");
     }
   }
 
   return (
-    <div className="modal-overlay" onClick={onCancel}>
+    <>
+    {/* No overlay-click-to-close here: this is a big form and a stray misclick would
+        discard all unsaved edits. Close only via the X or Cancel button. */}
+    <div className="modal-overlay">
       <div className="modal modal-lg" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>{title}</h2>
@@ -400,6 +471,27 @@ export function ThemeEditorModal({
           <div className="editor-panes">
           {tab === "branding" && (
             <>
+              {previewingVersion !== null && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    background: "#eff6ff",
+                    border: "1px solid #bfdbfe",
+                    color: "#1e40af",
+                    borderRadius: 8,
+                    padding: "8px 12px",
+                    marginBottom: 12,
+                    fontSize: 13,
+                  }}
+                >
+                  <span style={{ marginRight: "auto" }}>
+                    👁️ Previewing <strong>version {previewingVersion}</strong> — <strong>Save changes</strong> to
+                    restore it, or Cancel to discard.
+                  </span>
+                </div>
+              )}
               {presets.length > 0 && (
                 <div className="preset-apply">
                   <label>Start from a preset</label>
@@ -517,42 +609,155 @@ export function ThemeEditorModal({
                 </div>
               )}
 
-              <div className="field">
-                <label>Favicon</label>
-                <input
-                  type="url"
-                  value={faviconUrl.startsWith("data:") ? "" : faviconUrl}
-                  onChange={(e) => setFaviconUrl(e.target.value)}
-                  placeholder="Paste an icon URL…"
-                />
-                <div className="logo-upload-row">
-                  <label className="btn btn-ghost logo-upload-btn">
-                    Upload icon
-                    <input
-                      type="file"
-                      accept="image/*"
-                      hidden
-                      onChange={(e) => handleFaviconFile(e.target.files?.[0])}
-                    />
-                  </label>
-                  {faviconUrl && (
-                    <img
-                      src={faviconUrl}
-                      alt="favicon"
-                      style={{ width: 20, height: 20, objectFit: "contain", borderRadius: 4 }}
-                    />
-                  )}
-                </div>
-                <p className="logo-hint">
-                  The browser-tab icon (a square PNG works best). <strong>Requires the optional
-                  Custom JavaScript snippet</strong> — favicons can't be set via CSS. Colors/logo
-                  work with the CSS embed alone.
-                </p>
-              </div>
-
               <LookFields value={look} onChange={patchLook} />
 
-              <button className="btn btn-ghost" style={{ marginTop: 4 }} onClick={handleSaveAsPreset}>
+              {isAgencyDefault && (
+                <div style={{ marginTop: 18, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+                  <label style={{ fontWeight: 600, fontSize: 14 }}>Login page</label>
+                  <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "4px 0 14px" }}>
+                    Brands the GoHighLevel <strong>login screen</strong> for your whole agency (it's shared —
+                    there's one login before a sub-account is chosen). Leave a field blank to skip it.
+                  </p>
+
+                  <div className="look-color-row">
+                    <input
+                      type="color"
+                      value={loginBgColor || "#0f172a"}
+                      onChange={(e) => setLoginBgColor(e.target.value)}
+                    />
+                    <div>
+                      <div className="look-color-label">Background color</div>
+                      <div className="look-color-hint">The full-page background behind the login box.</div>
+                    </div>
+                  </div>
+
+                  <div className="look-toggle-row" style={{ marginTop: 10 }}>
+                    <label className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={loginGradientEnabled}
+                        onChange={(e) => {
+                          const on = e.target.checked;
+                          setLoginGradientEnabled(on);
+                          // The gradient needs a base color; if the picker was never
+                          // touched (empty), seed it so the gradient actually renders.
+                          if (on && !loginBgColor) setLoginBgColor("#0f172a");
+                        }}
+                      />
+                      <span className="toggle-track" />
+                    </label>
+                    <div>
+                      <div className="look-color-label">Gradient background</div>
+                      <div className="look-color-hint">Blend the background color into a second color.</div>
+                    </div>
+                  </div>
+                  {loginGradientEnabled && (
+                    <>
+                      <div className="look-color-row">
+                        <input
+                          type="color"
+                          value={loginGradientColor || "#1e293b"}
+                          onChange={(e) => setLoginGradientColor(e.target.value)}
+                        />
+                        <div>
+                          <div className="look-color-label">Gradient — second color</div>
+                        </div>
+                      </div>
+                      <div className="look-angle">
+                        <label>Gradient angle: {loginGradientAngle}°</label>
+                        <input
+                          type="range"
+                          min={0}
+                          max={360}
+                          value={loginGradientAngle}
+                          onChange={(e) => setLoginGradientAngle(Number(e.target.value))}
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  <div className="field" style={{ marginTop: 10 }}>
+                    <label>Background image (overrides colors)</label>
+                    <input
+                      type="url"
+                      value={loginBgImage.startsWith("data:") ? "" : loginBgImage}
+                      onChange={(e) => setLoginBgImage(e.target.value)}
+                      placeholder="Paste an image URL…"
+                    />
+                    <div className="logo-upload-row">
+                      <label className="btn btn-ghost logo-upload-btn">
+                        Upload image
+                        <input
+                          type="file"
+                          accept="image/*"
+                          hidden
+                          onChange={(e) => handleLoginBgFile(e.target.files?.[0])}
+                        />
+                      </label>
+                      {loginBgImage && (
+                        <>
+                          <span className="logo-uploaded">Image set ✓</span>
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => setLoginBgImage("")}
+                          >
+                            Remove
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="look-color-row">
+                    <input
+                      type="color"
+                      value={loginButtonColor || "#4f46e5"}
+                      onChange={(e) => setLoginButtonColor(e.target.value)}
+                    />
+                    <div>
+                      <div className="look-color-label">Sign-in button color</div>
+                    </div>
+                  </div>
+
+                  <div className="look-color-row">
+                    <input
+                      type="color"
+                      value={loginCardColor || "#ffffff"}
+                      onChange={(e) => setLoginCardColor(e.target.value)}
+                    />
+                    <div>
+                      <div className="look-color-label">Login box color</div>
+                      <div className="look-color-hint">Background of the centered login card.</div>
+                    </div>
+                  </div>
+
+                  <div className="field" style={{ marginTop: 10 }}>
+                    <label>Login logo</label>
+                    <input
+                      type="url"
+                      value={loginLogoUrl.startsWith("data:") ? "" : loginLogoUrl}
+                      onChange={(e) => setLoginLogoUrl(e.target.value)}
+                      placeholder="Paste a logo URL…"
+                    />
+                    <div className="logo-upload-row">
+                      <label className="btn btn-ghost logo-upload-btn">
+                        Upload logo
+                        <input
+                          type="file"
+                          accept="image/*"
+                          hidden
+                          onChange={(e) => handleLoginLogoFile(e.target.files?.[0])}
+                        />
+                      </label>
+                      {loginLogoUrl && <span className="logo-uploaded">Logo set ✓</span>}
+                    </div>
+                    <p className="logo-hint">Shown above the login form. May need size tuning per theme.</p>
+                  </div>
+                </div>
+              )}
+
+              <button className="btn btn-ghost" style={{ marginTop: 4 }} onClick={() => setPresetPromptOpen(true)}>
                 + Save this look as a preset
               </button>
             </>
@@ -564,6 +769,7 @@ export function ThemeEditorModal({
               <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px" }}>
                 Drag <span className="drag-handle-inline">⠿</span> to reorder, or hide/rename items.
               </p>
+              {featuresError && <div className="field-error" style={{ marginBottom: 10 }}>{featuresError}</div>}
               <div className="feature-list">
                 {mainFeaturesInOrder().map((f) => (
                   <div
@@ -675,8 +881,9 @@ export function ThemeEditorModal({
             <div className="field">
               <label>Version history</label>
               <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px" }}>
-                Every save is a version. Load an older one into the editor, review it in the
-                preview, then <strong>Save changes</strong> to restore it as a new version.
+                Every save is a version. Click <strong>View</strong> to load one into the editor and
+                see it in the live preview, then <strong>Save changes</strong> to restore it as a new
+                version.
               </p>
               {versions === null ? (
                 <div className="empty-state">Loading history…</div>
@@ -697,10 +904,9 @@ export function ThemeEditorModal({
                       </div>
                       <button
                         className="btn btn-ghost"
-                        disabled={i === 0}
-                        onClick={() => loadVersion(v)}
+                        onClick={() => loadVersion(v, i === 0)}
                       >
-                        {i === 0 ? "Current" : "Load this version"}
+                        {i === 0 ? "View current" : "👁️ View"}
                       </button>
                     </div>
                   ))}
@@ -733,5 +939,16 @@ export function ThemeEditorModal({
         </div>
       </div>
     </div>
+    {presetPromptOpen && (
+      <PromptDialog
+        title="Save as preset"
+        label="Preset name"
+        placeholder="e.g. Dark Gold"
+        submitLabel="Save preset"
+        onSubmit={doSaveAsPreset}
+        onCancel={() => setPresetPromptOpen(false)}
+      />
+    )}
+    </>
   );
 }

@@ -36,6 +36,7 @@ interface VisualTheme {
   sidebarTextColor?: string | null;
   contentBgColor?: string | null;
   contentTextColor?: string | null;
+  buttonShape?: string | null;
   menuOrder?: unknown;
   darkMode?: boolean | null;
   hideUpgrade?: boolean | null;
@@ -58,13 +59,13 @@ interface VisualTheme {
 const PRIMARY_BUTTON_SELECTOR =
   ".hl-btn.primary, .hl-btn--primary, .btn-primary, button[class*='--primary'], .n-button--primary-type";
 const RADIUS_SELECTOR = ".hl-btn, button, .card, .hl-card, input, select, textarea, .modal";
-const DARK_SURFACE_SELECTOR =
+const BUTTON_SHAPE_SELECTOR = ".hl-btn, button, .btn, .n-button";
+const CONTENT_SURFACE_SELECTOR =
   ".hl_wrapper, .hl_wrapper--inner, .hl-main, main, .container-fluid, #app-content, .hr-wrapper-container, .hr-config-provider";
-const DARK_CARD_SELECTOR = ".card, .hl-card";
+const CONTENT_CARD_SELECTOR = ".card, .hl-card";
 // Text-bearing descendants of the content surfaces. GHL's inner text nodes set their
 // OWN color, which does not inherit the container color we set - so when the content
-// background changes we must recolor these directly, or text goes invisible (dark on
-// dark). Kept to real text tags so we don't clobber buttons / colored badges / icons.
+// background changes we must recolor these directly, or text goes invisible.
 const CONTENT_TEXT_TAGS = [
   "h1", "h2", "h3", "h4", "h5", "h6", "p", "span", "label", "li", "td", "th", "dt", "dd", "small", "strong", "b", "em",
 ];
@@ -103,7 +104,10 @@ function globalScope(): Scope {
   return { bases: ["#sidebar-v2", ".hl_sidebar"], prefix: "" };
 }
 
-function locationScope(locationId: string): Scope {
+function locationScope(rawLocationId: string): Scope {
+  // GHL location ids are alphanumeric; strip anything else so the id can't break out
+  // of the attribute/class selectors below and corrupt scoping or the whole bundle.
+  const locationId = rawLocationId.replace(/[^A-Za-z0-9_-]/g, "");
   const has = `:has(a[href*="/location/${locationId}/"])`;
   return {
     bases: [`#sidebar-v2${has}`, `.hl_sidebar${has}`],
@@ -165,9 +169,15 @@ export function cssColor(value: string): string {
   return value.replace(/[;{}<>\\]/g, "").replace(/[\r\n]+/g, " ").trim();
 }
 
-/** Same idea for values dropped inside url("..."): also strip quotes and parens. */
+/**
+ * Sanitize a value dropped inside url("..."). We keep it inside double quotes, so the
+ * only characters that can break out are the double-quote, backslash, angle brackets,
+ * braces, and newlines - strip exactly those. Crucially we must NOT strip ; : / + =
+ * because data: URLs (from uploaded logos/images: "data:image/png;base64,...") depend
+ * on them; stripping ";" turned every uploaded image into a broken URL.
+ */
 function cssUrl(value: string): string {
-  return value.replace(/[;{}<>\\"'()]/g, "").replace(/[\r\n]+/g, " ").trim();
+  return value.replace(/["\\{}<>]/g, "").replace(/[\r\n]+/g, " ").trim();
 }
 
 function sidebarBackground(primary: string, theme: VisualTheme): string {
@@ -210,7 +220,7 @@ function scopeCustomCss(css: string, prefix: string): string {
 }
 
 /** Render the CSS rules for one theme under one scope. */
-function renderRules(scope: Scope, theme: VisualTheme): string[] {
+export function renderRules(scope: Scope, theme: VisualTheme): string[] {
   const rules: string[] = [];
   const primary = cssColor(theme.primaryColor || "#4f46e5");
   const accent = cssColor(theme.accentColor || theme.primaryColor || "#4f46e5");
@@ -236,9 +246,12 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     rules.push(`${sel} { color: ${txt} !important; }`);
   }
 
-  // Font family (applies to the whole scoped subtree; for global, to sidebar + body)
-  if (theme.fontFamily) {
-    const stack = `'${theme.fontFamily}', sans-serif`;
+  // Font family (applies to the whole scoped subtree; for global, to sidebar + body).
+  // Sanitize to a safe identifier charset FIRST - an unescaped quote/brace here would
+  // otherwise break out of the declaration and inject arbitrary (unscoped) CSS.
+  const fontFamily = theme.fontFamily ? theme.fontFamily.replace(/[^a-zA-Z0-9 _-]/g, "").trim() : "";
+  if (fontFamily) {
+    const stack = `'${fontFamily}', sans-serif`;
     if (scope.prefix) {
       rules.push(`${scope.prefix} { font-family: ${stack} !important; }`);
     } else {
@@ -271,6 +284,14 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     rules.push(`${scoped(scope, RADIUS_SELECTOR)} { border-radius: ${theme.cornerRadius}px !important; }`);
   }
 
+  // Button shape preset - overrides the button radius specifically (emitted after the
+  // general corner radius so it wins on buttons). Whitelisted values only.
+  const BUTTON_SHAPE_RADIUS: Record<string, string> = { square: "0", rounded: "10px", pill: "999px" };
+  const shapeRadius = theme.buttonShape ? BUTTON_SHAPE_RADIUS[theme.buttonShape] : undefined;
+  if (shapeRadius) {
+    rules.push(`${scoped(scope, BUTTON_SHAPE_SELECTOR)} { border-radius: ${shapeRadius} !important; }`);
+  }
+
   // Scrollbar color. WebKit scrollbar pseudo-elements can't hang off a :has()
   // base, so we scope by the location wrapper prefix (or body for the default).
   if (theme.scrollbarColor) {
@@ -281,33 +302,22 @@ function renderRules(scope: Scope, theme: VisualTheme): string[] {
     );
   }
 
-  // Content area background + text.
-  //  - darkMode: one-click dark preset. We ALSO force text light on descendants,
-  //    because GHL's inner text sets its own dark color that won't inherit ours -
-  //    that's why dark mode used to make card text vanish.
-  //  - contentBgColor / contentTextColor: optional custom colors. Emitted AFTER the
-  //    preset so a custom value wins. When a background is set without an explicit
-  //    text color, we auto-pick readable text by luminance.
-  const DARK_TEXT = "#e5e5e5";
-  if (theme.darkMode) {
-    // Neutral near-black (not slate/blue) so dark mode reads as true dark.
-    rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)} { background: #121212 !important; color: ${DARK_TEXT} !important; }`);
-    rules.push(`${scoped(scope, DARK_CARD_SELECTOR)} { background: #1c1c1c !important; color: ${DARK_TEXT} !important; }`);
-    rules.push(`${scoped(scope, contentTextSelector())} { color: ${DARK_TEXT} !important; }`);
-  }
+  // Content area background + text (optional custom colors). Dark mode was removed;
+  // these give the same capability but with any color the agency picks. When a
+  // background is set without an explicit text color, we auto-pick readable text.
   if (theme.contentBgColor) {
     const bg = cssColor(theme.contentBgColor);
-    rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)} { background: ${bg} !important; }`);
-    rules.push(`${scoped(scope, DARK_CARD_SELECTOR)} { background: ${bg} !important; }`);
+    rules.push(`${scoped(scope, CONTENT_SURFACE_SELECTOR)} { background: ${bg} !important; }`);
+    rules.push(`${scoped(scope, CONTENT_CARD_SELECTOR)} { background: ${bg} !important; }`);
     if (!theme.contentTextColor) {
       const auto = readableTextOn(bg);
-      rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)}, ${scoped(scope, DARK_CARD_SELECTOR)} { color: ${auto} !important; }`);
+      rules.push(`${scoped(scope, CONTENT_SURFACE_SELECTOR)}, ${scoped(scope, CONTENT_CARD_SELECTOR)} { color: ${auto} !important; }`);
       rules.push(`${scoped(scope, contentTextSelector())} { color: ${auto} !important; }`);
     }
   }
   if (theme.contentTextColor) {
     const tc = cssColor(theme.contentTextColor);
-    rules.push(`${scoped(scope, DARK_SURFACE_SELECTOR)}, ${scoped(scope, DARK_CARD_SELECTOR)} { color: ${tc} !important; }`);
+    rules.push(`${scoped(scope, CONTENT_SURFACE_SELECTOR)}, ${scoped(scope, CONTENT_CARD_SELECTOR)} { color: ${tc} !important; }`);
     rules.push(`${scoped(scope, contentTextSelector())} { color: ${tc} !important; }`);
   }
 
@@ -408,12 +418,65 @@ function fontImports(themes: VisualTheme[]): string {
  *  3. Per-sub-account overrides (location-scoped selectors; win by specificity).
  * See routes/themeCss.ts for why this is CSS rather than JS.
  */
+/** Agency-level login-page branding (rendered globally; login is pre-sub-account). */
+interface LoginTheme {
+  loginBgColor?: string | null;
+  loginBgImage?: string | null;
+  loginGradientEnabled?: boolean | null;
+  loginGradientColor?: string | null;
+  loginGradientAngle?: number | null;
+  loginCardColor?: string | null;
+  loginButtonColor?: string | null;
+  loginLogoUrl?: string | null;
+}
+
+// Confirmed against live GHL DOM: the login page uses .hl_login (section),
+// .hl_login--header / --body, and a centered .card / .card-body. The outer
+// .sidebar-v2-agency wrapper fills the viewport, so it carries the full background.
+const LOGIN_BG_SELECTOR = ".sidebar-v2-agency, .hl_login, .hl_login--header, .hl_login--body";
+const LOGIN_CARD_SELECTOR = ".hl_login .card, .hl_login .card-body";
+const LOGIN_BUTTON_SELECTOR =
+  ".hl_login .card-body button, .hl_login button[type='submit'], .hl_login .btn, .hl_login .n-button--primary-type";
+const LOGIN_HEADER_SELECTOR = ".hl_login--header";
+
+export function renderLoginRules(t: LoginTheme): string[] {
+  const rules: string[] = [];
+
+  // Full-page background: image wins, then gradient, then solid color.
+  if (t.loginBgImage) {
+    rules.push(
+      `${LOGIN_BG_SELECTOR} { background-image: url("${cssUrl(t.loginBgImage)}") !important; background-size: cover !important; background-position: center !important; background-repeat: no-repeat !important; }`
+    );
+  } else if (t.loginGradientEnabled && t.loginGradientColor && t.loginBgColor) {
+    const angle = typeof t.loginGradientAngle === "number" ? t.loginGradientAngle : 135;
+    rules.push(
+      `${LOGIN_BG_SELECTOR} { background: linear-gradient(${angle}deg, ${cssColor(t.loginBgColor)}, ${cssColor(t.loginGradientColor)}) !important; }`
+    );
+  } else if (t.loginBgColor) {
+    rules.push(`${LOGIN_BG_SELECTOR} { background: ${cssColor(t.loginBgColor)} !important; }`);
+  }
+
+  if (t.loginCardColor) {
+    rules.push(`${LOGIN_CARD_SELECTOR} { background: ${cssColor(t.loginCardColor)} !important; }`);
+  }
+  if (t.loginButtonColor) {
+    const b = cssColor(t.loginButtonColor);
+    rules.push(`${LOGIN_BUTTON_SELECTOR} { background-color: ${b} !important; border-color: ${b} !important; }`);
+  }
+  if (t.loginLogoUrl) {
+    rules.push(
+      `${LOGIN_HEADER_SELECTOR} { background-image: url("${cssUrl(t.loginLogoUrl)}") !important; background-size: contain !important; background-repeat: no-repeat !important; background-position: center !important; min-height: 72px !important; }`
+    );
+  }
+  return rules;
+}
+
 export async function generateThemeCssBundle(agencyInstallId: string): Promise<string> {
   const [defaultTheme, locations] = await Promise.all([
     prisma.agencyDefaultTheme.findUnique({ where: { agencyInstallId } }),
     prisma.locationInstall.findMany({
       where: { agencyInstallId, status: "active", enabled: true },
-      include: { themeConfigs: { orderBy: { version: "desc" }, take: 1 } },
+      include: { themeConfigs: { orderBy: [{ version: "desc" }, { createdAt: "desc" }], take: 1 } },
     }),
   ]);
 
@@ -437,6 +500,10 @@ export async function generateThemeCssBundle(agencyInstallId: string): Promise<s
 
   if (defaultTheme) {
     blocks.push("/* Agency default (applies to all sub-accounts unless overridden) */\n" + renderRules(globalScope(), defaultTheme as VisualTheme).join("\n"));
+    const loginRules = renderLoginRules(defaultTheme as LoginTheme);
+    if (loginRules.length) {
+      blocks.push("/* Agency login page */\n" + loginRules.join("\n"));
+    }
   }
 
   for (const { loc, theme } of locationThemes) {

@@ -53,9 +53,10 @@ export async function ensureAgencyAdminMenuLink(agencyInstallId: string, appBase
   const existing = await ghl.customMenus
     .getCustomMenus({ showOnCompany: true, limit: 100 }, companyHeader)
     .then((r) =>
-      (r.customMenus ?? []).find(
-        (m) => m.title === "Mosaic" || (m.url ?? "").includes("/admin-embed/")
-      )
+      // Match OUR link specifically (the agency id is baked into the URL) so we can't
+      // accidentally adopt/repoint an unrelated menu that merely happens to be titled
+      // "Mosaic". The agency id (a stable cuid) survives host migrations.
+      (r.customMenus ?? []).find((m) => (m.url ?? "").includes(`/admin-embed/${agency.id}`))
     )
     .catch(() => undefined);
 
@@ -130,5 +131,7 @@ export async function deleteMenuLinkForAgency(agencyInstallId: string) {
   } catch (e) {
     console.warn(`Menu-link delete via GHL failed for agency ${agencyInstallId} (continuing):`, e);
   }
-  await prisma.customMenuLinkRegistration.delete({ where: { id: agency.menuLink.id } });
+  // deleteMany (not delete): a concurrent UninstallCompany delivery may have already
+  // removed the row, and delete() would throw P2025 on the missing record.
+  await prisma.customMenuLinkRegistration.deleteMany({ where: { id: agency.menuLink.id } });
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   applyPreset,
   createPreset,
@@ -17,6 +17,7 @@ import {
 } from "./api";
 import { ThemeEditorModal } from "./ThemeEditor";
 import { CssExportModal } from "./CssExportModal";
+import { ConfirmDialog } from "./Dialog";
 import type { Look } from "./LookFields";
 
 function agencyIdFromUrl(): string | null {
@@ -67,6 +68,7 @@ export function App() {
   const [presets, setPresets] = useState<ThemePreset[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [resetTarget, setResetTarget] = useState<{ id: string; name: string } | null>(null);
   const [editingLocation, setEditingLocation] = useState<LocationRow | null>(null);
   const [editingDefault, setEditingDefault] = useState(false);
   const [showCssExport, setShowCssExport] = useState(false);
@@ -86,8 +88,10 @@ export function App() {
     // core of the page. Surface an error only if the essential locations call fails.
     Promise.allSettled([fetchLocations(agencyId), fetchDefaultTheme(agencyId), fetchPresets(agencyId)])
       .then(([locs, def, pre]) => {
-        if (locs.status === "fulfilled") setLocations(locs.value);
-        else setError(locs.reason?.message ?? "Failed to load sub-accounts.");
+        if (locs.status === "fulfilled") {
+          setLocations(locs.value);
+          setError(null); // clear any stale error once the core list loads
+        } else setError(locs.reason?.message ?? "Failed to load sub-accounts.");
         if (def.status === "fulfilled") setDefaultTheme(def.value);
         if (pre.status === "fulfilled") setPresets(pre.value);
       })
@@ -128,8 +132,8 @@ export function App() {
     );
   }
 
-  async function saveAsPreset(name: string, look: Look) {
-    const p = await createPreset(agencyId!, { name, ...look });
+  async function saveAsPreset(name: string, look: Look, menuOrder: string[]) {
+    const p = await createPreset(agencyId!, { name, ...look, menuOrder });
     setPresets((prev) => [...prev, p]);
   }
 
@@ -148,6 +152,7 @@ export function App() {
   async function handleToggle(locId: string, enabled: boolean) {
     // Optimistic flip, rolled back if the server rejects so the UI never claims a
     // state the DB doesn't have.
+    setError(null);
     setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, enabled } : l)));
     try {
       await setEnabled(agencyId!, locId, enabled);
@@ -157,8 +162,16 @@ export function App() {
     }
   }
 
-  async function handleReset(locId: string, name: string) {
-    if (!confirm(`Reset "${name}" back to the agency default look? Its custom theme will be removed.`)) return;
+  // window.confirm is a no-op in GHL's cross-origin iframe, so use an in-app dialog.
+  function handleReset(locId: string, name: string) {
+    setResetTarget({ id: locId, name });
+  }
+
+  async function doReset() {
+    if (!resetTarget) return;
+    const { id: locId } = resetTarget;
+    setResetTarget(null);
+    setError(null);
     try {
       await resetTheme(agencyId!, locId);
       setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, theme: null } : l)));
@@ -168,6 +181,7 @@ export function App() {
   }
 
   async function removePreset(id: string) {
+    setError(null);
     try {
       await deletePreset(agencyId!, id);
       setPresets((prev) => prev.filter((p) => p.id !== id));
@@ -194,6 +208,7 @@ export function App() {
 
   async function bulkSetEnabled(enabled: boolean) {
     if (selected.size === 0) return;
+    setError(null);
     setBusy(true);
     try {
       await Promise.all([...selected].map((id) => setEnabled(agencyId!, id, enabled)));
@@ -207,6 +222,7 @@ export function App() {
 
   async function handleBulkApply() {
     if (!bulkPresetId || selected.size === 0) return;
+    setError(null);
     setBusy(true);
     try {
       await applyPreset(agencyId!, bulkPresetId, [...selected]);
@@ -222,6 +238,14 @@ export function App() {
   }
 
   const allVisibleSelected = visible.length > 0 && visible.every((l) => selected.has(l.id));
+  // Reflect a partial selection (some, not all) with the checkbox's indeterminate dash.
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (selectAllRef.current) {
+      const some = visible.some((l) => selected.has(l.id));
+      selectAllRef.current.indeterminate = some && !allVisibleSelected;
+    }
+  }, [visible, selected, allVisibleSelected]);
 
   return (
     <div className="page cp">
@@ -317,7 +341,7 @@ export function App() {
               <thead>
                 <tr>
                   <th className="col-check">
-                    <input type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} />
+                    <input ref={selectAllRef} type="checkbox" checked={allVisibleSelected} onChange={toggleSelectAll} />
                   </th>
                   <th>Sub-account</th>
                   <th className="col-center">Enabled</th>
@@ -478,6 +502,7 @@ export function App() {
           title="Agency default theme"
           initial={defaultTheme}
           showBrandName={false}
+          isAgencyDefault
           presets={presets}
           agencyId={agencyId!}
           onSave={handleSaveDefault}
@@ -487,6 +512,17 @@ export function App() {
       )}
 
       {showCssExport && <CssExportModal agencyInstallId={agencyId} onClose={() => setShowCssExport(false)} />}
+
+      {resetTarget && (
+        <ConfirmDialog
+          title="Reset to agency default?"
+          message={`Reset "${resetTarget.name}" back to the agency default look? Its custom theme will be removed.`}
+          confirmLabel="Reset"
+          danger
+          onConfirm={doReset}
+          onCancel={() => setResetTarget(null)}
+        />
+      )}
     </div>
   );
 }

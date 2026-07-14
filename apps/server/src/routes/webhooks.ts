@@ -39,28 +39,30 @@ webhooksRouter.post("/webhooks/ghl", ghl.webhooks.subscribe(), async (req: Reque
     );
   }
 
-  // Idempotency: if we've already processed this exact event, do nothing. (Only
-  // reached for signature-valid events now, so this can't be used to probe.)
-  const existing = await prisma.webhookEvent
-    .findUnique({ where: { ghlEventId: String(eventId) } })
-    .catch(() => null);
-  if (existing?.status === "processed") {
-    return res.json({ success: true, deduped: true });
+  // Idempotency + ATOMIC claim. Create the audit row directly as "processing"; a
+  // concurrent duplicate delivery hits the ghlEventId unique constraint (P2002) and
+  // can only re-claim if a prior attempt is still "received" (legacy) or "failed" (a
+  // genuine GHL retry). This prevents two concurrent deliveries from both running the
+  // handler, while still letting failed events be retried.
+  const id = String(eventId);
+  try {
+    await prisma.webhookEvent.create({
+      data: { ghlEventId: id, eventType, payload: body, status: "processing" },
+    });
+  } catch (e: any) {
+    if (e?.code === "P2002") {
+      const claim = await prisma.webhookEvent
+        .updateMany({
+          where: { ghlEventId: id, status: { in: ["received", "failed"] } },
+          data: { status: "processing", payload: body },
+        })
+        .catch(() => ({ count: 0 }));
+      if (claim.count === 0) return res.json({ success: true, deduped: true });
+    } else {
+      // A logging failure (not a duplicate) shouldn't drop a valid event - process it.
+      console.error("Failed to persist webhook event:", describeError(e));
+    }
   }
-
-  // Record the (verified) event for the audit trail.
-  await prisma.webhookEvent
-    .upsert({
-      where: { ghlEventId: String(eventId) },
-      update: {},
-      create: {
-        ghlEventId: String(eventId),
-        eventType,
-        payload: body,
-        status: "received",
-      },
-    })
-    .catch((e) => console.error("Failed to persist webhook event:", describeError(e)));
 
   try {
     await handleLifecycle(eventType, body);
@@ -128,6 +130,12 @@ async function handleLifecycle(eventType: string, body: any): Promise<void> {
         await deleteMenuLinkForAgency(agency.id).catch((e) =>
           console.error("Menu-link cleanup on uninstall failed:", e)
         );
+        // Also deactivate the agency's sub-accounts so no location-scoped theme is
+        // emitted even if the CSS endpoint is somehow reached (defense in depth).
+        await prisma.locationInstall.updateMany({
+          where: { agencyInstallId: agency.id },
+          data: { status: "removed", enabled: false },
+        });
       }
       await prisma.agencyInstall.updateMany({
         where: { ghlCompanyId: companyId },

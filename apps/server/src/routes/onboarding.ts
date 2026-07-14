@@ -87,12 +87,12 @@ onboardingRouter.get("/onboarding/:agencyInstallId", async (req: Request, res: R
   </div>
 
   <details class="optional">
-    <summary><strong>Optional:</strong> enable favicon &amp; browser-tab title</summary>
+    <summary><strong>Optional:</strong> brand the browser-tab title</summary>
     <p class="hint" style="margin-top:12px">
-      CSS can't change a sub-account's favicon or browser-tab title. To turn those on, paste the
-      code below <strong>once</strong> into <strong>Settings &rarr; Company &rarr; Custom JavaScript</strong>.
-      Like the CSS, it's paste-once &mdash; it updates every sub-account live. (It's a block, not one
-      line, because GHL blocks loading remote scripts.)
+      CSS can't change a sub-account's browser-tab title. To brand it, paste the code below
+      <strong>once</strong> into <strong>Settings &rarr; Company &rarr; Custom JavaScript</strong>.
+      Like the CSS, it's paste-once &mdash; it updates every sub-account live. Skip it if you only
+      need the CSS branding.
     </p>
     <div class="embed">
       <pre id="js-snippet">${escapeHtml(jsSnippet)}</pre>

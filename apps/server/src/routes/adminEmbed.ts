@@ -36,5 +36,8 @@ adminEmbedRouter.get("/admin-embed/:agencyInstallId", async (req: Request, res: 
 
   const adminDashboardUrl = process.env.ADMIN_DASHBOARD_URL ?? "http://localhost:5173";
   const token = mintDashboardToken(agency.id);
-  res.redirect(`${adminDashboardUrl}/${agency.id}?t=${encodeURIComponent(token)}`);
+  // Deliver the bearer token in the URL FRAGMENT (#t=), not the query. Fragments are
+  // never sent to servers, so the token can't land in access logs, the Referer header,
+  // or proxies. The dashboard reads it from location.hash and immediately strips it.
+  res.redirect(`${adminDashboardUrl}/${agency.id}#t=${encodeURIComponent(token)}`);
 });
