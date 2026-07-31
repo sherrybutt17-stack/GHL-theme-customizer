@@ -198,6 +198,10 @@ export const fetchDefaultTheme = (a: string): Promise<AgencyDefaultTheme | null>
 export const saveDefaultTheme = (a: string, theme: ThemeInput): Promise<AgencyDefaultTheme> =>
   fetch(`${API_BASE}/admin/api/${a}/default-theme`, j("PUT", theme)).then(handle);
 
+/** Clear the agency default look entirely (sub-account overrides are kept). */
+export const resetDefaultTheme = (a: string): Promise<{ reset: boolean }> =>
+  fetch(`${API_BASE}/admin/api/${a}/default-theme`, j("DELETE")).then(handle);
+
 export const fetchPresets = (a: string): Promise<ThemePreset[]> =>
   fetch(`${API_BASE}/admin/api/${a}/presets`, g()).then(handle);
 

@@ -7,6 +7,7 @@ import {
   fetchLocations,
   fetchPresets,
   resetTheme,
+  resetDefaultTheme,
   saveDefaultTheme,
   saveTheme,
   setEnabled,
@@ -69,6 +70,7 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [resetTarget, setResetTarget] = useState<{ id: string; name: string } | null>(null);
+  const [resettingDefault, setResettingDefault] = useState(false);
   const [editingLocation, setEditingLocation] = useState<LocationRow | null>(null);
   const [editingDefault, setEditingDefault] = useState(false);
   const [showCssExport, setShowCssExport] = useState(false);
@@ -175,6 +177,18 @@ export function App() {
     try {
       await resetTheme(agencyId!, locId);
       setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, theme: null } : l)));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function doResetDefault() {
+    setResettingDefault(false);
+    setError(null);
+    try {
+      await resetDefaultTheme(agencyId!);
+      setDefaultTheme(null);
+      setEditingDefault(false);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -508,6 +522,7 @@ export function App() {
           onSave={handleSaveDefault}
           onSaveAsPreset={saveAsPreset}
           onCancel={() => setEditingDefault(false)}
+          onReset={() => setResettingDefault(true)}
         />
       )}
 
@@ -521,6 +536,17 @@ export function App() {
           danger
           onConfirm={doReset}
           onCancel={() => setResetTarget(null)}
+        />
+      )}
+
+      {resettingDefault && (
+        <ConfirmDialog
+          title="Reset the agency default?"
+          message="Clear the agency default look and go back to unthemed GoHighLevel. Sub-accounts with their own custom theme keep it — only the inherited look is removed."
+          confirmLabel="Reset"
+          danger
+          onConfirm={doResetDefault}
+          onCancel={() => setResettingDefault(false)}
         />
       )}
     </div>

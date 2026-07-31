@@ -352,6 +352,22 @@ adminRouter.put("/admin/api/:agencyInstallId/default-theme", async (req: Request
   res.json(theme);
 });
 
+/**
+ * Reset the agency default back to unthemed GHL: delete the AgencyDefaultTheme row
+ * so the CSS bundle stops emitting the global (unscoped) rules entirely. This is the
+ * agency-level twin of the per-sub-account reset above.
+ *
+ * Sub-account overrides are deliberately left alone - they're location-scoped rows
+ * that stand on their own, so a sub-account with its own theme keeps it. Only the
+ * inherited layer goes away.
+ */
+adminRouter.delete("/admin/api/:agencyInstallId/default-theme", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+  await prisma.agencyDefaultTheme.deleteMany({ where: { agencyInstallId: agencyId } });
+  res.json({ reset: true });
+});
+
 // --- Theme presets (named looks the agency can apply to many sub-accounts) ---
 
 adminRouter.get("/admin/api/:agencyInstallId/presets", async (req: Request, res: Response) => {
