@@ -33,6 +33,41 @@ Implications:
 - Color/URL values are sanitized (`cssColor`/`cssUrl`) before entering the stylesheet;
   feature keys are whitelisted (`isKnownFeatureKey`) so they can't break out of a selector.
 
+#### Recolouring icons: use `filter`, never `color`/`fill`/`stroke`
+GHL draws sidebar icons **four different ways**, verified against live DOM:
+1. inline `<svg>` whose shapes take their colour from GHL's own stylesheet — *not*
+   `currentColor`, and *not* `fill=`/`stroke=` attributes;
+2. `<span>` painted with a CSS background-image (e.g. `span.ask-ai-sparkle-icon`);
+3. `<img>` (about half the agency sidebar: AI Suite, Agency Dashboard, Sub-Accounts,
+   Account Snapshots, Reselling, Add-Ons, Partners, SaaS Education, GHL Swag, Ideas,
+   Mobile App);
+4. icon fonts (`<i>`).
+
+No colour property spans all four — `color` can't reach any of them (no
+`currentColor`), `fill`/`stroke` miss the span and img cases, and `mask` would need
+each icon's source URL. `filter` is the only lever that works, because it operates
+on rendered pixels and is indifferent to how the icon was drawn — which also means
+it survives GHL reshuffling its markup.
+
+`services/iconColorFilter.ts` turns a hex into a filter chain: flatten to black with
+`brightness(0) saturate(100%)`, then solve invert/sepia/saturate/hue-rotate/
+brightness/contrast for the target (SPSA, seeded so the stylesheet doesn't churn
+between builds). Black and white are exact; solved colours land within ~4/255 per
+channel. Consequences: multi-colour icons flatten to one colour, and the rule is NOT
+scoped under `a:not(.active)` (many nav icons aren't inside the anchor) — the active
+item is re-excluded with a separate `filter: none` rule. The agency logo is an
+`<img>` too, hence `img:not(.agency-logo)`.
+
+Debugging tip that beats guessing selectors: probe with `outline` (renders on any
+element regardless of how it takes colour), e.g. `#sidebar-v2 img { outline: 3px
+solid red }` to find which items are images.
+
+#### Top bar
+`.hl_header` alone looks like a no-op: its children `.container-fluid` (icon row) and
+`.topmenu-nav` (page title + tab row) each paint their own white background over it,
+so all three need colouring. Tab text is GHL-`#607179` and vanishes on a dark bar, so
+it's auto-contrasted (white vs near-black by WCAG ratio) rather than being a field.
+
 ### Auth
 Dashboard is reached only via the agency Custom Menu Link, whose URL carries a
 per-agency secret: `/admin-embed/<agencyInstallId>?k=<slug>`. `/admin-embed` verifies
