@@ -1,5 +1,6 @@
 import { prisma } from "./prisma";
 import { featureSelector, isSettingsFeature, isKnownFeatureKey } from "./ghlSidebarFeatures";
+import { cssFilterForColor } from "./iconColorFilter";
 
 /**
  * GHL sidebar logo, confirmed via live DOM inspection:
@@ -13,11 +14,19 @@ const LOGO_CONTAINER_SELECTOR = ".agency-logo-container";
 const LOGO_IMG_SELECTOR = "img.agency-logo";
 
 /**
- * Top-bar (white header) selector, confirmed via DOM inspection:
- * <header class="hl_header hl_header--collapse">. It sits inside the
- * location-classed wrapper, so location scoping applies the same as the sidebar.
+ * Top-bar (white header) selectors, confirmed via live DOM inspection:
+ *   <header class="hl_header hl_header--collapse">
+ *     <div class="container-fluid !justify-end">        <- icon row (phone, Ask AI, bell)
+ *     <div class="flex … topmenu-nav">                  <- page tab row (Getting Started, …)
+ *
+ * Colouring only the <header> looks like a no-op: both children paint their own
+ * white background over it, so the header's colour never shows. We have to colour
+ * the children too.
+ *
+ * It sits inside the location-classed wrapper, so location scoping applies the
+ * same as the sidebar.
  */
-const TOP_BAR_SELECTOR = ".hl_header";
+const TOP_BAR_SELECTOR = ".hl_header, .hl_header .container-fluid, .hl_header .topmenu-nav";
 
 /** Visual fields shared by ThemeConfig, AgencyDefaultTheme, and ThemePreset. */
 interface VisualTheme {
@@ -225,22 +234,31 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
     rules.push(`${sel} { color: ${txt} !important; }`);
   }
 
-  // Dedicated sidebar icon color (overrides the accent default above). Applies to
-  // inactive items only so the active item keeps its white-on-accent contrast. Sets
-  // color (currentColor icons) + fill/stroke (explicit-color icons); harmless on the
-  // other type since a fill:none / no-stroke icon ignores the unused property.
+  // Dedicated sidebar icon color, delivered as a `filter` chain rather than
+  // color/fill/stroke. Applies to inactive items only so the active item keeps its
+  // white-on-accent contrast.
+  //
+  // Verified against the live GHL sidebar - the colour properties CANNOT work here:
+  //   - `color`: the SVGs don't use currentColor. `#sidebar-v2 * { color: magenta }`
+  //     recoloured every label and left every icon untouched.
+  //   - `fill`/`stroke`: reach the <svg> icons but not `span.ask-ai-sparkle-icon`
+  //     and friends, which are <span>s painted with a CSS background-image.
+  //   - `mask`: would need each icon's source URL, which we don't have.
+  // `filter` operates on rendered pixels, so it recolours all of them identically
+  // and doesn't depend on GHL's internal markup - see services/iconColorFilter.ts.
   if (theme.sidebarIconColor) {
-    const ic = cssColor(theme.sidebarIconColor);
-    const sel = scope.bases
-      .flatMap((b) => [`${b} a:not(.active) i`, `${b} a:not(.active) svg`, `${b} a:not(.active) svg path`])
-      .join(", ");
-    rules.push(`${sel} { color: ${ic} !important; }`);
-    // Only recolor a real fill / a real stroke - never force fill on a fill="none"
-    // line icon (that would turn it into a solid blob), and vice-versa.
-    const fillSel = scope.bases.map((b) => `${b} a:not(.active) svg [fill]:not([fill="none"])`).join(", ");
-    const strokeSel = scope.bases.map((b) => `${b} a:not(.active) svg [stroke]:not([stroke="none"])`).join(", ");
-    rules.push(`${fillSel} { fill: ${ic} !important; }`);
-    rules.push(`${strokeSel} { stroke: ${ic} !important; }`);
+    const filter = cssFilterForColor(cssColor(theme.sidebarIconColor));
+    // Unparseable colour -> emit nothing rather than a broken rule.
+    if (filter) {
+      const sel = scope.bases
+        .flatMap((b) => [
+          `${b} a:not(.active) svg`,
+          `${b} a:not(.active) i`,
+          `${b} a:not(.active) span[class*="icon"]`,
+        ])
+        .join(", ");
+      rules.push(`${sel} { filter: ${filter} !important; }`);
+    }
   }
 
   // Font family (applies to the whole scoped subtree; for global, to sidebar + body).

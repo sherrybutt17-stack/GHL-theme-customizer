@@ -36,6 +36,8 @@ interface Props {
   onSave: (theme: ThemeInput) => Promise<void>;
   onSaveAsPreset: (name: string, look: Look, menuOrder: string[]) => Promise<void>;
   onCancel: () => void;
+  /** Agency default only — clears the whole default look. Omit to hide the button. */
+  onReset?: () => void;
 }
 
 /**
@@ -112,6 +114,7 @@ export function ThemeEditorModal({
   onSave,
   onSaveAsPreset,
   onCancel,
+  onReset,
 }: Props) {
   const [tab, setTab] = useState<"branding" | "features" | "login" | "advanced" | "history">("branding");
   const [versions, setVersions] = useState<ThemeConfig[] | null>(null);
@@ -947,6 +950,19 @@ export function ThemeEditorModal({
         </div>
 
         <div className="modal-footer">
+          {/* Agency-level twin of the per-sub-account Reset in the table. Pushed to the
+              left so it reads as a destructive escape hatch, not a primary action. */}
+          {isAgencyDefault && onReset && (
+            <button
+              className="btn"
+              style={{ marginRight: "auto", color: "#b91c1c" }}
+              onClick={onReset}
+              disabled={saving}
+              title="Clear the agency default look (sub-account themes are kept)"
+            >
+              Reset to GHL default
+            </button>
+          )}
           {saveError && (
             <span style={{ fontSize: 13, color: "#b91c1c", marginRight: "auto" }}>{saveError}</span>
           )}
