@@ -299,8 +299,14 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
     const filter = cssFilterForColor(cssColor(theme.sidebarIconColor));
     // Unparseable colour -> emit nothing rather than a broken rule.
     if (filter) {
+      // `img` is in the list because a chunk of the agency sidebar (AI Suite, Agency
+      // Dashboard, Sub-Accounts, Account Snapshots, Reselling, Add-Ons, Partners,
+      // SaaS Education, GHL Swag, Ideas, Mobile App) draws its icons as <img>, not
+      // <svg> - confirmed by outlining `#sidebar-v2 img` live, which boxed exactly
+      // those items and nothing else. The agency logo is also an <img> and must be
+      // excluded, or an agency that hasn't uploaded its own logo gets it recoloured.
       const sel = scope.bases
-        .flatMap((b) => [`${b} svg`, `${b} i`, `${b} span[class*="icon"]`])
+        .flatMap((b) => [`${b} svg`, `${b} i`, `${b} span[class*="icon"]`, `${b} img:not(.agency-logo)`])
         .join(", ");
       rules.push(`${sel} { filter: ${filter} !important; }`);
 
@@ -311,6 +317,7 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
           `${b} .active svg`,
           `${b} .active i`,
           `${b} .active span[class*="icon"]`,
+          `${b} .active img`,
         ])
         .join(", ");
       rules.push(`${activeSel} { filter: none !important; }`);
