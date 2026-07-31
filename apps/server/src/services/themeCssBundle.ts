@@ -28,6 +28,49 @@ const LOGO_IMG_SELECTOR = "img.agency-logo";
  */
 const TOP_BAR_SELECTOR = ".hl_header, .hl_header .container-fluid, .hl_header .topmenu-nav";
 
+/**
+ * The page title + tab labels inside the top bar ("AI Agents · Getting Started ·
+ * Voice AI …"). GHL paints these #607179, which vanishes on a dark top bar, so we
+ * recolour them for contrast whenever a top bar colour is set. Confirmed from live
+ * DOM: the title and the tabs both live inside `.topmenu-nav`.
+ *
+ * Deliberately NOT `.hl_header *` - that would repaint the icon row's coloured
+ * pills (Ask AI, notifications, avatar), which already carry their own contrast.
+ */
+const TOP_BAR_TEXT_SELECTOR = ".hl_header .topmenu-nav, .hl_header .topmenu-nav *";
+
+/**
+ * WCAG relative luminance of a #rgb / #rrggbb colour, or null if unparseable.
+ * Used to decide whether text over that colour should be light or dark.
+ */
+function relativeLuminance(hex: string): number | null {
+  const m = hex.trim().match(/^#?([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (!m) return null;
+  let h = m[1];
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  const channel = (v: number) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  const r = channel(parseInt(h.slice(0, 2), 16));
+  const g = channel(parseInt(h.slice(2, 4), 16));
+  const b = channel(parseInt(h.slice(4, 6), 16));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/**
+ * Whichever of white / near-black contrasts better against `bg`, by WCAG contrast
+ * ratio. Falls back to null when the colour can't be parsed, so the caller can skip
+ * the rule instead of guessing wrong and making text unreadable.
+ */
+function contrastingTextColor(bg: string): string | null {
+  const lum = relativeLuminance(bg);
+  if (lum === null) return null;
+  const onWhite = 1.05 / (lum + 0.05);
+  const onBlack = (lum + 0.05) / 0.05;
+  return onWhite >= onBlack ? "#ffffff" : "#1f2937";
+}
+
 /** Visual fields shared by ThemeConfig, AgencyDefaultTheme, and ThemePreset. */
 interface VisualTheme {
   logoUrl?: string | null;
@@ -287,9 +330,15 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
     }
   }
 
-  // Top bar color
+  // Top bar color, plus an auto-contrast text colour so the page title and tabs
+  // stay readable on a dark bar (GHL's own #607179 disappears against one).
   if (theme.topBarColor) {
-    rules.push(`${scoped(scope, TOP_BAR_SELECTOR)} { background: ${cssColor(theme.topBarColor)} !important; }`);
+    const bar = cssColor(theme.topBarColor);
+    rules.push(`${scoped(scope, TOP_BAR_SELECTOR)} { background: ${bar} !important; }`);
+    const text = contrastingTextColor(bar);
+    if (text) {
+      rules.push(`${scoped(scope, TOP_BAR_TEXT_SELECTOR)} { color: ${text} !important; }`);
+    }
   }
 
   // Sidebar background image (painted over the color/gradient)
