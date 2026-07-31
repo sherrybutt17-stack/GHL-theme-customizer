@@ -246,18 +246,31 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
   //   - `mask`: would need each icon's source URL, which we don't have.
   // `filter` operates on rendered pixels, so it recolours all of them identically
   // and doesn't depend on GHL's internal markup - see services/iconColorFilter.ts.
+  //
+  // Deliberately NOT scoped to `a:not(.active) …`. Confirmed live: with the anchor
+  // requirement, `span.ask-ai-sparkle-icon` recoloured (it IS inside an <a>) while
+  // every sub-account nav <svg> stayed untouched - those icons are not descendants
+  // of the nav anchor. `#sidebar-v2 svg` does match them, so we hang the filter off
+  // the sidebar itself and switch it back off for the active item instead.
   if (theme.sidebarIconColor) {
     const filter = cssFilterForColor(cssColor(theme.sidebarIconColor));
     // Unparseable colour -> emit nothing rather than a broken rule.
     if (filter) {
       const sel = scope.bases
-        .flatMap((b) => [
-          `${b} a:not(.active) svg`,
-          `${b} a:not(.active) i`,
-          `${b} a:not(.active) span[class*="icon"]`,
-        ])
+        .flatMap((b) => [`${b} svg`, `${b} i`, `${b} span[class*="icon"]`])
         .join(", ");
       rules.push(`${sel} { filter: ${filter} !important; }`);
+
+      // The active item is painted white on the accent background - leave its icon
+      // alone so it keeps that contrast.
+      const activeSel = scope.bases
+        .flatMap((b) => [
+          `${b} .active svg`,
+          `${b} .active i`,
+          `${b} .active span[class*="icon"]`,
+        ])
+        .join(", ");
+      rules.push(`${activeSel} { filter: none !important; }`);
     }
   }
 
