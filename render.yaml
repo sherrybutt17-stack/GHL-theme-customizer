@@ -38,14 +38,18 @@ services:
       # `directUrl` to fall back on. Must include `?sslmode=require`.
       - key: DATABASE_URL
         sync: false
-      # MUST be carried over verbatim from the previous deploy - do NOT let Render
-      # generate a fresh one. This key encrypts the stored GHL OAuth tokens
-      # (services/tokenCrypto.ts: scrypt -> AES-256-GCM). Because GCM authenticates,
-      # a mismatched key makes decryption THROW rather than degrade, so every agency
-      # would have to re-authorise. Only safe to regenerate if starting from an empty
-      # database.
+      # Generated ONCE when the service is first created, then held constant across
+      # later deploys - which is what you want when starting from an empty database.
+      #
+      # DANGER when pointing a NEW service at an EXISTING database: this key encrypts
+      # the stored GHL OAuth tokens (services/tokenCrypto.ts: scrypt -> AES-256-GCM),
+      # and because GCM authenticates its ciphertext a mismatched key makes decryption
+      # THROW rather than degrade. Every agency would silently have to re-authorise.
+      # In that situation change this to `sync: false` and paste the ORIGINAL value in
+      # by hand. Same applies if you ever move hosts with the data: copy this value out
+      # first, it is not recoverable from anywhere else.
       - key: TOKEN_ENCRYPTION_KEY
-        sync: false
+        generateValue: true
       # Safe to regenerate: this only signs short-lived dashboard tokens, so rotating
       # it just forces the agency to re-open the dashboard from the GHL menu link.
       - key: DASHBOARD_TOKEN_SECRET
