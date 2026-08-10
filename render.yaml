@@ -1,61 +1,84 @@
 # Render Blueprint for Mosaic (GHL Theme Builder)
-# Brings up: Postgres, the API server, and the admin-dashboard static site.
-# Deploy: push to the repo, then in Render -> "New +" -> "Blueprint" -> pick this repo.
+# Brings up: the API server and the admin-dashboard static site.
 #
-# After the first deploy, set the three sync:false URL values (they depend on the
-# generated .onrender.com hostnames) and the GHL app credentials. See the notes at
-# the bottom of this file.
-
-databases:
-  - name: mosaic-db
-    plan: basic-256mb # non-expiring paid Postgres; bump in the dashboard if needed
-    databaseName: mosaic
-    user: mosaic
+# Deploy: in Render -> "New +" -> "Blueprint" -> pick this repo. Then set every
+# `sync: false` value in the dashboard (see the checklist at the bottom).
+#
+# The database is NOT provisioned here - it lives on Neon, outside Render. That is
+# deliberate: this project lost its production data on 2026-08-08 when a free Render
+# Postgres expired and was suspended. Keeping the datastore on a non-expiring host
+# with backups, independent of the web host, is what stops that recurring.
+#
+# Tuned for Render's FREE plan. It also deploys correctly on paid - see the notes on
+# preDeployCommand and spin-down below if you upgrade.
 
 services:
   # --- API server (long-running Node process: OAuth, webhooks, token refresh interval) ---
   - type: web
     name: mosaic-server
-    runtime: node
-    plan: starter
+    runtime: node # NOT docker - there is no Dockerfile, and picking Docker fails the build
+    plan: free
     rootDir: .
-    buildCommand: npm ci && npm --workspace @ghl-theme-builder/server run prisma:generate && npm --workspace @ghl-theme-builder/server run build
-    # Runs once per deploy, before the new instance goes live (paid-plan feature):
-    preDeployCommand: npm --workspace @ghl-theme-builder/server run prisma:migrate:deploy
+    # Migrations run at the END of the build. On a paid plan the tidier home for this
+    # is `preDeployCommand`, which runs once per deploy after a successful build - but
+    # that is a paid-only feature, and omitting it on free is what caused this app's
+    # first deploy to fail with Prisma P2021 ("table does not exist"). Keep it here
+    # while on free.
+    buildCommand: >-
+      npm ci
+      && npm --workspace @ghl-theme-builder/server run prisma:generate
+      && npm --workspace @ghl-theme-builder/server run build
+      && npm --workspace @ghl-theme-builder/server run prisma:migrate:deploy
     startCommand: npm --workspace @ghl-theme-builder/server run start
     healthCheckPath: /
     envVars:
+      # Neon connection string. Use the DIRECT (unpooled) endpoint, not the pooled
+      # one: the pooler runs PgBouncer in transaction mode, which breaks
+      # `prisma migrate deploy`, and prisma/schema.prisma declares only `url` with no
+      # `directUrl` to fall back on. Must include `?sslmode=require`.
       - key: DATABASE_URL
-        fromDatabase:
-          name: mosaic-db
-          property: connectionString
-      # Strong, host-managed secrets — generated once by Render, never in the repo:
+        sync: false
+      # Generated ONCE when the service is first created, then held constant across
+      # later deploys - which is what you want when starting from an empty database.
+      #
+      # DANGER when pointing a NEW service at an EXISTING database: this key encrypts
+      # the stored GHL OAuth tokens (services/tokenCrypto.ts: scrypt -> AES-256-GCM),
+      # and because GCM authenticates its ciphertext a mismatched key makes decryption
+      # THROW rather than degrade. Every agency would silently have to re-authorise.
+      # In that situation change this to `sync: false` and paste the ORIGINAL value in
+      # by hand. Same applies if you ever move hosts with the data: copy this value out
+      # first, it is not recoverable from anywhere else.
       - key: TOKEN_ENCRYPTION_KEY
         generateValue: true
+      # Safe to regenerate: this only signs short-lived dashboard tokens, so rotating
+      # it just forces the agency to re-open the dashboard from the GHL menu link.
       - key: DASHBOARD_TOKEN_SECRET
         generateValue: true
-      # Dashboard session auth ON in production (verified server-side on /admin/api):
+      # Dashboard session auth ON in production (verified server-side on /admin/api).
+      # services/env.ts REFUSES to boot without this when APP_PUBLIC_URL is https.
       - key: DASHBOARD_AUTH_ENABLED
         value: "true"
       - key: GHL_SDK_LOG_LEVEL
         value: warn
       # --- Set these in the Render dashboard after the first deploy ---
-      - key: APP_PUBLIC_URL # = https://mosaic-server.onrender.com (this service's own URL)
+      - key: APP_PUBLIC_URL # this service's own https URL; must be https or boot fails
         sync: false
-      - key: ADMIN_DASHBOARD_URL # = the mosaic-dashboard static site URL (for CORS)
+      - key: ADMIN_DASHBOARD_URL # the mosaic-dashboard static site URL (for CORS)
         sync: false
+      # All four come from the GHL Developer Portal - no need to recover them from any
+      # previous hosting account.
       - key: GHL_APP_CLIENT_ID
         sync: false
       - key: GHL_APP_CLIENT_SECRET
         sync: false
       - key: GHL_APP_SHARED_SECRET
         sync: false
-      - key: WEBHOOK_SIGNATURE_PUBLIC_KEY
+      - key: WEBHOOK_SIGNATURE_PUBLIC_KEY # Ed25519 key; without it webhooks are unverified
         sync: false
       - key: WEBHOOK_PUBLIC_KEY # legacy fallback; optional
         sync: false
 
-  # --- Admin dashboard (Vite static build) ---
+  # --- Admin dashboard (Vite static build; static sites are free on Render) ---
   - type: web
     name: mosaic-dashboard
     runtime: static
@@ -63,9 +86,38 @@ services:
     buildCommand: npm ci && npm --workspace @ghl-theme-builder/admin-dashboard run build
     staticPublishPath: apps/admin-dashboard/dist
     envVars:
-      - key: VITE_API_BASE_URL # = https://mosaic-server.onrender.com (the API server URL)
+      - key: VITE_API_BASE_URL # = the mosaic-server URL (baked in at build time)
         sync: false
     routes:
       - type: rewrite
         source: /*
         destination: /index.html
+
+# ---------------------------------------------------------------------------
+# POST-DEPLOY CHECKLIST
+#
+# 1. Create the Neon project FIRST and set DATABASE_URL, or the build's
+#    `prisma migrate deploy` step has nothing to migrate against and fails.
+#
+# 2. The two URL values are circular with Render's generated hostnames: deploy once,
+#    read the assigned .onrender.com URLs, then set APP_PUBLIC_URL,
+#    ADMIN_DASHBOARD_URL and VITE_API_BASE_URL and redeploy. VITE_API_BASE_URL is
+#    compiled into the dashboard bundle, so the dashboard needs a REBUILD (not just a
+#    restart) after it changes.
+#
+# 3. Re-point three URLs in the GHL Developer Portal to the new server host:
+#      - OAuth redirect  -> <APP_PUBLIC_URL>/authorize-handler
+#      - Webhook         -> <APP_PUBLIC_URL>/webhooks/ghl
+#    The Custom Menu Link is created by the app itself from APP_PUBLIC_URL.
+#
+# 4. Each agency's pasted @import line points at <old-host>/theme-css/<agencyInstallId>.
+#    Moving hosts changes the host half, so every agency must re-paste it into
+#    GHL -> Settings -> Company -> Custom CSS. The id half only changes if the
+#    database was rebuilt from scratch rather than migrated.
+#
+# 5. FREE-PLAN SPIN-DOWN: the server sleeps after ~15 minutes idle and takes ~50s to
+#    wake. Because the theme is delivered by an @import that browsers treat as
+#    render-blocking, a cold start delays the agency's whole GHL UI, not just the
+#    branding. Either upgrade the web service to a paid plan, or keep it warm with a
+#    scheduled ping to `/` every ~10 minutes.
+# ---------------------------------------------------------------------------

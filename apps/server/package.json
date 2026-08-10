@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "sync-locations": "tsx src/scripts/bootstrapPortal.ts",
+    "migrate-db": "tsx src/scripts/migrateDatabase.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy"
