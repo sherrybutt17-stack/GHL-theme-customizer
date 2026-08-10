@@ -100,12 +100,40 @@ existing field like `scrollbarColor` / `sidebarTextColor`.
   deploy via the build command's `prisma migrate deploy`.
 - Reconcile all agencies / repoint menu links: `npm run sync-locations --workspace apps/server`
 
-## Deploy (Render)
-Manual deploy (not blueprint). Migrations run in the build command. Required prod env:
+## Deploy (Render + Neon)
+`render.yaml` is a working Blueprint for Render's **free** plan: two services
+(`mosaic-server` Node web + `mosaic-dashboard` static), no database. Required prod env:
 `DATABASE_URL, GHL_APP_CLIENT_ID, GHL_APP_CLIENT_SECRET, TOKEN_ENCRYPTION_KEY,
 APP_PUBLIC_URL (https), ADMIN_DASHBOARD_URL, DASHBOARD_AUTH_ENABLED=true`
 (+ `WEBHOOK_SIGNATURE_PUBLIC_KEY`, `GHL_APP_SHARED_SECRET`, `DASHBOARD_TOKEN_SECRET`).
-Free Postgres expires 90 days — migrate to a non-expiring DB (e.g. Neon) before that.
+
+- **Migrations run in the build command**, not `preDeployCommand` — the latter is
+  paid-only, and omitting it on free fails the deploy with Prisma P2021.
+- **The database is NOT in the Blueprint.** It lives on Neon, deliberately: the free
+  Render Postgres expired 2026-08-08 and was suspended, which took production down.
+  Use Neon's **direct/unpooled** URL — the pooler is PgBouncer in transaction mode and
+  breaks `prisma migrate deploy`, and `schema.prisma` has no `directUrl` fallback.
+- **`TOKEN_ENCRYPTION_KEY` must never be regenerated** against an existing database.
+  `tokenCrypto.ts` is scrypt → AES-256-GCM; the auth tag means a wrong key *throws*,
+  so every agency silently has to re-authorise. It is `sync: false` in the Blueprint
+  for exactly this reason — never `generateValue`.
+- **Free web services sleep after ~15min** and take ~50s to wake. Theming is delivered
+  by a render-blocking `@import`, so a cold start stalls the agency's whole GHL UI, not
+  just the branding. Keep it warm or go paid.
+
+Host migration (Render→Render, any→Neon): see `docs/render-migration.md`. Row copy is
+`npm run migrate-db --workspace @ghl-theme-builder/server` (Prisma-to-Prisma, so it
+needs no `pg_dump`).
+
+### A dead datastore must never hang `/theme-css`
+That URL is fetched by `@import` from GHL's Custom CSS field, and browsers treat a
+pending stylesheet as render-blocking — so when the DB died, the outage degraded page
+loads instead of merely dropping the theming. The route is now defended three ways:
+a wall-clock timeout, a per-agency last-known-good cache (served as a real 200 so the
+browser still applies it), and a short circuit breaker so requests during an outage
+don't each pay the connect timeout. `prisma.ts` also pins `connect_timeout`/
+`pool_timeout`, which bounds every other route. Any new DB-backed route reached from
+GHL page chrome needs the same treatment.
 
 ---
 

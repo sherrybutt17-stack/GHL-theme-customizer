@@ -1,0 +1,177 @@
+# Moving Mosaic to your own Render account (+ Neon Postgres)
+
+Why this exists: the original production deploy ran on **someone else's Render
+account**, on a **free Postgres that expired 2026-08-08 and was suspended**. Every
+database-backed route stopped responding, so the theme `@import` never returned and
+the GG sub-account showed no branding.
+
+This moves hosting to `sherrybutt17`'s Render account and the data to Neon, which
+doesn't expire.
+
+**Do not delete anything on the old account until step 6 passes.**
+
+---
+
+## What actually has to move
+
+Your code is already yours — Render builds from
+`github.com/sherrybutt17-stack/GHL-theme-customizer`. Only three things live solely
+in the old Render account:
+
+| Thing | How to get it back |
+|---|---|
+| Running services | Recreated from `render.yaml` (already updated for free tier + Neon) |
+| `TOKEN_ENCRYPTION_KEY` | **Must be copied verbatim** — see the warning below |
+| The database | Reactivate, then copy to Neon with `migrate-db` |
+
+Everything else is re-derivable: `GHL_APP_CLIENT_ID`, `GHL_APP_CLIENT_SECRET`,
+`GHL_APP_SHARED_SECRET` and `WEBHOOK_SIGNATURE_PUBLIC_KEY` all come from the GHL
+Developer Portal, and `DASHBOARD_TOKEN_SECRET` is safe to regenerate.
+
+> ### ⚠ `TOKEN_ENCRYPTION_KEY` is the one value you cannot lose
+> It encrypts the stored GHL OAuth tokens — `services/tokenCrypto.ts` derives a key
+> with scrypt and encrypts using AES-256-GCM. GCM authenticates its ciphertext, so a
+> wrong key makes decryption **throw**, not silently misbehave. Migrate the database
+> under a new key and every agency must re-authorise, which defeats the point of
+> migrating at all.
+>
+> `render.yaml` previously declared this with `generateValue: true`, which would have
+> minted a fresh key on the new deploy and broken exactly this. It is now `sync: false`
+> so you must paste the old value in deliberately.
+
+---
+
+## 1. Old Render account — recover the secret and the data
+
+1. Open the old account. **Copy `TOKEN_ENCRYPTION_KEY`** from `mosaic-server` →
+   Environment. Store it somewhere safe; you'll paste it in at step 4.
+2. Open `mosaic-db`. It is suspended — **reactivate/upgrade it**. A suspended instance
+   refuses connections, and you need it accepting traffic to read the data out. The
+   cheapest paid tier is fine; it's temporary.
+3. Wait for **Available**, then copy its **External Database URL** (the external one —
+   the internal hostname only resolves inside Render's network).
+
+If the database turns out to be already deleted rather than suspended, stop here and
+skip to [Starting clean](#if-the-data-is-gone).
+
+## 2. Neon — create the destination
+
+1. neon.tech → new project, region **US West (Oregon)** to sit near the Render server.
+2. Copy the **direct / unpooled** connection string, including `?sslmode=require`.
+
+   **Not the pooled one.** The pooled endpoint runs PgBouncer in transaction mode,
+   which breaks `prisma migrate deploy`, and `prisma/schema.prisma` declares only
+   `url` with no `directUrl` fallback. At a few-agencies scale you don't need the
+   pooler.
+
+## 3. Create the schema, then copy the rows
+
+Run locally, from the repo root. Schema first — `migrate-db` copies rows only, never
+DDL:
+
+```bash
+DATABASE_URL="<neon-direct-url>" \
+  npm --workspace @ghl-theme-builder/server run prisma:migrate:deploy
+```
+
+Preview the copy without writing anything:
+
+```bash
+SOURCE_DATABASE_URL="<render-external-url>" \
+TARGET_DATABASE_URL="<neon-direct-url>" \
+  npm run migrate-db --workspace @ghl-theme-builder/server -- --dry-run
+```
+
+Check the row counts look sane, then run it for real (drop `--dry-run`). Add
+`--skip-webhooks` to omit the `WebhookEvent` audit log if it's large — it only backs
+idempotency for replayed GHL events.
+
+The script copies parent-before-child across all 7 models, and every insert uses
+`skipDuplicates`, so it's safe to re-run if it's interrupted. It verifies row counts
+at the end and exits non-zero on a shortfall. No `pg_dump` needed — it drives Prisma
+against both databases.
+
+## 4. New Render account — deploy the Blueprint
+
+1. Sign in to Render as `sherrybutt17`, connect GitHub, **New + → Blueprint**, pick
+   `GHL-theme-customizer`. It reads `render.yaml` and creates `mosaic-server` (free
+   Node web service) and `mosaic-dashboard` (static site). It does **not** create a
+   database — that's Neon now.
+2. Set the manual env vars on `mosaic-server`:
+   - `DATABASE_URL` → the Neon direct URL
+   - `TOKEN_ENCRYPTION_KEY` → **the value copied in step 1**
+   - `GHL_APP_CLIENT_ID`, `GHL_APP_CLIENT_SECRET`, `GHL_APP_SHARED_SECRET`,
+     `WEBHOOK_SIGNATURE_PUBLIC_KEY` → from the GHL Developer Portal
+3. Deploy once to learn the generated hostnames, then set the three circular URL
+   values and deploy again:
+   - `APP_PUBLIC_URL` → the `mosaic-server` URL (**must be https**, or boot fails by
+     design in `services/env.ts`)
+   - `ADMIN_DASHBOARD_URL` → the `mosaic-dashboard` URL (CORS)
+   - `VITE_API_BASE_URL` on the dashboard → the `mosaic-server` URL
+
+   `VITE_API_BASE_URL` is compiled into the bundle, so the dashboard needs a full
+   **rebuild** after changing it, not a restart.
+
+## 5. Re-point GHL
+
+In the GHL Developer Portal, update to the new server host:
+
+- OAuth redirect → `<APP_PUBLIC_URL>/authorize-handler`
+- Webhook → `<APP_PUBLIC_URL>/webhooks/ghl`
+
+The Custom Menu Link is created by the app itself from `APP_PUBLIC_URL`. Existing
+installs still point at the old host, so repoint them:
+
+```bash
+npm run sync-locations --workspace apps/server
+```
+
+Then in **GHL → Settings → Company → Custom CSS**, re-paste the import line — the host
+half changed:
+
+```
+@import url("<APP_PUBLIC_URL>/theme-css/<agencyInstallId>?v=1");
+```
+
+The `agencyInstallId` is unchanged if you migrated the data. It only changes if the
+database was rebuilt empty.
+
+## 6. Verify before tearing anything down
+
+```bash
+curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" <APP_PUBLIC_URL>/
+curl -s <APP_PUBLIC_URL>/theme-css/<agencyInstallId> | head -20
+```
+
+The CSS route must return real rules, not `/* Unknown agency install */` (wrong id or
+empty database) and not `/* Mosaic: theme temporarily unavailable */` (server can't
+reach Neon). Then load GHL and confirm the GG sub-account is branded, and open the
+dashboard from the GHL menu link.
+
+## 7. Only now, decommission
+
+Delete `mosaic-server`, `mosaic-dashboard` and `mosaic-db` from the **old** account so
+its paid database stops billing.
+
+---
+
+## Free-plan spin-down — read this
+
+The free web service sleeps after ~15 minutes idle and takes **~50s** to wake. The
+theme is delivered by an `@import`, which browsers treat as render-blocking, so a cold
+start delays the agency's entire GHL UI — not just the branding. Two options:
+
+- Upgrade `mosaic-server` to a paid plan (no spin-down), or
+- Ping `/` every ~10 minutes to keep it warm. One always-on service fits inside
+  Render's free monthly instance-hours.
+
+Neon's free tier also suspends idle compute, but resumes in about a second, which is
+not a problem here.
+
+## If the data is gone
+
+If `mosaic-db` was deleted rather than suspended, free-tier Render has no backups and
+it's unrecoverable. Then: skip steps 1 and 3, generate a fresh `TOKEN_ENCRYPTION_KEY`,
+deploy against an empty Neon database, uninstall and reinstall the app in GHL, and
+rebuild the theme in the dashboard. A **fresh** `agencyInstallId` is minted, so the
+`@import` line must be re-pasted with the new id.
