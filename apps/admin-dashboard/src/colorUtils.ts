@@ -169,3 +169,53 @@ export function suggestAccents(primary: string): string[] {
     shift(primary, 0, 8, 22), // lighter tint of same hue
   ];
 }
+
+/**
+ * Shrink and re-encode a data: URL, keeping whichever of WebP/PNG is smaller.
+ *
+ * This exists for the same reason the upload path downscales: a logo is base64-inlined
+ * into the theme stylesheet, ONE PER SUB-ACCOUNT, and that stylesheet is render-blocking.
+ * A scraped logo arrives at whatever size the client's website happened to serve — the
+ * first one measured here was a 77KB PNG — so applying scans across 41 sub-accounts
+ * unprocessed is megabytes of CSS in front of every page load.
+ *
+ * Two traps, both the same as in the upload encoder:
+ *  - `toDataURL` with an unsupported type does NOT throw, it silently returns PNG, so
+ *    check the mime of what came back rather than trusting the request; and
+ *  - WebP is not always smaller (flat-colour marks often favour PNG), so encode both
+ *    and compare — it costs microseconds and can never make a logo bigger.
+ */
+export async function downscaleDataUrl(
+  src: string,
+  maxDim = 512
+): Promise<{ dataUrl: string; bytes: number; format: "webp" | "png" } | null> {
+  let img: HTMLImageElement;
+  try {
+    img = await loadImage(src);
+  } catch {
+    return null;
+  }
+  const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(img.width * scale));
+  canvas.height = Math.max(1, Math.round(img.height * scale));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  let png: string;
+  let webp: string;
+  try {
+    png = canvas.toDataURL("image/png");
+    webp = canvas.toDataURL("image/webp", 0.85);
+  } catch {
+    return null; // tainted canvas
+  }
+  const webpSupported = webp.startsWith("data:image/webp");
+  const chosen = webpSupported && webp.length < png.length ? webp : png;
+  return {
+    dataUrl: chosen,
+    format: chosen === webp ? "webp" : "png",
+    bytes: Math.round(((chosen.length - chosen.indexOf(",") - 1) * 3) / 4),
+  };
+}

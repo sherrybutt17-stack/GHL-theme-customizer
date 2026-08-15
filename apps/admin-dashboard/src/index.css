@@ -533,6 +533,165 @@ body {
 .version-current { color: var(--text-muted); font-weight: 400; font-size: 12px; }
 .version-date { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
 
+/* ---- Support settings ---- */
+.pill-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.pill-dot.on { background: #16a34a; }
+.pill-dot.off { background: #cbd5e1; }
+/* The per-row toggle still works while the agency master switch is off — it just
+   won't show anything to a client yet, so dim it rather than disabling it. */
+.toggle-muted { opacity: 0.45; }
+
+.support-master { display: flex; align-items: flex-start; gap: 14px; background: var(--primary-soft); padding: 14px 16px; border-radius: 12px; }
+.support-master-title { font-size: 14px; font-weight: 700; }
+.support-master-hint { font-size: 12.5px; color: var(--text-muted); margin-top: 2px; line-height: 1.45; }
+.support-blockers { background: #fffbeb; border: 1px solid #fde68a; border-radius: 10px; padding: 12px 16px; font-size: 13px; }
+.support-blockers strong { display: block; margin-bottom: 6px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; color: #92400e; }
+.support-blockers ul { margin: 0; padding-left: 18px; color: var(--text-muted); line-height: 1.5; }
+
+.field-hint { font-size: 12px; color: var(--text-muted); margin: 6px 0 0; line-height: 1.45; }
+.chip-input { display: flex; flex-direction: column; gap: 8px; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 4px 6px 4px 10px;
+  background: var(--primary-soft); color: var(--primary); border-radius: 999px;
+  font-size: 12.5px; font-weight: 600;
+}
+.chip button { background: none; border: none; color: inherit; cursor: pointer; font-size: 15px; line-height: 1; padding: 0 2px; opacity: 0.6; }
+.chip button:hover { opacity: 1; }
+.chip-bad { background: #fef2f2; color: var(--danger); }
+
+.hours-tz { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.hours-tz span { font-size: 12px; color: var(--text-muted); flex: 0 0 auto; }
+.hours-tz input { flex: 1; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font-family: inherit; font-size: 13px; }
+.hours-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0; }
+.hours-day { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
+.hours-range { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.hours-range select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; font-family: inherit; font-size: 12.5px; background: #fff; }
+.hours-closed { font-size: 12.5px; color: var(--text-muted); }
+
 /* ---- Misc ---- */
 .empty-state { padding: 60px 20px; text-align: center; color: var(--text-muted); font-size: 14px; }
+/* Standing "you have unsaved work" marker in the editor header. Quiet on purpose — it
+   is a state, not an alarm — but present the whole time, so the discard prompt is never
+   the first time somebody learns their edits were not saved. */
+.unsaved-dot { margin-left: auto; margin-right: 12px; font-size: 12px; color: #92400e; background: #fffbeb; border: 1px solid #fde68a; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
 .error-banner { background: #fef2f2; border: 1px solid #fecaca; color: var(--danger); padding: 12px 16px; border-radius: 10px; font-size: 13px; margin-bottom: 20px; }
+/* Amber, not red: an expired session is an instruction, not a fault. Deliberately
+   distinct from .error-banner so it does not read as one more thing that went wrong. */
+.session-banner { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; padding: 12px 16px; border-radius: 10px; font-size: 13px; line-height: 1.5; margin-bottom: 20px; }
+
+/* ---- Support activity ---- */
+.range-row { display: flex; gap: 6px; }
+.range-row .chip { cursor: pointer; }
+.range-row .chip.active { background: var(--primary); color: #fff; }
+
+.stat-hero { display: flex; align-items: center; gap: 16px; background: var(--primary-soft); padding: 16px 18px; border-radius: 12px; }
+.stat-hero-num { font-size: 34px; font-weight: 800; color: var(--primary); line-height: 1; }
+.stat-hero-label { font-size: 14px; font-weight: 700; }
+.stat-hero-sub { font-size: 12.5px; color: var(--text-muted); margin-top: 3px; line-height: 1.4; }
+
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+.stat { border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; }
+.stat-num { display: block; font-size: 19px; font-weight: 700; }
+.stat-label { font-size: 11.5px; color: var(--text-muted); }
+
+/* A bare sparkline: one line of daily volume doesn't justify a charting library. */
+.spark { display: flex; align-items: flex-end; gap: 2px; height: 60px; padding: 4px 0; }
+.spark-bar { flex: 1; background: var(--primary-soft); border-radius: 2px 2px 0 0; position: relative; display: flex; align-items: flex-end; min-width: 2px; }
+.spark-deflected { width: 100%; background: var(--primary); border-radius: 2px 2px 0 0; opacity: .45; }
+
+.topic-list { display: flex; flex-direction: column; gap: 6px; }
+.topic-row { display: grid; grid-template-columns: 130px 1fr 34px; align-items: center; gap: 10px; font-size: 12.5px; }
+.topic-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topic-bar { height: 8px; background: var(--primary); border-radius: 999px; min-width: 4px; opacity: .55; }
+.topic-count { text-align: right; color: var(--text-muted); font-size: 11.5px; }
+
+.loc-stats { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
+.loc-stat-row { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; font-size: 12.5px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.loc-stat-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.loc-stat-esc { color: #b45309; font-size: 11.5px; }
+
+/* ---- Agency knowledge base ---- */
+.kb-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.kb-count { font-size: 14px; font-weight: 700; }
+.kb-list { display: flex; flex-direction: column; gap: 8px; }
+.kb-row { display: flex; gap: 12px; align-items: flex-start; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.kb-held { border-color: #fde68a; background: #fffbeb; }
+.kb-row-main { flex: 1; min-width: 0; }
+.kb-row-title { font-size: 13.5px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.kb-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: #92400e; background: #fef3c7; padding: 1px 6px; border-radius: 6px; }
+.kb-row-body { font-size: 12.5px; color: var(--text-muted); margin-top: 3px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.kb-row-warn { font-size: 12px; color: #92400e; margin-top: 6px; }
+.kb-row-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.kb-edit-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ---- Support dry run ---- */
+.support-tryit {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 14px 16px; border: 1px dashed var(--border); border-radius: 10px; background: var(--bg);
+}
+.support-tryit strong { font-size: 13.5px; }
+.support-tryit .field-hint { margin-top: 3px; max-width: 380px; }
+
+.dryrun-controls { display: flex; gap: 8px; margin: 14px 0 4px; }
+.dryrun-controls .look-select { flex: 1; }
+
+.dryrun-verdict { border-radius: 10px; padding: 12px 14px; font-size: 13px; margin: 14px 0 12px; }
+.dryrun-verdict.ok { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
+.dryrun-verdict.bad { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+
+.dryrun-list { display: flex; flex-direction: column; gap: 10px; }
+.dryrun-row { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--card); }
+/* A flagged answer is left readable, not hidden — the agency has to see what got through. */
+.dryrun-row.bad { border-color: #fecaca; background: #fffafa; }
+.dryrun-q { font-size: 13px; font-weight: 600; display: flex; align-items: baseline; gap: 8px; }
+.dryrun-a { font-size: 13px; line-height: 1.55; margin-top: 8px; white-space: pre-wrap; }
+.dryrun-expect { font-size: 11.5px; color: var(--text-muted); margin-top: 8px; line-height: 1.45; }
+.dryrun-badge {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  padding: 1px 6px; border-radius: 6px; flex-shrink: 0;
+}
+.dryrun-badge.ok { color: #166534; background: #dcfce7; }
+.dryrun-badge.bad { color: #991b1b; background: #fee2e2; }
+
+/* Agency-default undo history: show the look, not just a timestamp. */
+.version-swatch {
+  width: 26px; height: 26px; border-radius: 7px; flex-shrink: 0;
+  border: 1px solid var(--border);
+}
+
+/* ---- Bulk brand-from-website ---- */
+.bulk-input {
+  width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+  line-height: 1.6; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--card); color: var(--text); resize: vertical;
+}
+.bulk-list { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.bulk-row {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--card);
+}
+.bulk-row.bad { border-color: #fecaca; background: #fffafa; }
+.bulk-swatches { display: flex; align-items: center; gap: 4px; flex-shrink: 0; width: 74px; }
+.bulk-swatch { width: 20px; height: 20px; border-radius: 6px; border: 1px solid var(--border); }
+.bulk-logo { max-width: 28px; max-height: 20px; object-fit: contain; }
+.bulk-row-main { flex: 1; min-width: 0; }
+.bulk-row-title { font-size: 13px; font-weight: 600; }
+.bulk-matched { font-weight: 400; color: var(--text-muted); }
+.bulk-row-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; overflow-wrap: anywhere; }
+.bulk-status {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  padding: 2px 7px; border-radius: 6px; flex-shrink: 0; background: #f1f5f9; color: var(--text-muted);
+}
+.bulk-status.ready, .bulk-status.saved { background: #dcfce7; color: #166534; }
+.bulk-status.failed, .bulk-status.skipped { background: #fee2e2; color: #991b1b; }
+
+/* --- Knowledge base feeds -------------------------------------------------------
+   A feed row reuses .kb-row so an article and its source read as the same kind of
+   thing; only the two extras below are new. */
+.kb-feeds { border-top: 1px solid var(--border); margin-top: 26px; padding-top: 4px; }
+.text-input {
+  font-size: 13px; line-height: 1.5; padding: 9px 12px; border: 1px solid var(--border);
+  border-radius: 10px; background: var(--card); color: var(--text);
+}
+.text-input:focus { outline: 2px solid var(--accent, #6366f1); outline-offset: -1px; }

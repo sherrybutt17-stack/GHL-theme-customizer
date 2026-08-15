@@ -6,12 +6,23 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
+    "test": "tsx --test src/**/*.test.ts",
     "start": "node dist/index.js",
     "sync-locations": "tsx src/scripts/bootstrapPortal.ts",
     "migrate-db": "tsx src/scripts/migrateDatabase.ts",
+    "create-desk-user": "tsx src/scripts/createDeskUser.ts",
+    "crawl-kb": "tsx src/scripts/crawlKb.ts",
+    "verify-kb": "tsx src/scripts/verifyKb.ts",
+    "verify-brand-map": "tsx src/scripts/verifyBrandMap.ts",
+    "eval-models": "tsx src/scripts/evalModels.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:migrate:deploy": "prisma migrate deploy"
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "seed-kb": "tsx src/scripts/seedKb.ts",
+    "poll-feeds": "tsx src/scripts/pollFeeds.ts",
+    "verify-migrations": "tsx src/scripts/verifyMigrations.ts",
+    "readiness": "tsx src/scripts/readiness.ts",
+    "smoke": "tsx src/scripts/smoke.ts"
   },
   "dependencies": {
     "@gohighlevel/api-client": "^3.0.0",
@@ -22,6 +33,7 @@
     "crypto-js": "^4.2.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "openai": "^7.4.0",
     "undici": "^6.27.0"
   },
   "devDependencies": {

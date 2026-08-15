@@ -46,32 +46,68 @@ themeBundleRouter.get("/theme-bundle/:agencyInstallId.js", async (req: Request, 
 themeBundleRouter.get(
   "/theme-bundle/:agencyInstallId/config/:ghlLocationId",
   async (req: Request, res: Response) => {
-    const location = await prisma.locationInstall.findFirst({
-      where: {
-        agencyInstallId: req.params.agencyInstallId,
-        ghlLocationId: req.params.ghlLocationId,
-        status: "active",
-        enabled: true,
-      },
-      include: { themeConfigs: { orderBy: { version: "desc" }, take: 1 } },
-    });
+    const [location, agencyDefault, agency] = await Promise.all([
+      prisma.locationInstall.findFirst({
+        where: {
+          agencyInstallId: req.params.agencyInstallId,
+          ghlLocationId: req.params.ghlLocationId,
+          status: "active",
+          enabled: true,
+        },
+        include: { themeConfigs: { orderBy: { version: "desc" }, take: 1 } },
+      }),
+      prisma.agencyDefaultTheme.findUnique({ where: { agencyInstallId: req.params.agencyInstallId } }),
+      prisma.agencyInstall.findUnique({
+        where: { id: req.params.agencyInstallId },
+        select: { status: true },
+      }),
+    ]);
 
-    if (!location || !location.themeConfigs[0]) {
+    // Stop answering for an agency that removed the app, explicitly rather than by
+    // relying on the uninstall cascade having disabled its locations. /theme-css checks
+    // this directly and so does the support config endpoint; leaving this one to inherit
+    // the property from somewhere else is how the uninstall handler stayed broken for
+    // months while appearing to work.
+    if (!location || agency?.status === "uninstalled") {
       return res.status(404).json(null);
     }
 
-    const theme = location.themeConfigs[0];
-    const hidden = Array.isArray(theme.hiddenFeatures)
-      ? (theme.hiddenFeatures as string[]).filter(isKnownFeatureKey)
-      : [];
+    /**
+     * FALL BACK TO THE AGENCY DEFAULT, per field.
+     *
+     * This returned 404 whenever a sub-account had no ThemeConfig of its own, and the
+     * pasted script reads a 404 as `null` and returns immediately. So an agency who
+     * branded once at the agency-default level — the documented way to cover 41
+     * sub-accounts, and the only sane one — got their colours and logo on every
+     * sub-account through the stylesheet, and the browser-tab title and favicon on NONE
+     * of them. Silently, because the CSS half plainly worked.
+     *
+     * Per field, not whole-object, because that is what the stylesheet already does: the
+     * agency-default block is emitted globally and location rules override it property by
+     * property. A sub-account that sets only its own primaryColor still inherits the
+     * agency's favicon there, and must here too, or the two halves of one theme disagree.
+     */
+    const own = location.themeConfigs[0] ?? null;
+    if (!own && !agencyDefault) {
+      // Nothing branded at either level: there is genuinely nothing to apply.
+      return res.status(404).json(null);
+    }
+    const pick = <K extends "brandName" | "logoUrl" | "faviconUrl" | "primaryColor" | "secondaryColor" | "accentColor">(
+      key: K
+    ): string | null => own?.[key] ?? (agencyDefault as Record<string, any> | null)?.[key] ?? null;
+
+    const rawHidden = own?.hiddenFeatures ?? agencyDefault?.hiddenFeatures;
+    const hidden = Array.isArray(rawHidden) ? (rawHidden as string[]).filter(isKnownFeatureKey) : [];
+    const rawLabels = own?.menuLabelOverrides ?? agencyDefault?.menuLabelOverrides;
+
     res.json({
-      brandName: theme.brandName,
-      logoUrl: theme.logoUrl,
-      faviconUrl: theme.faviconUrl,
-      primaryColor: color(theme.primaryColor),
-      secondaryColor: color(theme.secondaryColor),
-      accentColor: color(theme.accentColor),
-      menuLabelOverrides: safeLabels(theme.menuLabelOverrides),
+      brandName: pick("brandName"),
+      logoUrl: pick("logoUrl"),
+      faviconUrl: pick("faviconUrl"),
+      primaryColor: color(pick("primaryColor")),
+      secondaryColor: color(pick("secondaryColor")),
+      accentColor: color(pick("accentColor")),
+      menuLabelOverrides: safeLabels(rawLabels),
       hiddenFeatures: hidden,
     });
   }

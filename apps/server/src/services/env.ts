@@ -13,6 +13,20 @@ const REQUIRED = [
   "APP_PUBLIC_URL",
 ] as const;
 
+/**
+ * "Are we really deployed?" - https AND not localhost.
+ *
+ * The https check alone is not enough: APP_PUBLIC_URL is REQUIRED to be https even in
+ * local dev (see validateEnv below), so `startsWith("https://")` is true on a laptop
+ * too. Anything that changes behaviour between dev and prod must use this, not the
+ * protocol alone - notably the desk's Secure cookie flag, which a browser silently
+ * drops over the http:// the dev server actually serves.
+ */
+export function isProductionUrl(): boolean {
+  const url = process.env.APP_PUBLIC_URL?.trim() ?? "";
+  return /^https:\/\//.test(url) && !/localhost|127\.0\.0\.1/.test(url);
+}
+
 export function validateEnv(): void {
   const missing = REQUIRED.filter((k) => !process.env[k]?.trim());
   if (missing.length > 0) {
@@ -39,7 +53,7 @@ export function validateEnv(): void {
 
   // Treat an https, non-localhost public URL as "production". In that mode a few
   // more vars are load-bearing and must not silently fall back to dev defaults.
-  const isProd = /^https:\/\//.test(appUrl) && !/localhost|127\.0\.0\.1/.test(appUrl);
+  const isProd = isProductionUrl();
   if (isProd) {
     const adminUrl = process.env.ADMIN_DASHBOARD_URL?.trim();
     if (!adminUrl) {
@@ -69,6 +83,25 @@ export function validateEnv(): void {
         "WEBHOOK_SIGNATURE_PUBLIC_KEY is required in production (APP_PUBLIC_URL is https). " +
           "Without it incoming GHL webhooks are NOT signature-verified and forged lifecycle " +
           "events (e.g. UninstallCompany) are accepted. Set the app's Ed25519 public key."
+      );
+    }
+    if (!process.env.SUPPORT_DESK_URL?.trim()) {
+      // Non-fatal on purpose: the desk is a separate deploy and the server must keep
+      // booting without it. The CORS origin then falls back to http://localhost:5174,
+      // which no real browser origin can match - so the failure mode is "the desk
+      // can't reach the API", never "the desk API is open to any origin".
+      console.warn(
+        "[env] SUPPORT_DESK_URL is not set; /desk/api will only accept the localhost dev " +
+          "origin, so a deployed support desk cannot reach it. Set it to the desk origin."
+      );
+    }
+    if (!process.env.OPENAI_API_KEY?.trim()) {
+      // Non-fatal: theming is the live product and must keep serving without this. The
+      // support bot degrades to "let me get someone from the team" rather than erroring,
+      // so a missing key costs the bot, never the stylesheet.
+      console.warn(
+        "[env] OPENAI_API_KEY is not set; the support bot cannot generate answers and will " +
+          "escalate every question to a human. Theming is unaffected."
       );
     }
     if (!process.env.DASHBOARD_TOKEN_SECRET?.trim()) {

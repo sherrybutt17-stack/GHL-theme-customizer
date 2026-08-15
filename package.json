@@ -8,6 +8,8 @@
   "scripts": {
     "dev:server": "npm run dev --workspace apps/server",
     "build:server": "npm run build --workspace apps/server",
+    "dev:desk": "npm run dev --workspace apps/support-desk",
+    "build:desk": "npm run build --workspace apps/support-desk",
     "prisma:generate": "npm run prisma:generate --workspace apps/server",
     "prisma:migrate": "npm run prisma:migrate --workspace apps/server"
   }

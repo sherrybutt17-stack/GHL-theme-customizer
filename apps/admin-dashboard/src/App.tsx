@@ -8,16 +8,24 @@ import {
   fetchPresets,
   resetTheme,
   resetDefaultTheme,
+  restoreDefaultThemeVersion,
   saveDefaultTheme,
   saveTheme,
   setEnabled,
+  fetchSupportConfig,
+  setSupportEnabled,
   type AgencyDefaultTheme,
   type LocationRow,
+  type SupportConfig,
+  sessionExpiresAt,
+  SESSION_EXPIRED_MESSAGE,
   type ThemeInput,
   type ThemePreset,
 } from "./api";
 import { ThemeEditorModal } from "./ThemeEditor";
 import { CssExportModal } from "./CssExportModal";
+import { SupportSettingsModal } from "./SupportSettings";
+import { BulkBrandModal } from "./BulkBrand";
 import { ConfirmDialog } from "./Dialog";
 import type { Look } from "./LookFields";
 
@@ -74,28 +82,68 @@ export function App() {
   const [editingLocation, setEditingLocation] = useState<LocationRow | null>(null);
   const [editingDefault, setEditingDefault] = useState(false);
   const [showCssExport, setShowCssExport] = useState(false);
+  const [showBulkBrand, setShowBulkBrand] = useState(false);
+  const [showSupport, setShowSupport] = useState(false);
+  // Only the master switch is needed out here — it decides whether the per-row
+  // support toggles do anything, so the row UI can say so instead of lying.
+  const [supportOn, setSupportOn] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkPresetId, setBulkPresetId] = useState("");
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  const [sessionDead, setSessionDead] = useState(false);
+
+  /**
+   * Watch our own session deadline.
+   *
+   * The token lasts 8 hours and this dashboard lives in a GHL tab people leave open, so
+   * "come back the next morning and save" is the NORMAL way to meet this — not an edge
+   * case. Before, the first sign was `Error: Missing or invalid dashboard token` after
+   * clicking Save, in the same banner as every network hiccup, with the work already done.
+   *
+   * The expiry is plaintext inside the token (`agencyId.exp.sig`), so we can watch the
+   * clock without the signing key. A null expiry means "unknown" and is deliberately NOT
+   * treated as expired — with DASHBOARD_AUTH_ENABLED off there is no token at all, and
+   * locking a dev session out of a working API would be a worse bug than the one this
+   * fixes. The server remains the only thing that decides.
+   */
+  useEffect(() => {
+    const expiresAt = sessionExpiresAt();
+    if (expiresAt === null) return;
+    const fire = () => setSessionDead(true);
+    const remaining = expiresAt - Date.now();
+    if (remaining <= 0) {
+      fire();
+      return;
+    }
+    // setTimeout clamps above ~24.8 days; the 8h TTL is far inside that.
+    const timer = setTimeout(fire, remaining);
+    return () => clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     if (!agencyId) {
       setLoading(false);
       return;
     }
-    // Load the three resources independently: a failure in a secondary one (presets
-    // or the default theme) must not blank out the sub-account list, which is the
-    // core of the page. Surface an error only if the essential locations call fails.
-    Promise.allSettled([fetchLocations(agencyId), fetchDefaultTheme(agencyId), fetchPresets(agencyId)])
-      .then(([locs, def, pre]) => {
+    // Load the four resources independently: a failure in a secondary one (presets,
+    // the default theme, support) must not blank out the sub-account list, which is
+    // the core of the page. Surface an error only if the essential locations call fails.
+    Promise.allSettled([
+      fetchLocations(agencyId),
+      fetchDefaultTheme(agencyId),
+      fetchPresets(agencyId),
+      fetchSupportConfig(agencyId),
+    ])
+      .then(([locs, def, pre, sup]) => {
         if (locs.status === "fulfilled") {
           setLocations(locs.value);
           setError(null); // clear any stale error once the core list loads
         } else setError(locs.reason?.message ?? "Failed to load sub-accounts.");
         if (def.status === "fulfilled") setDefaultTheme(def.value);
         if (pre.status === "fulfilled") setPresets(pre.value);
+        if (sup.status === "fulfilled") setSupportOn(sup.value.config.enabled);
       })
       .finally(() => setLoading(false));
   }, [agencyId]);
@@ -151,6 +199,21 @@ export function App() {
     setEditingDefault(false);
   }
 
+  /**
+   * Closes the editor on success so the restored look is visible immediately in the
+   * table and the preview — leaving it open would show the pre-restore state in every
+   * field, which reads as "the restore didn't work".
+   */
+  async function handleRestoreDefaultVersion(versionId: string) {
+    setError(null);
+    try {
+      setDefaultTheme(await restoreDefaultThemeVersion(agencyId!, versionId));
+      setEditingDefault(false);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
   async function handleToggle(locId: string, enabled: boolean) {
     // Optimistic flip, rolled back if the server rejects so the UI never claims a
     // state the DB doesn't have.
@@ -162,6 +225,21 @@ export function App() {
       setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, enabled: !enabled } : l)));
       setError((e as Error).message);
     }
+  }
+
+  async function handleSupportToggle(locId: string, supportEnabled: boolean) {
+    setError(null);
+    setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, supportEnabled } : l)));
+    try {
+      await setSupportEnabled(agencyId!, locId, supportEnabled);
+    } catch (e) {
+      setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, supportEnabled: !supportEnabled } : l)));
+      setError((e as Error).message);
+    }
+  }
+
+  function handleSupportSaved(config: SupportConfig) {
+    setSupportOn(config.enabled);
   }
 
   // window.confirm is a no-op in GHL's cross-origin iframe, so use an in-app dialog.
@@ -307,6 +385,13 @@ export function App() {
         <button className="pill-btn" onClick={() => setEditingDefault(true)}>
           ⚙ Agency default
         </button>
+        <button className="pill-btn" onClick={() => setShowBulkBrand(true)}>
+          🎨 Brand from websites
+        </button>
+        <button className="pill-btn" onClick={() => setShowSupport(true)}>
+          💬 Client support
+          <span className={`pill-dot ${supportOn ? "on" : "off"}`} title={supportOn ? "On" : "Off"} />
+        </button>
         <div className="pill-apply">
           <select value={bulkPresetId} onChange={(e) => setBulkPresetId(e.target.value)} disabled={!presets.length}>
             <option value="">{presets.length ? "Apply preset…" : "No presets yet"}</option>
@@ -341,7 +426,19 @@ export function App() {
         </div>
       )}
 
-      {error && <div className="error-banner">Error: {error}</div>}
+      {/*
+        An expired session gets its OWN banner, not the generic red one. It is the only
+        failure on this screen with a remedy the reader can carry out, and it needs to
+        read as an instruction rather than as a fault. Every catch block already stores
+        the SessionExpiredError's message, so no per-call handling is needed here — the
+        text itself identifies it.
+      */}
+      {(sessionDead || error === SESSION_EXPIRED_MESSAGE) && (
+        <div className="session-banner">
+          <strong>Session expired.</strong> {SESSION_EXPIRED_MESSAGE}
+        </div>
+      )}
+      {error && error !== SESSION_EXPIRED_MESSAGE && <div className="error-banner">Error: {error}</div>}
 
       {/* Table */}
       <div className="card table-card">
@@ -359,6 +456,9 @@ export function App() {
                   </th>
                   <th>Sub-account</th>
                   <th className="col-center">Enabled</th>
+                  <th className="col-center" title="Show the support chat bubble in this sub-account">
+                    Support
+                  </th>
                   <th className="col-center">Theme</th>
                   <th className="col-center">Logo</th>
                   <th className="col-center">Alert</th>
@@ -399,6 +499,25 @@ export function App() {
                             type="checkbox"
                             checked={loc.enabled}
                             onChange={(e) => handleToggle(loc.id, e.target.checked)}
+                          />
+                          <span className="toggle-track" />
+                        </label>
+                      </td>
+                      <td className="col-center">
+                        <label
+                          className={`toggle${!supportOn ? " toggle-muted" : ""}`}
+                          title={
+                            supportOn
+                              ? loc.supportEnabled
+                                ? "Support chat is on for this sub-account"
+                                : "Support chat is off for this sub-account"
+                              : "Turn support on for the agency first (Client support)"
+                          }
+                        >
+                          <input
+                            type="checkbox"
+                            checked={loc.supportEnabled}
+                            onChange={(e) => handleSupportToggle(loc.id, e.target.checked)}
                           />
                           <span className="toggle-track" />
                         </label>
@@ -519,14 +638,41 @@ export function App() {
           isAgencyDefault
           presets={presets}
           agencyId={agencyId!}
+          defaultHistory={{ agencyId: agencyId! }}
           onSave={handleSaveDefault}
           onSaveAsPreset={saveAsPreset}
           onCancel={() => setEditingDefault(false)}
           onReset={() => setResettingDefault(true)}
+          onRestoreDefaultVersion={handleRestoreDefaultVersion}
         />
       )}
 
       {showCssExport && <CssExportModal agencyInstallId={agencyId} onClose={() => setShowCssExport(false)} />}
+
+      {showBulkBrand && (
+        <BulkBrandModal
+          agencyId={agencyId}
+          locations={locations}
+          onClose={() => setShowBulkBrand(false)}
+          onApplied={(updated) =>
+            setLocations((prev) =>
+              prev.map((l) => {
+                const hit = updated.find((u) => u.locationInstallId === l.id);
+                return hit ? { ...l, theme: hit.theme } : l;
+              })
+            )
+          }
+        />
+      )}
+
+      {showSupport && (
+        <SupportSettingsModal
+          agencyId={agencyId}
+          locations={locations}
+          onClose={() => setShowSupport(false)}
+          onSaved={handleSupportSaved}
+        />
+      )}
 
       {resetTarget && (
         <ConfirmDialog

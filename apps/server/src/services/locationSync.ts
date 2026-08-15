@@ -55,9 +55,9 @@ export async function syncLocationsForAgency(agencyInstallId: string) {
   for (const loc of locations) {
     if (!loc.id) continue;
     const existing = await prisma.locationInstall.findUnique({ where: { ghlLocationId: loc.id } });
-    if (existing?.status === "removed") {
-      // A location we previously soft-removed (UninstallLocation/LocationDelete) is
-      // still present in GHL's list. Do NOT resurrect it just because a sibling
+    if (existing?.status === "removed" && existing.removedReason !== "agency-uninstall") {
+      // A location we previously soft-removed (LocationDelete, or absent from a earlier
+      // list) is still present in GHL's. Do NOT resurrect it just because a sibling
       // triggered a re-sync - only refresh its name; keep it removed + disabled.
       await prisma.locationInstall.update({
         where: { ghlLocationId: loc.id },
@@ -65,9 +65,26 @@ export async function syncLocationsForAgency(agencyInstallId: string) {
       });
       continue;
     }
+    /**
+     * The exception, and the whole reason `removedReason` exists: a row soft-removed as a
+     * CASCADE of the agency's own uninstall falls through to the upsert below and comes
+     * back. GHL still lists this sub-account, and an agency who reinstalls plainly
+     * expects their clients branded again.
+     *
+     * Without the distinction, the rule above swallowed the reinstall path whole: every
+     * sub-account had been stamped `removed` by the uninstall, so a reinstalled agency
+     * got zero working sub-accounts — silently, with the install reporting success, and
+     * with no recovery, because re-running `sync-locations` calls this same function and
+     * refuses again.
+     *
+     * `enabled` is left alone here too, so an agency who had switched three of their
+     * forty-one sub-accounts off finds them still off rather than switched back on.
+     */
     await prisma.locationInstall.upsert({
       where: { ghlLocationId: loc.id },
-      update: { locationName: loc.name, status: "active" },
+      // `removedReason` cleared, so a row that came back reads as an ordinary live one
+      // and a later LocationDelete can stamp its own reason without ambiguity.
+      update: { locationName: loc.name, status: "active", removedReason: null },
       create: {
         agencyInstallId: agency.id,
         ghlLocationId: loc.id,
@@ -91,7 +108,9 @@ export async function syncLocationsForAgency(agencyInstallId: string) {
         status: "active",
         ghlLocationId: { notIn: [...seenIds] },
       },
-      data: { status: "removed", enabled: false },
+      // Stamped distinctly from a cascade: this one is NOT resurrected by a reinstall,
+      // because the sub-account stopped appearing in GHL's own list.
+      data: { status: "removed", enabled: false, removedReason: "absent-from-ghl" },
     });
   }
 

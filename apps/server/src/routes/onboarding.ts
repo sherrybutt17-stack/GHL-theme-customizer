@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { prisma } from "../services/prisma";
-import { generateThemeBundleScript } from "../services/themeBundleScript";
+import { buildEmbedJsSnippet } from "../services/embedSnippet";
 
 export const onboardingRouter = Router();
 
@@ -28,8 +28,12 @@ onboardingRouter.get("/onboarding/:agencyInstallId", async (req: Request, res: R
   const appBaseUrl = process.env.APP_PUBLIC_URL ?? `${req.protocol}://${req.get("host")}`;
   // Cache-buster so the first paste isn't shadowed by a previously cached copy.
   const importLine = `@import url("${appBaseUrl}/theme-css/${agency.id}?v=${Date.now()}");`;
-  // Optional Custom JavaScript — enables favicon + browser-tab title (CSS can't).
-  const jsSnippet = generateThemeBundleScript(agency.id, appBaseUrl);
+  // Optional Custom JavaScript — favicon + browser-tab title (CSS can't set either) AND
+  // the support widget. Built by the shared builder rather than assembled here: this page
+  // used to hand over the theme bundle ALONE, so an agency who pasted at the natural
+  // moment (right here, immediately after installing) had no widget, and switching support
+  // on months later did nothing with no explanation anywhere. See services/embedSnippet.ts.
+  const jsSnippet = buildEmbedJsSnippet(agency.id, appBaseUrl);
 
   res.send(`<!doctype html>
 <html>
@@ -87,12 +91,17 @@ onboardingRouter.get("/onboarding/:agencyInstallId", async (req: Request, res: R
   </div>
 
   <details class="optional">
-    <summary><strong>Optional:</strong> brand the browser-tab title</summary>
+    <summary><strong>Recommended:</strong> browser-tab title, favicon and client support</summary>
     <p class="hint" style="margin-top:12px">
-      CSS can't change a sub-account's browser-tab title. To brand it, paste the code below
-      <strong>once</strong> into <strong>Settings &rarr; Company &rarr; Custom JavaScript</strong>.
-      Like the CSS, it's paste-once &mdash; it updates every sub-account live. Skip it if you only
-      need the CSS branding.
+      CSS can't change a sub-account's browser-tab title or favicon, and it can't run the
+      client support widget. Paste the code below <strong>once</strong> into
+      <strong>Settings &rarr; Company &rarr; Custom JavaScript</strong> and all three are covered.
+    </p>
+    <p class="hint">
+      <strong>Paste it even if you're not using support yet.</strong> The widget stays
+      completely inactive until you switch support on in Mosaic &mdash; and then it appears on
+      the next page load, with nothing to re-paste. Skipping it now is the one thing that
+      would make you come back to this page later.
     </p>
     <div class="embed">
       <pre id="js-snippet">${escapeHtml(jsSnippet)}</pre>
@@ -101,6 +110,15 @@ onboardingRouter.get("/onboarding/:agencyInstallId", async (req: Request, res: R
   </details>
 
   <script>
+    // Says 'Copied!' only when it actually copied. navigator.clipboard.writeText returns
+    // a PROMISE, so setting ok = true beside the call reports success for a write that
+    // may still reject - on the one action this whole page exists for. The dashboard's
+    // own copy button had the identical bug; both are fixed, and this is the copy an
+    // agency meets FIRST, straight off the OAuth redirect.
+    function done(btn, ok) {
+      btn.textContent = ok ? 'Copied!' : 'Select & copy';
+      setTimeout(function () { btn.textContent = 'Copy'; }, 2500);
+    }
     function copyText(btn, id) {
       var text = document.getElementById(id).textContent;
       var ok = false;
@@ -113,9 +131,14 @@ onboardingRouter.get("/onboarding/:agencyInstallId", async (req: Request, res: R
         ok = document.execCommand('copy');
         document.body.removeChild(ta);
       } catch (e) {}
-      if (!ok) { try { navigator.clipboard.writeText(text); ok = true; } catch (e) {} }
-      btn.textContent = ok ? 'Copied!' : 'Select & copy';
-      setTimeout(function () { btn.textContent = 'Copy'; }, 2500);
+      if (ok) return done(btn, true);
+      // No clipboard API at all is a FAILURE, not a success. It is absent over plain
+      // http, which is exactly what local dev and an ngrok tunnel serve.
+      if (!navigator.clipboard || !navigator.clipboard.writeText) return done(btn, false);
+      navigator.clipboard.writeText(text).then(
+        function () { done(btn, true); },
+        function () { done(btn, false); }
+      );
     }
     function copyImport(btn) { copyText(btn, 'import-line'); }
   </script>

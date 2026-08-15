@@ -35,10 +35,23 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
     };
   }, [agencyInstallId, reloadKey]);
 
-  // GHL embeds this dashboard in a cross-origin iframe, where navigator.clipboard
-  // is blocked (silently rejects). Fall back to a hidden-textarea + execCommand,
-  // which works within a click gesture; report failure so the user can copy manually.
-  function writeClipboard(text: string): boolean {
+  /**
+   * GHL embeds this dashboard in a cross-origin iframe, where navigator.clipboard is
+   * blocked. Fall back to a hidden-textarea + execCommand, which works within a click
+   * gesture; report failure so the user can copy manually.
+   *
+   * The comment above used to say "silently rejects" and the code then ignored exactly
+   * that: `navigator.clipboard?.writeText(text)` returns a PROMISE, so a rejection is
+   * never caught by the surrounding try, and the missing-API case yields `undefined`
+   * without throwing either. Both fell through to `return true` and the button said
+   * "Copied!" over a clipboard that still held whatever was in it before.
+   *
+   * That lands on the one action the entire product depends on — the agency pastes this
+   * line into GHL and nothing else about Mosaic works until they do — and it fails in the
+   * quietest possible way: they paste, nothing happens, and the thing that told them it
+   * worked was us.
+   */
+  async function writeClipboard(text: string): Promise<boolean> {
     try {
       const ta = document.createElement("textarea");
       ta.value = text;
@@ -55,16 +68,19 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
     } catch {
       /* fall through to the modern API */
     }
+    // Checked rather than optional-chained: `?.` makes "there is no clipboard API" look
+    // identical to "the write resolved", which is the same lie in a different costume.
+    if (!navigator.clipboard?.writeText) return false;
     try {
-      navigator.clipboard?.writeText(text);
+      await navigator.clipboard.writeText(text);
       return true;
     } catch {
       return false;
     }
   }
 
-  function copy(text: string, which: "import" | "full" | "js") {
-    if (writeClipboard(text)) {
+  async function copy(text: string, which: "import" | "full" | "js") {
+    if (await writeClipboard(text)) {
       setCopied(which);
       setTimeout(() => setCopied(null), 2000);
     } else {
@@ -131,15 +147,24 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
 
           <div style={{ marginTop: 20, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
             <button className="btn btn-ghost" onClick={() => setShowJs((v) => !v)}>
-              {showJs ? "Hide" : "Show"} optional JavaScript (browser-tab title)
+              {showJs ? "Hide" : "Show"} optional JavaScript (tab title + client support)
             </button>
             {showJs && (
               <>
                 <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "8px 0" }}>
-                  Optional. CSS can't set the browser-tab title. To brand it, paste this{" "}
-                  <strong>once</strong> into GHL's{" "}
-                  <strong>Settings &rarr; Company &rarr; Custom JavaScript</strong>. Paste-once — it
-                  reads each sub-account's theme live. Skip it if you only need the CSS branding.
+                  Optional, and needed for two things CSS can't do: the browser-tab title and
+                  favicon, and the client support bubble. Paste this <strong>once</strong> into
+                  GHL's <strong>Settings &rarr; Company &rarr; Custom JavaScript</strong>.
+                </p>
+                {/*
+                  Stated explicitly because the alternative is an agency turning support on
+                  later, seeing nothing appear, and having no way to know a re-paste was the
+                  missing step.
+                */}
+                <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "8px 0" }}>
+                  You never re-paste it. It reads each sub-account's theme live, and the support
+                  bubble appears or disappears as you switch support on and off — including if you
+                  turn support on for the first time months from now.
                 </p>
                 <pre style={preStyle}>{embed?.jsSnippet ?? "Loading…"}</pre>
                 <button

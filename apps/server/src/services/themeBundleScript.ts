@@ -30,27 +30,59 @@ export function generateThemeBundleScript(agencyId: string, apiBase: string): st
     var cache = {};
     var lastLocationId = undefined;
 
+    /**
+     * This bundle does ONLY what CSS cannot: the browser-tab title and the favicon.
+     *
+     * It used to also inject its own sidebar CSS, which was both redundant and actively
+     * harmful. Redundant because /theme-css already paints the sidebar from the full
+     * theme; harmful because this <style> lands in <head> AFTER GHL's Custom CSS, so at
+     * equal specificity and equal !important it WON — meaning an agency who pasted the
+     * optional JS silently had their gradient or background image flattened to a solid
+     * primaryColor. It also recoloured icons with the CSS 'color' property, which cannot
+     * work on GHL's sidebar at all (see CLAUDE.md: only 'filter' reaches them).
+     *
+     * The rule this encodes: anything CSS can express belongs in the stylesheet, where
+     * it is versioned, sanitised and testable. The JS bundle never duplicates it.
+     */
     function applyTheme(theme) {
-      var styleId = 'mosaic-theme-style';
-      var style = document.getElementById(styleId);
-      if (!style) {
-        style = document.createElement('style');
-        style.id = styleId;
-        document.head.appendChild(style);
-      }
-      if (!theme) {
-        style.textContent = '';
-        return;
-      }
-      var primary = theme.primaryColor || '#4f46e5';
-      var accent = theme.accentColor || primary;
-      var css = '';
-      css += '#sidebar-v2, .hl_sidebar { background: ' + primary + ' !important; }';
-      css += '#sidebar-v2 a.active, .hl_sidebar a.active, .sidebar-v2 .active { background: ' + accent + ' !important; color: #fff !important; }';
-      css += '#sidebar-v2 a i, .hl_sidebar a i { color: ' + accent + ' !important; }';
-      style.textContent = css;
+      if (!theme) return;
       if (theme.brandName) {
         document.title = theme.brandName;
+      }
+      applyFavicon(theme.faviconUrl);
+    }
+
+    /**
+     * The favicon is the whole reason this bundle is worth pasting: CSS cannot set it,
+     * so without this the client's browser tab still shows the vendor's icon next to the
+     * agency's own brand name — on every tab, all day.
+     *
+     * Rewrites EVERY existing icon link rather than adding one. GHL ships several
+     * (icon, shortcut icon, apple-touch-icon) and browsers are free to pick any of them,
+     * so leaving one behind means the old icon reappears at random.
+     */
+    function applyFavicon(url) {
+      var links = document.querySelectorAll("link[rel*='icon']");
+      if (!url) {
+        // Switching a favicon OFF must restore GHL's, not leave a broken tab icon:
+        // ours are tagged, so only ours are removed.
+        for (var i = 0; i < links.length; i++) {
+          if (links[i].getAttribute('data-mosaic') === '1') links[i].remove();
+        }
+        return;
+      }
+      var found = false;
+      for (var j = 0; j < links.length; j++) {
+        links[j].setAttribute('href', url);
+        links[j].setAttribute('data-mosaic', '1');
+        found = true;
+      }
+      if (!found) {
+        var link = document.createElement('link');
+        link.setAttribute('rel', 'icon');
+        link.setAttribute('data-mosaic', '1');
+        link.setAttribute('href', url);
+        document.head.appendChild(link);
       }
     }
 

@@ -14,5 +14,8 @@
     "declaration": false,
     "sourceMap": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Tests run through tsx directly (npm test), so they never need compiling - and
+  // shipping test code into dist/ is pure dead weight in the deployed image.
+  "exclude": ["src/**/*.test.ts"]
 }

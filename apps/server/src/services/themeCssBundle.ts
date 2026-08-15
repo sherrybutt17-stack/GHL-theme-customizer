@@ -414,14 +414,28 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
   }
 
   // Sidebar menu ordering. Emits a flex `order` per item; the GHL sidebar nav is a
-  // flex column, so lower order floats higher. Unknown keys are ignored. Items not
-  // in the list keep order:0 (their natural position). No-op if the nav isn't flex.
+  // flex column, so lower order floats higher. Unknown keys are ignored. No-op if the
+  // nav isn't flex.
+  //
+  // The catch-all is load-bearing. `order` defaults to 0, so anything NOT in the saved
+  // list used to tie with the FIRST item in it and land at the top of the sidebar — and
+  // the list goes stale on its own: GHL adds a nav item, or a preset saved before we
+  // knew about one gets applied, and that item jumps to position one. It also made the
+  // live preview a liar, since the preview sorts unlisted items LAST (`?? 999`).
+  // Every nav anchor carries `meta="<key>"`, so one rule sends them all to the back and
+  // the per-key rules below override it — `#sb_<key>` outranks it outright, and
+  // `a[meta="<key>"]` ties on specificity but wins on source order, hence emitting this
+  // FIRST. (Non-anchor children like dividers keep order 0 and stay at the top, which
+  // is what they already did before this.)
   const menuOrder = (Array.isArray(theme.menuOrder) ? (theme.menuOrder as string[]) : []).filter(
     isKnownFeatureKey
   );
-  menuOrder.forEach((key, i) => {
-    rules.push(`${featureSelectorsScoped(key, scope).join(", ")} { order: ${i} !important; }`);
-  });
+  if (menuOrder.length) {
+    rules.push(`${scope.prefix ? `${scope.prefix} ` : ""}a[meta] { order: 999 !important; }`);
+    menuOrder.forEach((key, i) => {
+      rules.push(`${featureSelectorsScoped(key, scope).join(", ")} { order: ${i} !important; }`);
+    });
+  }
 
   // Menu label renaming
   const labels =

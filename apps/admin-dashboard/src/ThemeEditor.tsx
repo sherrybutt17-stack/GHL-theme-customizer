@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  fetchDefaultThemeVersions,
+  type DefaultThemeVersion,
   fetchSidebarFeatures,
   fetchThemeVersions,
   scanBrandWebsite,
@@ -13,7 +15,7 @@ import {
 import { LookFields, type Look } from "./LookFields";
 import { MosaicPreview } from "./MosaicPreview";
 import { LoginPreview } from "./LoginPreview";
-import { PromptDialog } from "./Dialog";
+import { ConfirmDialog, PromptDialog } from "./Dialog";
 import { paletteFromImage } from "./colorUtils";
 
 interface Props {
@@ -33,6 +35,14 @@ interface Props {
   agencyId?: string;
   /** When set (per-location editing), enables the version-history tab. */
   history?: { agencyId: string; locationInstallId: string };
+  /**
+   * Agency-default editing: enables the same tab, backed by snapshots instead of
+   * versions. The agency default is one upserted row rather than an append-only chain,
+   * so "restore" is a single server call rather than load-into-editor-then-save.
+   */
+  defaultHistory?: { agencyId: string };
+  /** Agency default only. Resolves once the restored look is live. */
+  onRestoreDefaultVersion?: (versionId: string) => Promise<void>;
   onSave: (theme: ThemeInput) => Promise<void>;
   onSaveAsPreset: (name: string, look: Look, menuOrder: string[]) => Promise<void>;
   onCancel: () => void;
@@ -51,6 +61,42 @@ interface UploadedImage {
   height: number;
   origWidth: number;
   origHeight: number;
+  /** What the encoder actually produced — "webp" unless the browser refused. */
+  format: "webp" | "png";
+  /** Encoded byte count, for showing the agency what rides in their stylesheet. */
+  bytes: number;
+}
+
+/**
+ * Encode the canvas as WebP, falling back to PNG, and keep whichever is SMALLER.
+ *
+ * This matters more here than it looks. Logos are base64-inlined into the theme
+ * stylesheet — one per sub-account — and that stylesheet is fetched by `@import` from
+ * GHL's Custom CSS field, which browsers treat as RENDER-BLOCKING. So every kilobyte is
+ * paid on every page load of every themed sub-account. WebP typically lands 5–10×
+ * smaller than PNG at visually identical quality, and base64 adds a further 33% on top
+ * of whatever we choose.
+ *
+ * Two things this must not assume:
+ *  - **That WebP is supported.** `toDataURL` with an unrecognised type does not throw;
+ *    it silently returns PNG. So check the mime of what came BACK rather than trusting
+ *    the request.
+ *  - **That WebP is always smaller.** For a tiny flat-colour logo, PNG sometimes wins.
+ *    Encoding both and comparing costs microseconds and removes the guess.
+ */
+function encodeSmallest(canvas: HTMLCanvasElement): { dataUrl: string; format: "webp" | "png"; bytes: number } {
+  const png = canvas.toDataURL("image/png");
+  // Quality 0.85: visually lossless for flat logo art, well past the point of
+  // diminishing returns on size.
+  const webp = canvas.toDataURL("image/webp", 0.85);
+  const webpSupported = webp.startsWith("data:image/webp");
+  const chosen = webpSupported && webp.length < png.length ? webp : png;
+  return {
+    dataUrl: chosen,
+    format: chosen === webp ? "webp" : "png",
+    // Approximate decoded size from the base64 payload — close enough to display.
+    bytes: Math.round(((chosen.length - chosen.indexOf(",") - 1) * 3) / 4),
+  };
 }
 
 function fileToDownscaledDataUrl(file: File, maxDim = 512): Promise<UploadedImage> {
@@ -70,8 +116,9 @@ function fileToDownscaledDataUrl(file: File, maxDim = 512): Promise<UploadedImag
         const ctx = canvas.getContext("2d");
         if (!ctx) return reject(new Error("Canvas unsupported"));
         ctx.drawImage(img, 0, 0, w, h);
+        const encoded = encodeSmallest(canvas);
         resolve({
-          dataUrl: canvas.toDataURL("image/png"),
+          ...encoded,
           width: w,
           height: h,
           origWidth: img.width,
@@ -111,16 +158,22 @@ export function ThemeEditorModal({
   presets,
   agencyId,
   history,
+  defaultHistory,
   onSave,
   onSaveAsPreset,
   onCancel,
   onReset,
+  onRestoreDefaultVersion,
 }: Props) {
   const [tab, setTab] = useState<"branding" | "features" | "login" | "advanced" | "history">("branding");
   const [versions, setVersions] = useState<ThemeConfig[] | null>(null);
+  const [defaultVersions, setDefaultVersions] = useState<DefaultThemeVersion[] | null>(null);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
   const [previewingVersion, setPreviewingVersion] = useState<number | null>(null);
   const [brandName, setBrandName] = useState(initial?.brandName ?? "");
   const [logoUrl, setLogoUrl] = useState(initial?.logoUrl ?? "");
+  const [faviconUrl, setFaviconUrl] = useState(initial?.faviconUrl ?? "");
+  const [faviconErr, setFaviconErr] = useState<string | null>(null);
   const [look, setLook] = useState<Look>(lookFrom(initial));
   const [hidden, setHidden] = useState<Set<string>>(new Set(initial?.hiddenFeatures ?? []));
   const [labels, setLabels] = useState<Record<string, string>>(initial?.menuLabelOverrides ?? {});
@@ -134,7 +187,7 @@ export function ThemeEditorModal({
   const [alertMessage, setAlertMessage] = useState(initial?.alertMessage ?? "");
   const [alertColor, setAlertColor] = useState(initial?.alertColor ?? "#4f46e5");
   const [logoErr, setLogoErr] = useState<string | null>(null);
-  const [logoDims, setLogoDims] = useState<{ w: number; h: number; ow: number; oh: number } | null>(null);
+  const [logoDims, setLogoDims] = useState<{ w: number; h: number; ow: number; oh: number; format: string; bytes: number } | null>(null);
   const [features, setFeatures] = useState<SidebarFeature[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -163,14 +216,59 @@ export function ThemeEditorModal({
       .catch((e) => setFeaturesError((e as Error).message || "Couldn't load the sidebar items."));
   }, [showBrandName]);
 
+  /**
+   * "Have they changed anything", derived from the SAVE PAYLOAD rather than a flag.
+   *
+   * A hand-kept `dirty` boolean is the same class of bug this guard exists to close: one
+   * more thing every future field has to remember to set, and silent when it is forgotten.
+   * Fingerprinting exactly what Save would send means a new field is covered the moment it
+   * is added to the payload — and if it is NOT in the payload, it is not a change worth
+   * warning about, because saving would not persist it either.
+   */
+  const fingerprint = JSON.stringify({
+    brandName,
+    logoUrl,
+    faviconUrl,
+    look,
+    sidebarImageUrl,
+    hideUpgrade,
+    customCss,
+    alertMessage,
+    alertColor,
+    hidden: [...hidden].sort(),
+    labels,
+    menuOrder,
+    login: isAgencyDefault
+      ? [loginBgColor, loginBgImage, loginGradientEnabled, loginGradientColor, loginGradientAngle, loginCardColor, loginButtonColor, loginLogoUrl]
+      : null,
+  });
+  const pristine = useRef<string | null>(null);
+  if (pristine.current === null) pristine.current = fingerprint;
+  const isDirty = pristine.current !== fingerprint;
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+
+  /**
+   * Closing with unsaved work asks first.
+   *
+   * The overlay was already deliberately non-dismissable — "this is a big form and a
+   * stray misclick would discard all unsaved edits" — and then Escape did precisely that,
+   * instantly and silently. Escape is a reflex, especially inside an iframe where people
+   * press it to dismiss whatever is on top, and the work at risk is an agency's careful
+   * branding of one of their clients. The reasoning was right; one path bypassed it.
+   */
+  function requestClose() {
+    if (isDirty) setConfirmDiscard(true);
+    else onCancel();
+  }
+
   // Escape closes the editor (unless a nested dialog is open, which handles its own).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !presetPromptOpen) onCancel();
+      if (e.key === "Escape" && !presetPromptOpen && !confirmDiscard) requestClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel, presetPromptOpen]);
+  });
 
   useEffect(() => {
     if (tab === "history" && history && versions === null) {
@@ -179,6 +277,14 @@ export function ThemeEditorModal({
         .catch(() => setVersions([]));
     }
   }, [tab, history, versions]);
+
+  useEffect(() => {
+    if (tab === "history" && defaultHistory && defaultVersions === null) {
+      fetchDefaultThemeVersions(defaultHistory.agencyId)
+        .then(setDefaultVersions)
+        .catch(() => setDefaultVersions([]));
+    }
+  }, [tab, defaultHistory, defaultVersions]);
 
   const patchLook = (p: Partial<Look>) => {
     setLook((l) => ({ ...l, ...p }));
@@ -191,9 +297,25 @@ export function ThemeEditorModal({
     try {
       const img = await fileToDownscaledDataUrl(file);
       setLogoUrl(img.dataUrl);
-      setLogoDims({ w: img.width, h: img.height, ow: img.origWidth, oh: img.origHeight });
+      setLogoDims({ w: img.width, h: img.height, ow: img.origWidth, oh: img.origHeight, format: img.format, bytes: img.bytes });
     } catch (e) {
       setLogoErr((e as Error).message);
+    }
+  }
+
+  /**
+   * Favicons render at 16-32px, so 64 is already generous and keeps the data URL small.
+   * Unlike the logo this does NOT ride in the render-blocking stylesheet - it is served
+   * as JSON to the pasted JS bundle - but a fat base64 blob still costs every page load.
+   */
+  async function handleFaviconFile(file: File | undefined) {
+    if (!file) return;
+    setFaviconErr(null);
+    try {
+      const img = await fileToDownscaledDataUrl(file, 64);
+      setFaviconUrl(img.dataUrl);
+    } catch (e) {
+      setFaviconErr((e as Error).message);
     }
   }
 
@@ -385,8 +507,11 @@ export function ThemeEditorModal({
         Object.entries(labels).filter(([, v]) => v && v.trim())
       );
       await onSave({
-        ...(showBrandName ? { brandName } : {}),
+        // Agency level it's the fallback platform name, per-location it's the client's
+        // own — same column, both worth sending.
+        ...(showBrandName || isAgencyDefault ? { brandName } : {}),
         logoUrl,
+        faviconUrl: faviconUrl || null,
         primaryColor: look.primaryColor,
         secondaryColor: look.primaryColor,
         accentColor: look.accentColor,
@@ -450,7 +575,8 @@ export function ThemeEditorModal({
       <div className="modal modal-lg" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>{title}</h2>
-          <button className="btn btn-ghost" onClick={onCancel} aria-label="Close">
+          {isDirty && <span className="unsaved-dot" title="Unsaved changes">Unsaved changes</span>}
+          <button className="btn btn-ghost" onClick={requestClose} aria-label="Close">
             &times;
           </button>
         </div>
@@ -470,7 +596,7 @@ export function ThemeEditorModal({
           <button className={`tab ${tab === "advanced" ? "active" : ""}`} onClick={() => setTab("advanced")}>
             Advanced
           </button>
-          {history && (
+          {(history || defaultHistory) && (
             <button className={`tab ${tab === "history" ? "active" : ""}`} onClick={() => setTab("history")}>
               History
             </button>
@@ -536,6 +662,29 @@ export function ThemeEditorModal({
                 </div>
               )}
 
+              {/*
+                Agency level, this is the FALLBACK name — what a client is told they're
+                using when their own sub-account hasn't been given a name. Left empty it
+                falls through to your company name, which is your agency's name, not the
+                white-label one their clients know.
+              */}
+              {isAgencyDefault && (
+                <div className="field">
+                  <label>Default platform name</label>
+                  <input
+                    type="text"
+                    value={brandName}
+                    onChange={(e) => setBrandName(e.target.value)}
+                    placeholder="What clients call the software"
+                  />
+                  <p className="field-hint">
+                    Used for any sub-account you haven't named individually — in the browser tab and
+                    in every answer the support assistant gives. Leave it blank and we'll fall back to
+                    your own company name, which your clients aren't meant to see.
+                  </p>
+                </div>
+              )}
+
               <div className="field">
                 <label>Logo</label>
                 <input
@@ -562,7 +711,8 @@ export function ThemeEditorModal({
                 </p>
                 {logoDims && (
                   <p className="logo-dims">
-                    Uploaded {logoDims.ow}×{logoDims.oh}px → stored at {logoDims.w}×{logoDims.h}px
+                    Uploaded {logoDims.ow}×{logoDims.oh}px → stored at {logoDims.w}×{logoDims.h}px as{" "}
+                    {logoDims.format.toUpperCase()}, {(logoDims.bytes / 1024).toFixed(1)} KB
                   </p>
                 )}
                 {logoErr && <div className="field-error">{logoErr}</div>}
@@ -585,6 +735,50 @@ export function ThemeEditorModal({
                   {pickingColors ? "Reading logo…" : "🎨 Use colors from logo"}
                 </button>
               )}
+
+              {/*
+                The browser tab is the one piece of branding that stays on screen when the
+                client switches away, and it's the last place the vendor's icon survives.
+                Needs the pasted JavaScript because CSS cannot set a favicon at all.
+              */}
+              <div className="field">
+                <label>Browser tab icon</label>
+                <input
+                  type="url"
+                  value={faviconUrl.startsWith("data:") ? "" : faviconUrl}
+                  onChange={(e) => setFaviconUrl(e.target.value)}
+                  placeholder="Paste an image URL…"
+                />
+                <div className="logo-upload-row">
+                  <label className="btn btn-ghost logo-upload-btn">
+                    Upload from computer
+                    <input
+                      type="file"
+                      accept="image/*"
+                      hidden
+                      onChange={(e) => handleFaviconFile(e.target.files?.[0])}
+                    />
+                  </label>
+                  {faviconUrl.startsWith("data:") && <span className="logo-uploaded">Uploaded image ✓</span>}
+                  {faviconUrl && (
+                    <button type="button" className="btn btn-ghost" onClick={() => setFaviconUrl("")}>
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <p className="field-hint">
+                  A <strong>square</strong> image works best — it's shrunk to 64&nbsp;px. This one needs the
+                  optional JavaScript from <strong>Get the code</strong>; CSS can't set a tab icon.
+                  {isAgencyDefault && " Used by any sub-account without its own."}
+                </p>
+                {faviconErr && <div className="field-error">{faviconErr}</div>}
+                {faviconUrl && (
+                  <div className="logo-preview" style={{ marginTop: 8 }}>
+                    <img src={faviconUrl} alt="tab icon preview" style={{ width: 32, height: 32, objectFit: "contain" }} />
+                    <span>Preview</span>
+                  </div>
+                )}
+              </div>
 
               {agencyId && (
                 <div className="field">
@@ -887,7 +1081,68 @@ export function ThemeEditorModal({
             </>
           )}
 
-          {tab === "history" && (
+          {tab === "history" && defaultHistory && (
+            <div className="field">
+              <label>Undo history</label>
+              <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px" }}>
+                Your default look is saved here before every change, so you can always go back.
+                Restoring is itself undoable — the look you have now gets saved first.
+              </p>
+              {defaultVersions === null ? (
+                <div className="empty-state">Loading history&hellip;</div>
+              ) : defaultVersions.length === 0 ? (
+                <div className="empty-state">
+                  Nothing to go back to yet. The next time you save, the look you have now is kept here.
+                </div>
+              ) : (
+                <div className="version-list">
+                  {defaultVersions.map((v) => (
+                    <div key={v.id} className="version-row">
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        {/* Show the look, not just a timestamp — "which one was that?" is
+                            the actual question, and a date can't answer it. */}
+                        <span
+                          className="version-swatch"
+                          style={{
+                            background: `linear-gradient(135deg, ${v.primaryColor ?? "#cbd5e1"}, ${
+                              v.accentColor ?? v.primaryColor ?? "#cbd5e1"
+                            })`,
+                          }}
+                        />
+                        <div>
+                          <div className="version-title">
+                            {v.brandName || "No brand name"}
+                            {v.hasLogo && <span className="version-current"> · logo</span>}
+                          </div>
+                          <div className="version-date">
+                            {new Date(v.createdAt).toLocaleString()}
+                            {v.reason ? ` · ${v.reason}` : ""}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        className="btn btn-ghost"
+                        disabled={!!restoringId}
+                        onClick={async () => {
+                          if (!onRestoreDefaultVersion) return;
+                          setRestoringId(v.id);
+                          try {
+                            await onRestoreDefaultVersion(v.id);
+                          } finally {
+                            setRestoringId(null);
+                          }
+                        }}
+                      >
+                        {restoringId === v.id ? "Restoring…" : "↩︎ Restore"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {tab === "history" && history && (
             <div className="field">
               <label>Version history</label>
               <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 12px" }}>
@@ -966,7 +1221,7 @@ export function ThemeEditorModal({
           {saveError && (
             <span style={{ fontSize: 13, color: "#b91c1c", marginRight: "auto" }}>{saveError}</span>
           )}
-          <button className="btn" onClick={onCancel} disabled={saving}>
+          <button className="btn" onClick={requestClose} disabled={saving}>
             Cancel
           </button>
           <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
@@ -983,6 +1238,16 @@ export function ThemeEditorModal({
         submitLabel="Save preset"
         onSubmit={doSaveAsPreset}
         onCancel={() => setPresetPromptOpen(false)}
+      />
+    )}
+    {confirmDiscard && (
+      <ConfirmDialog
+        title="Discard your changes?"
+        message="You've edited this theme but haven't saved it. Closing now discards those edits — the sub-account keeps the theme it had before."
+        confirmLabel="Discard changes"
+        danger
+        onConfirm={onCancel}
+        onCancel={() => setConfirmDiscard(false)}
       />
     )}
     </>

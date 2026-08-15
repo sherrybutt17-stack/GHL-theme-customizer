@@ -20,6 +20,75 @@ enum WebhookStatus {
   failed
 }
 
+// Roles on the support desk. Deliberately short: the desk is SINGLE-TENANT and
+// staffed only by Mosaic's own team, who answer on behalf of every agency. There
+// is no agency_owner/agency_agent - agencies never get desk accounts, they keep
+// the ?k= Custom Menu Link dashboard.
+enum DeskRole {
+  mosaic_agent
+  mosaic_admin
+}
+
+enum DeskUserStatus {
+  active
+  disabled
+}
+
+// Whether this agent should be handed NEW work right now. Distinct from
+// DeskUserStatus, and the difference is load-bearing: `disabled` is an access
+// decision that kills their live sessions, while `away` is a routing decision made
+// by someone who is still logged in and still working the tickets they hold. Using
+// one field for both would mean a lunch break revoked your session.
+enum DeskAvailability {
+  available
+  away
+}
+
+// What Mosaic's team (and the bot) may answer on an agency's behalf. The agency's own
+// business - billing, contracts, custom work - is never ours to speak for.
+enum SupportBoundary {
+  // Conservative default: product how-to only. Anything touching money, contracts or
+  // account changes is escalated to the agency.
+  how_to_only
+  // Also answer account/settings questions, still never money or contracts.
+  how_to_and_account
+  // Agency wrote their own policy in `boundaryNotes`.
+  custom
+}
+
+enum ConversationStatus {
+  open
+  resolved
+  escalated
+  abandoned
+}
+
+enum MessageRole {
+  user
+  bot
+  agent
+  system
+}
+
+enum KbSource {
+  // Derived from GHL help content. Stored ONLY in placeholdered form.
+  ghl
+  // Written by (or for) a specific agency. Unambiguously their content: no brand
+  // substitution needed, no crawl-legality question, and ranked above `ghl`.
+  agency
+}
+
+enum KbArticleStatus {
+  // Normalized clean. Retrievable.
+  ready
+  // A brand term survived normalization. NOT retrievable - quarantined for a human.
+  // This is the fail-safe: a term the lexicon doesn't know stops the article from
+  // being served rather than leaking into a client's chat.
+  needs_review
+  // Source removed upstream, or manually retired. Kept for provenance.
+  archived
+}
+
 model AgencyInstall {
   id                String    @id @default(cuid())
   ghlCompanyId      String    @unique
@@ -37,7 +106,13 @@ model AgencyInstall {
   locations         LocationInstall[]
   menuLink          CustomMenuLinkRegistration?
   defaultTheme      AgencyDefaultTheme?
+  defaultThemeVersions AgencyDefaultThemeVersion[]
   presets           ThemePreset[]
+  kbArticles        KbArticle[]
+  kbFeeds           KbFeed[]
+  supportConfig     SupportConfig?
+  conversations     Conversation[]
+  cannedReplies     CannedReply[]
 
   @@index([status])
 }
@@ -49,6 +124,12 @@ model LocationInstall {
   ghlLocationId     String    @unique
   locationName      String?
   status            LocationStatus @default(pending)
+  // WHY this row was soft-removed, which `status` alone cannot say — and the difference
+  // decides whether a reinstall brings it back. "agency-uninstall" is a cascade of the
+  // agency removing the app, so GHL still has the sub-account and it must return when
+  // they reinstall; "location-delete" and "absent-from-ghl" mean the sub-account itself
+  // is gone and must NOT be resurrected by a re-sync. Null on any live row.
+  removedReason     String?
   enabled           Boolean   @default(false)
   userId            String?
   userType          String?
@@ -58,10 +139,15 @@ model LocationInstall {
   scopes            String?
   installedAt       DateTime?
   activatedAt       DateTime?
+  // Whether the support widget is offered in THIS sub-account. Deliberately a column
+  // on the existing row rather than a per-location config table: the agency dashboard
+  // just needs an on/off toggle, and this reuses the enable/disable UI already there.
+  supportEnabled    Boolean   @default(false)
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
   themeConfigs      ThemeConfig[]
+  conversations     Conversation[]
 
   @@index([agencyInstallId])
   @@index([status])
@@ -119,6 +205,11 @@ model AgencyDefaultTheme {
   id                  String    @id @default(cuid())
   agencyInstallId     String    @unique
   agencyInstall       AgencyInstall @relation(fields: [agencyInstallId], references: [id])
+  // Agency-level fallback for {{PLATFORM}} when a sub-account has no ThemeConfig
+  // .brandName of its own. Without this the chain fell straight through to
+  // AgencyInstall.companyName, which is the agency's OWN name - not the white-label
+  // name their clients see.
+  brandName           String?
   logoUrl             String?
   faviconUrl          String?
   primaryColor        String?
@@ -157,6 +248,32 @@ model AgencyDefaultTheme {
   loginLogoUrl        String?
   updatedAt           DateTime  @updatedAt
   createdAt           DateTime  @default(now())
+}
+
+/// Undo for the agency default.
+///
+/// ThemeConfig is versioned, so a per-sub-account theme can always be rolled back from
+/// the History tab. AgencyDefaultTheme is a SINGLE upserted row — and it styles every
+/// sub-account at once, so it has the larger blast radius and, until now, the smaller
+/// safety net: one bad save or one Reset and the previous look was simply gone.
+///
+/// Stored as a JSON snapshot of the row as it was BEFORE each write, rather than a
+/// mirror of all ~35 columns. Mirroring would add a fourth place to thread every new
+/// theme field through (see the field checklist in CLAUDE.md) and silently lose any
+/// field somebody forgot. A snapshot cannot drift. It is written back through the same
+/// visualFields/loginFields whitelist as a normal save, so an old snapshot can never
+/// introduce a column the current code doesn't accept.
+model AgencyDefaultThemeVersion {
+  id                  String    @id @default(cuid())
+  agencyInstallId     String
+  agencyInstall       AgencyInstall @relation(fields: [agencyInstallId], references: [id])
+  /// The AgencyDefaultTheme row as it stood before the write that created this record.
+  snapshot            Json
+  /// What replaced it ("saved", "reset to unthemed", "restored an earlier look").
+  reason              String?
+  createdAt           DateTime  @default(now())
+
+  @@index([agencyInstallId, createdAt])
 }
 
 // A saved, named look ("Dark Gold") the agency can apply to many sub-accounts.
@@ -200,6 +317,319 @@ model CustomMenuLinkRegistration {
   targetLocationIds   Json
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
+}
+
+// A member of MOSAIC's support team. Created by hand (scripts/createDeskUser.ts) -
+// there is deliberately no self-serve signup, because every account here can read
+// every agency's support conversations. Agencies have no rows in this table.
+model DeskUser {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String
+  // scrypt: "<saltHex>:<hashHex>". See services/deskAuth.ts.
+  passwordHash  String
+  role          DeskRole  @default(mosaic_agent)
+  status        DeskUserStatus @default(active)
+
+  // --- Routing ---
+  availability  DeskAvailability @default(available)
+  // How many live tickets this agent is expected to hold at once. Support is not
+  // one-at-a-time work - an agent waits on one client while typing to another - so
+  // "busy" is a CAPACITY question, not a boolean. This is what makes "all agents are
+  // busy, you're in the queue" a computable statement rather than a guess.
+  maxConcurrent Int       @default(3)
+  // The highest tier this agent may be handed. A tier-2 ticket routed to a tier-1
+  // agent is worse than one left in the queue: it looks assigned, so nobody escalates
+  // it, and the client waits behind a person who cannot answer them.
+  tier          Int       @default(1)
+
+  lastLoginAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  sessions      DeskSession[]
+  assigned      Conversation[]
+  cannedReplies CannedReply[]
+
+  @@index([status])
+}
+
+// One row per login. The raw session token is NEVER stored - only its SHA-256
+// hash - so a database leak yields no usable sessions. Revocation is a row
+// update, which is the whole reason sessions live in the DB rather than being
+// stateless signed tokens like the agency dashboard's (dashboardAuth.ts): a
+// stateless token cannot be killed before it expires, and a support agent who
+// leaves must lose access immediately.
+model DeskSession {
+  id            String    @id @default(cuid())
+  deskUserId    String
+  deskUser      DeskUser  @relation(fields: [deskUserId], references: [id], onDelete: Cascade)
+  tokenHash     String    @unique
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  lastSeenAt    DateTime  @default(now())
+  userAgent     String?
+  ip            String?
+  createdAt     DateTime  @default(now())
+
+  @@index([deskUserId])
+  @@index([expiresAt])
+}
+
+// One canonical, BRAND-NEUTRAL copy of a help article, shared by every agency.
+//
+// The body is stored placeholdered ({{PLATFORM}}, {{FEATURE:key}}) and substituted per
+// sub-account at answer time - see kbNormalize.ts. That is why there is one row rather
+// than one per agency: an agency renaming a menu item or changing its brand name takes
+// effect on the very next answer, with no re-ingest.
+model KbArticle {
+  id                String    @id @default(cuid())
+  source            KbSource
+  // NULL for shared GHL-derived content; set for an agency's own articles.
+  agencyInstallId   String?
+  agencyInstall     AgencyInstall? @relation(fields: [agencyInstallId], references: [id], onDelete: Cascade)
+  // Provenance only - INTERNAL. Never rendered to a client or an agent; the bot emits
+  // no links at all. Unique so a recrawl upserts instead of duplicating. Postgres
+  // treats NULLs as distinct, which is what lets authored agency articles omit it.
+  sourceUrl         String?   @unique
+  titleNormalized   String
+  bodyNormalized    String
+  // Hash of the RAW source text, so a recrawl can tell "changed" from "unchanged"
+  // without re-normalizing or re-reviewing every article every time.
+  contentHash       String
+  // Feature keys this article touches, so retrieval can drop it for a client whose
+  // agency has that feature hidden. Detected case-insensitively (deliberately more
+  // aggressive than replacement) - see kbNormalize.detectFeatureTags.
+  featureTags       String[]
+  status            KbArticleStatus @default(ready)
+  // What survived normalization, when status = needs_review. Drives the review queue.
+  residualLeaks     Json?
+  lastCrawledAt     DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  // Generated tsvector + GIN index, added in raw SQL (Prisma has no tsvector type).
+  // Declared here as Unsupported so `prisma migrate` knows it exists and does not
+  // propose dropping it on the next schema diff.
+  searchVector      Unsupported("tsvector")?
+
+  @@index([agencyInstallId])
+  @@index([status])
+  @@index([source])
+}
+
+// A syndication feed polled for new knowledge base articles.
+//
+// WHY A FEED RATHER THAN A CRAWL. A crawl takes what it can reach; a feed is what a
+// publisher chose to syndicate, which is both a better legal posture and a far better
+// signal of "this is new". It also tells us WHEN something changed, which is the thing a
+// crawl has to infer by re-downloading everything.
+//
+// Items are ingested through the SAME `ingestArticle` pipeline as everything else, so
+// they get brand normalization and the residual-leak quarantine for free. That is the
+// whole reason this is safe to automate: nothing arrives at a client that has not been
+// placeholdered and scanned.
+model KbFeed {
+  id                String    @id @default(cuid())
+  // NULL = a shared feed whose items serve every agency. Set = this agency's own
+  // content, ranked above shared at retrieval and brand-stripped with ownBrandNames.
+  agencyInstallId   String?
+  agencyInstall     AgencyInstall? @relation(fields: [agencyInstallId], references: [id], onDelete: Cascade)
+  url               String    @unique
+  // Human label for the review queue and the dashboard. Falls back to the feed's own
+  // title on first poll.
+  title             String?
+  source            KbSource  @default(ghl)
+  enabled           Boolean   @default(true)
+
+  // OFF by default, and that default is the safety property.
+  //
+  // The gates guarantee an item names no vendor and carries no link. They cannot
+  // guarantee it is ACCURATE, CURRENT, or even a how-to — a changelog entry ingested as
+  // an article makes the bot answer "how do I add a contact" with a release note. So a
+  // new feed lands its items in the review queue until somebody has read a few and
+  // decided the feed is worth trusting.
+  autoPublish       Boolean   @default(false)
+
+  // Conditional-GET state, so a poll that finds nothing new costs one 304 rather than a
+  // full download. Being a polite client is not optional when you poll on a schedule.
+  etag              String?
+  lastModified      String?
+
+  lastPolledAt      DateTime?
+  lastItemAt        DateTime?
+  // Last failure, kept so a feed that has been quietly broken for a month is visible.
+  // A silently dead feed reads exactly like a publisher who stopped writing.
+  lastError         String?
+  consecutiveErrors Int       @default(0)
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([agencyInstallId])
+  @@index([enabled])
+}
+
+// One row per agency: the policy the bot and Mosaic's support agents operate under.
+//
+// Per-SUB-ACCOUNT wording (brand name, renamed menus, hidden features) is NOT here -
+// it already lives on ThemeConfig and is resolved by brandTerms.ts. This holds the
+// things an agency must tell us that we cannot infer from their theme.
+//
+// EVERY field is nullable with a safe default. An agency that configures nothing gets
+// a vague bot, never a leaky one.
+model SupportConfig {
+  id                  String    @id @default(cuid())
+  agencyInstallId     String    @unique
+  agencyInstall       AgencyInstall @relation(fields: [agencyInstallId], references: [id], onDelete: Cascade)
+
+  // Master switch for the agency. Individual sub-accounts also need
+  // LocationInstall.supportEnabled.
+  enabled             Boolean   @default(false)
+  greeting            String?
+  // string[] - seeds the widget's quick-action buttons.
+  quickActions        Json?
+  // { tz: "America/Chicago", days: { mon: [9,17], ... } } - drives honest ETAs.
+  businessHours       Json?
+
+  // Where anything WE cannot answer goes. Without this, tier-3 escalation has nowhere
+  // to land, so support stays disabled.
+  escalationEmails    String[]
+  supportBoundary     SupportBoundary @default(how_to_only)
+  boundaryNotes       String?
+
+  // Agency's own additions to the global brand blocklist: a former platform name, a
+  // competitor, a partner they don't mention.
+  forbiddenTerms      String[]
+  // Gate 2 allowlist. EMPTY (the default) means every link is stripped.
+  allowedLinkDomains  String[]
+
+  // Voice. Not cosmetic: the wrong noun for their users reads as generic instantly.
+  voiceTone           String?
+  userNoun            String?
+  planTiers           Json?
+
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+}
+
+// One widget conversation. Scoped by agency AND sub-account from day one - the
+// untenanted WebhookEvent table is the mistake not to repeat here.
+model Conversation {
+  id                String    @id @default(cuid())
+  agencyInstallId   String
+  agencyInstall     AgencyInstall @relation(fields: [agencyInstallId], references: [id], onDelete: Cascade)
+  locationInstallId String
+  locationInstall   LocationInstall @relation(fields: [locationInstallId], references: [id], onDelete: Cascade)
+
+  // The widget is unauthenticated - it runs on a GHL page with no login of its own -
+  // so a per-conversation bearer is what stops one client reading another's chat.
+  // Only the SHA-256 hash is stored, like DeskSession.
+  accessTokenHash   String    @unique
+
+  status            ConversationStatus @default(open)
+  // True when the bot resolved it with no human involved. This is the metric that
+  // decides support headcount, so it is recorded from day one.
+  deflected         Boolean   @default(false)
+  csat              Int?
+
+  // --- Desk workflow ---
+  // Deliberately NOT a separate Ticket model. A ticket is a conversation a human has to
+  // finish: it needs the same transcript, the same context snapshot and the same brand
+  // scoping, so a second table would duplicate all three and have to be kept in sync.
+  // A ticket raised without ever using the bot is just a Conversation whose first
+  // Message has role=user.
+  subject           String?
+  priority          TicketPriority @default(normal)
+  assignedToId      String?
+  assignedTo        DeskUser? @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedAt        DateTime?
+  // When this entered the HUMAN queue - i.e. when it was escalated, not when the
+  // client opened the widget. Measuring the wait from `startedAt` counts every minute
+  // the client spent happily talking to the bot as time they were kept waiting, which
+  // makes the response-time number describe the bot's chattiness rather than the
+  // desk's coverage. Null for conversations the bot settled on its own.
+  queuedAt          DateTime?
+  // Escalation tier WITHIN Mosaic (1 → 2 → 3). Distinct from `handedToAgencyAt`,
+  // which is the hop OUT to the agency and is not a tier at all: it leaves our remit
+  // entirely. A raised tier returns the ticket to the queue, so it is a routing fact,
+  // not a label.
+  tier              Int       @default(1)
+  // When a Mosaic agent first replied - the number that tells you whether coverage is
+  // actually working, as distinct from how long the whole thing took to close.
+  firstAgentReplyAt DateTime?
+  // Set when we hand off to the AGENCY (their billing, contracts, custom work): the
+  // tier-3 hop that exists because Mosaic's staff answer on the agency's behalf.
+  handedToAgencyAt  DateTime?
+  // Gate telemetry. A rising leak rate is a regression signal, per agency.
+  brandLeakHits     Int       @default(0)
+  overlapRejects    Int       @default(0)
+  // Page URL, user agent, theme state - so an escalated ticket arrives pre-diagnosed.
+  contextSnapshot   Json?
+
+  startedAt         DateTime  @default(now())
+  lastMessageAt     DateTime  @default(now())
+  resolvedAt        DateTime?
+
+  messages          Message[]
+
+  @@index([agencyInstallId])
+  @@index([locationInstallId])
+  @@index([status])
+  // The desk inbox is "what needs a human, oldest first" across every agency.
+  @@index([status, lastMessageAt])
+  @@index([assignedToId])
+  // The queue pop: unclaimed escalations within an agent's tier, best-first. Both the
+  // desk's "take next" and the client's "you are 3rd" read through this one order.
+  @@index([status, assignedToId, tier, priority, queuedAt])
+}
+
+enum TicketPriority {
+  low
+  normal
+  high
+  urgent
+}
+
+/**
+ * A reply an agent can reuse — stored PLACEHOLDERED ({{PLATFORM}}, {{FEATURE:key}}) and
+ * rendered per conversation, exactly like a KbArticle.
+ *
+ * This is the single most likely leak in daily desk use: an agent copies a good reply
+ * they wrote for agency A into agency B's ticket, carrying A's brand name with it.
+ * Storing the placeholder instead of the resolved name makes that mechanically
+ * impossible rather than a thing agents have to remember.
+ *
+ * agencyInstallId NULL = available on every ticket; set = that agency's own.
+ */
+model CannedReply {
+  id              String    @id @default(cuid())
+  agencyInstallId String?
+  agencyInstall   AgencyInstall? @relation(fields: [agencyInstallId], references: [id], onDelete: Cascade)
+  title           String
+  // Placeholdered. Never store a resolved brand name here.
+  body            String
+  createdById     String?
+  createdBy       DeskUser? @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  usageCount      Int       @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([agencyInstallId])
+}
+
+model Message {
+  id                String    @id @default(cuid())
+  conversationId    String
+  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role              MessageRole
+  body              String
+  // INTERNAL provenance only. NEVER rendered into `body` and never sent to a client:
+  // article titles for agency staff, full URLs internal-only.
+  citations         Json?
+  createdAt         DateTime  @default(now())
+
+  @@index([conversationId])
 }
 
 model WebhookEvent {

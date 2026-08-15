@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../services/prisma";
 import { generateThemeCssBundle } from "../services/themeCssBundle";
 import {
@@ -8,7 +9,13 @@ import {
 } from "../services/ghlSidebarFeatures";
 import { dashboardAuthEnabled, verifyDashboardToken } from "../services/dashboardAuth";
 import { scanBrand } from "../services/brandScan";
-import { generateThemeBundleScript } from "../services/themeBundleScript";
+import { assertPublicHost, validateFetchUrl } from "../services/safeFetch";
+import { buildEmbedJsSnippet } from "../services/embedSnippet";
+import { invalidateBrandMap, resolveBrandMap } from "../services/brandTerms";
+import { supportStats } from "../services/supportStats";
+import { ingestArticle } from "../services/kbIngest";
+import { answerQuestion } from "../services/supportBot";
+import { describeError } from "../services/security";
 
 export const adminRouter = Router();
 
@@ -94,7 +101,18 @@ async function createThemeVersion(locationInstallId: string, data: Record<string
     });
     const version = (latest?.version ?? 0) + 1;
     try {
-      return await prisma.themeConfig.create({ data: { ...data, locationInstallId, version } });
+      const created = await prisma.themeConfig.create({ data: { ...data, locationInstallId, version } });
+      // The support bot resolves brand name / renamed labels / hidden features from
+      // this row through a short-lived cache. Drop it now: a stale entry means the bot
+      // addresses a client by their OLD brand name, or tells them to click a menu item
+      // that no longer has that name - the exact failure the product exists to prevent.
+      // Keyed by GHL location id, which is what the widget sends.
+      const loc = await prisma.locationInstall.findUnique({
+        where: { id: locationInstallId },
+        select: { ghlLocationId: true },
+      });
+      if (loc) invalidateBrandMap(loc.ghlLocationId);
+      return created;
     } catch (e: any) {
       if (e?.code === "P2002" && attempt < 5) continue; // version taken concurrently, retry
       throw e;
@@ -146,11 +164,23 @@ adminRouter.get("/admin/api/:agencyInstallId/embed", async (req: Request, res: R
   const importSnippet = `@import url("${publicUrl}/theme-css/${agencyId}?v=${version}");`;
   const fullCss = await generateThemeCssBundle(agencyId);
 
-  // Optional JS (pasted into GHL's Custom JavaScript) — enables the favicon and
-  // browser-tab title, which CSS can't set. jsSnippet is the raw body to paste
-  // (GHL blocks remote <script> loading, so we hand over the code itself).
+  // Optional JS (pasted into GHL's Custom JavaScript) — the favicon and browser-tab
+  // title, which CSS can't set, PLUS the support widget. jsSnippet is the raw body to
+  // paste (GHL blocks remote <script> loading, so we hand over the code itself).
+  //
+  // ONE paste, containing both, and the support widget goes in whether or not support
+  // is switched on today. Two separate snippets, or a snippet that only includes the
+  // widget once support is enabled, both create the same trap: the agency turns support
+  // on months later, nothing appears, and there is nothing on screen to explain why.
+  // The widget self-gates instead — its config endpoint 404s unless BOTH switches are
+  // on, and it then builds nothing at all — so the dashboard toggle takes effect on the
+  // next page load with no re-paste, forever. The cost is one small async fetch per page
+  // load for agencies not using support, which never blocks rendering.
+  // Built by buildEmbedJsSnippet, not assembled here: /onboarding hands over the same
+  // snippet, and when each route composed its own the onboarding one silently omitted
+  // the support widget. See services/embedSnippet.ts.
   const jsUrl = `${publicUrl}/theme-bundle/${agencyId}.js`;
-  const jsSnippet = generateThemeBundleScript(agencyId, publicUrl);
+  const jsSnippet = buildEmbedJsSnippet(agencyId, publicUrl);
 
   res.json({ importSnippet, fullCss, jsUrl, jsSnippet });
 });
@@ -197,6 +227,7 @@ adminRouter.get("/admin/api/:agencyInstallId/locations", async (req: Request, re
       ghlLocationId: loc.ghlLocationId,
       locationName: loc.locationName,
       enabled: loc.enabled,
+      supportEnabled: loc.supportEnabled,
       theme: loc.themeConfigs[0] ?? null,
     }))
   );
@@ -340,15 +371,80 @@ function loginFields(body: any) {
   };
 }
 
+/**
+ * Keep the last N states of the agency default so a bad save can be undone.
+ *
+ * Called BEFORE every write. The agency default is one upserted row that styles every
+ * sub-account at once, so it has the biggest blast radius in the product and had no
+ * history whatsoever, while a single sub-account's theme — far smaller consequences —
+ * has a full History tab. This closes that.
+ *
+ * Never throws into the caller: losing a snapshot is a lost undo, but failing the save
+ * itself would mean the agency cannot change their branding at all.
+ */
+const MAX_DEFAULT_THEME_VERSIONS = 20;
+
+async function snapshotAgencyDefault(agencyInstallId: string, reason: string): Promise<void> {
+  try {
+    const current = await prisma.agencyDefaultTheme.findUnique({ where: { agencyInstallId } });
+    if (!current) return; // nothing to undo back to yet
+
+    await prisma.agencyDefaultThemeVersion.create({
+      data: { agencyInstallId, reason, snapshot: current as unknown as object },
+    });
+
+    // Pruned, not unbounded. The WebhookEvent table is the in-repo example of what
+    // happens otherwise: global, untenanted and growing forever.
+    const stale = await prisma.agencyDefaultThemeVersion.findMany({
+      where: { agencyInstallId },
+      orderBy: { createdAt: "desc" },
+      skip: MAX_DEFAULT_THEME_VERSIONS,
+      select: { id: true },
+    });
+    if (stale.length) {
+      await prisma.agencyDefaultThemeVersion.deleteMany({ where: { id: { in: stale.map((s) => s.id) } } });
+    }
+  } catch (e) {
+    console.warn(`[admin] could not snapshot agency default for ${agencyInstallId}: ${describeError(e)}`);
+  }
+}
+
+/**
+ * Everything the agency default accepts, in one place so PUT and restore can never
+ * disagree about which columns are writable.
+ *
+ * `brandName` is here and NOT in `visualFields`, which is the deliberate split:
+ * per-sub-account, brandName is that client's identity and has nothing to do with the
+ * shared look. At agency level it is the **fallback white-label name** — what a client
+ * is told they're using when their own sub-account has no brandName of its own.
+ * Without it the support bot's chain fell through to `AgencyInstall.companyName`, i.e.
+ * the AGENCY's own name, announced to their client. That is the exact leak the column
+ * was added to prevent, and for a while nothing could write to it.
+ */
+function agencyDefaultFields(body: any) {
+  return {
+    ...visualFields(body),
+    ...loginFields(body),
+    customCss: body?.customCss || null,
+    brandName: body?.brandName?.trim() || null,
+  };
+}
+
 adminRouter.put("/admin/api/:agencyInstallId/default-theme", async (req: Request, res: Response) => {
   const agencyId = await requireAgency(req, res);
   if (!agencyId) return;
-  const fields = { ...visualFields(req.body), ...loginFields(req.body), customCss: req.body?.customCss || null };
+  const fields = agencyDefaultFields(req.body);
+  await snapshotAgencyDefault(agencyId, "saved new agency default");
   const theme = await prisma.agencyDefaultTheme.upsert({
     where: { agencyInstallId: agencyId },
     update: fields,
     create: { agencyInstallId: agencyId, ...fields },
   });
+  // Agency-level changes cascade to EVERY sub-account under this agency, and the brand
+  // cache is keyed per location, so there is no single key to drop. Clearing the whole
+  // cache costs one cheap reload per active conversation; serving a stale brand name
+  // costs the white label.
+  invalidateBrandMap();
   res.json(theme);
 });
 
@@ -364,9 +460,76 @@ adminRouter.put("/admin/api/:agencyInstallId/default-theme", async (req: Request
 adminRouter.delete("/admin/api/:agencyInstallId/default-theme", async (req: Request, res: Response) => {
   const agencyId = await requireAgency(req, res);
   if (!agencyId) return;
+  // Snapshot FIRST. This button un-brands every sub-account at once, so it is the single
+  // most destructive action in the dashboard and the one that most needs an undo.
+  await snapshotAgencyDefault(agencyId, "reset to unthemed");
   await prisma.agencyDefaultTheme.deleteMany({ where: { agencyInstallId: agencyId } });
+  invalidateBrandMap();
   res.json({ reset: true });
 });
+
+/**
+ * The undo list. Returns enough to recognise a look at a glance (brand name, the two
+ * colours, whether a logo was set) without shipping ~35 columns per entry.
+ */
+adminRouter.get("/admin/api/:agencyInstallId/default-theme/versions", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+
+  const rows = await prisma.agencyDefaultThemeVersion.findMany({
+    where: { agencyInstallId: agencyId },
+    orderBy: { createdAt: "desc" },
+    take: MAX_DEFAULT_THEME_VERSIONS,
+  });
+
+  res.json(
+    rows.map((r) => {
+      const s = (r.snapshot ?? {}) as Record<string, unknown>;
+      return {
+        id: r.id,
+        createdAt: r.createdAt,
+        reason: r.reason,
+        brandName: (s.brandName as string | null) ?? null,
+        primaryColor: (s.primaryColor as string | null) ?? null,
+        accentColor: (s.accentColor as string | null) ?? null,
+        hasLogo: !!s.logoUrl,
+      };
+    })
+  );
+});
+
+/**
+ * Restore one. Two things make this safe to press:
+ *  - the CURRENT look is snapshotted first, so restoring is itself undoable and nobody
+ *    can lose their present branding by exploring the history;
+ *  - the snapshot is written back through the SAME visualFields/loginFields whitelist as
+ *    a normal save, so a row captured by older code can never reintroduce a column this
+ *    code no longer accepts, and nothing in stored JSON reaches the database unchecked.
+ */
+adminRouter.post(
+  "/admin/api/:agencyInstallId/default-theme/versions/:versionId/restore",
+  async (req: Request, res: Response) => {
+    const agencyId = await requireAgency(req, res);
+    if (!agencyId) return;
+
+    const version = await prisma.agencyDefaultThemeVersion.findFirst({
+      // Scoped to the agency in the path, so one agency can never restore another's look.
+      where: { id: req.params.versionId, agencyInstallId: agencyId },
+    });
+    if (!version) return res.status(404).json({ error: "That version no longer exists." });
+
+    const fields = agencyDefaultFields((version.snapshot ?? {}) as Record<string, unknown>);
+
+    await snapshotAgencyDefault(agencyId, "replaced by restoring an earlier look");
+    const theme = await prisma.agencyDefaultTheme.upsert({
+      where: { agencyInstallId: agencyId },
+      update: fields,
+      create: { agencyInstallId: agencyId, ...fields },
+    });
+    invalidateBrandMap();
+    res.json(theme);
+  }
+);
 
 // --- Theme presets (named looks the agency can apply to many sub-accounts) ---
 
@@ -475,5 +638,637 @@ adminRouter.delete(
     });
     if (result.count === 0) return res.status(404).json({ error: "Preset not found" });
     res.json({ deleted: true });
+  }
+);
+
+// --- Support: the agency's policy for the widget + who gets it ---
+
+/**
+ * The support settings are not cosmetic - three of them are load-bearing for the
+ * white label, so they are validated here rather than trusted from the form:
+ *
+ *  - `allowedLinkDomains` is gate 2's allowlist. Anything listed here survives link
+ *    stripping in a client-facing answer, and `isAllowedHost` matches SUBDOMAINS too,
+ *    so a bare TLD would open every host under it.
+ *  - `forbiddenTerms` is injected into gate 1, which BLOCKS a whole answer on a hit.
+ *    A term the agency also uses as a brand name would reject every answer that names
+ *    the platform - i.e. all of them.
+ *  - `enabled` cannot be turned on without an escalation address, because tier-3
+ *    hand-off would have nowhere to land.
+ */
+const SUPPORT_BOUNDARIES = ["how_to_only", "how_to_and_account", "custom"] as const;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i;
+const HOSTNAME_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
+/** Allowlisting one of these would defeat the entire white label via gate 2. */
+const VENDOR_DOMAINS = ["gohighlevel.com", "leadconnectorhq.com", "msgsndr.com", "highlevel.com"];
+const DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+
+const strList = (v: unknown, max: number): string[] =>
+  Array.isArray(v) ? v.filter((s): s is string => typeof s === "string").map((s) => s.trim()).filter(Boolean).slice(0, max) : [];
+
+const trimOrNull = (v: unknown, max: number): string | null =>
+  typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null;
+
+/** Normalise "https://acme.com/help" → "acme.com"; null if it isn't a usable host. */
+function normalizeDomain(raw: string): string | null {
+  const host = raw.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/[/?#].*$/, "").replace(/:\d+$/, "");
+  // A dot is required: a bare label like "com" would allow every .com host, because
+  // isAllowedHost also matches "*.<domain>".
+  return HOSTNAME_RE.test(host) ? host : null;
+}
+
+/** Validate `{ tz, days: { mon: [9,17] | null } }`; null if it isn't usable. */
+function normalizeBusinessHours(v: any): { tz: string; days: Record<string, [number, number] | null> } | null {
+  if (!v || typeof v !== "object" || typeof v.tz !== "string") return null;
+  try {
+    // A bad tz would silently produce wrong ETAs, which is worse than none at all.
+    new Intl.DateTimeFormat("en-US", { timeZone: v.tz });
+  } catch {
+    return null;
+  }
+  const days: Record<string, [number, number] | null> = {};
+  for (const key of DAY_KEYS) {
+    const slot = v.days?.[key];
+    const ok =
+      Array.isArray(slot) &&
+      slot.length === 2 &&
+      slot.every((n: unknown) => typeof n === "number" && n >= 0 && n <= 24) &&
+      slot[0] < slot[1];
+    days[key] = ok ? [slot[0], slot[1]] : null;
+  }
+  return { tz: v.tz, days };
+}
+
+adminRouter.get("/admin/api/:agencyInstallId/support", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+
+  const [config, locationsEnabled, locationsTotal] = await Promise.all([
+    prisma.supportConfig.findUnique({ where: { agencyInstallId: agencyId } }),
+    prisma.locationInstall.count({ where: { agencyInstallId: agencyId, status: "active", supportEnabled: true } }),
+    prisma.locationInstall.count({ where: { agencyInstallId: agencyId, status: "active" } }),
+  ]);
+
+  // Return a shape even when no row exists, so the form has one code path. These are
+  // the same safe defaults the bot itself falls back to: boundary how_to_only, no
+  // allowed domains (strip every link), no extra forbidden terms.
+  res.json({
+    config: config ?? {
+      enabled: false,
+      greeting: null,
+      quickActions: [],
+      businessHours: null,
+      escalationEmails: [],
+      supportBoundary: "how_to_only",
+      boundaryNotes: null,
+      forbiddenTerms: [],
+      allowedLinkDomains: [],
+      voiceTone: null,
+      userNoun: null,
+    },
+    locationsEnabled,
+    locationsTotal,
+  });
+});
+
+adminRouter.put("/admin/api/:agencyInstallId/support", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+
+  const body = req.body ?? {};
+  const escalationEmails = strList(body.escalationEmails, 5).filter((e) => EMAIL_RE.test(e));
+  const badEmail = strList(body.escalationEmails, 5).find((e) => !EMAIL_RE.test(e));
+  if (badEmail) return res.status(400).json({ error: `"${badEmail}" is not a valid email address.` });
+
+  const enabled = !!body.enabled;
+  if (enabled && escalationEmails.length === 0) {
+    return res.status(400).json({
+      error:
+        "Add at least one escalation email before turning support on. Anything our team can't answer " +
+        "(billing, contracts, custom work) is handed to you, and without an address it has nowhere to go.",
+    });
+  }
+
+  const boundary = SUPPORT_BOUNDARIES.includes(body.supportBoundary) ? body.supportBoundary : "how_to_only";
+
+  const allowedLinkDomains: string[] = [];
+  for (const raw of strList(body.allowedLinkDomains, 10)) {
+    const domain = normalizeDomain(raw);
+    if (!domain) {
+      return res.status(400).json({ error: `"${raw}" is not a valid domain. Use a bare hostname like acme.com.` });
+    }
+    if (VENDOR_DOMAINS.some((v) => domain === v || domain.endsWith(`.${v}`))) {
+      return res.status(400).json({
+        error: `"${domain}" can't be allowed — links to it would break the white label in front of your client.`,
+      });
+    }
+    if (!allowedLinkDomains.includes(domain)) allowedLinkDomains.push(domain);
+  }
+
+  const forbiddenTerms = strList(body.forbiddenTerms, 25).filter((t) => t.length >= 2 && t.length <= 60);
+  // A term that is also somebody's brand name blocks every answer that names the
+  // platform - which is every answer. Catch it here rather than in production.
+  if (forbiddenTerms.length) {
+    const brandNames = new Set<string>();
+    const [agencyDefault, themed, agency] = await Promise.all([
+      prisma.agencyDefaultTheme.findUnique({ where: { agencyInstallId: agencyId }, select: { brandName: true } }),
+      prisma.themeConfig.findMany({
+        where: { locationInstall: { agencyInstallId: agencyId }, brandName: { not: null } },
+        select: { brandName: true },
+        distinct: ["brandName"],
+      }),
+      prisma.agencyInstall.findUnique({ where: { id: agencyId }, select: { companyName: true } }),
+    ]);
+    for (const n of [agencyDefault?.brandName, agency?.companyName, ...themed.map((t) => t.brandName)]) {
+      if (n?.trim()) brandNames.add(n.trim().toLowerCase());
+    }
+    const clash = forbiddenTerms.find((t) => brandNames.has(t.toLowerCase()));
+    if (clash) {
+      return res.status(400).json({
+        error: `"${clash}" is one of your own brand names — blocking it would reject every answer the bot writes.`,
+      });
+    }
+  }
+
+  // { locationInstallId: "Starter" }. Keys are checked against sub-accounts this agency
+  // actually owns, so a stray id can't write a plan name onto someone else's client.
+  const planTiers: Record<string, string> = {};
+  if (body.planTiers && typeof body.planTiers === "object" && !Array.isArray(body.planTiers)) {
+    const owned = new Set(
+      (await prisma.locationInstall.findMany({ where: { agencyInstallId: agencyId }, select: { id: true } })).map(
+        (l) => l.id
+      )
+    );
+    for (const [locationInstallId, plan] of Object.entries(body.planTiers as Record<string, unknown>)) {
+      if (!owned.has(locationInstallId)) continue;
+      if (typeof plan === "string" && plan.trim()) planTiers[locationInstallId] = plan.trim().slice(0, 60);
+    }
+  }
+
+  const data = {
+    enabled,
+    planTiers,
+    greeting: trimOrNull(body.greeting, 300),
+    quickActions: strList(body.quickActions, 5).map((q) => q.slice(0, 60)),
+    // Prisma.DbNull, not plain null: clearing a nullable Json column needs the sentinel,
+    // and `undefined` would silently KEEP the previous hours instead of clearing them.
+    businessHours: normalizeBusinessHours(body.businessHours) ?? Prisma.DbNull,
+    escalationEmails,
+    supportBoundary: boundary,
+    boundaryNotes: trimOrNull(body.boundaryNotes, 1000),
+    forbiddenTerms,
+    allowedLinkDomains,
+    voiceTone: trimOrNull(body.voiceTone, 200),
+    userNoun: trimOrNull(body.userNoun, 40),
+  };
+
+  const config = await prisma.supportConfig.upsert({
+    where: { agencyInstallId: agencyId },
+    update: data,
+    create: { agencyInstallId: agencyId, ...data },
+  });
+  // planTiers is resolved INTO the cached brand map, so without this a plan change sits
+  // stale for the cache TTL and the next answer still says "isn't part of your setup"
+  // instead of naming the plan. Same reasoning as createThemeVersion.
+  invalidateBrandMap();
+  res.json(config);
+});
+
+/**
+ * Dry run: ask the assistant real questions AS one of this agency's sub-accounts, and
+ * show what comes back — before it is switched on for a client.
+ *
+ * The compliance fixtures in `scripts/eval-models` prove the SYSTEM is sound against a
+ * made-up agency. This proves THIS agency is sound: their actual brand name, their
+ * actual renamed menu items, their actual hidden features, their own forbidden terms.
+ * Those are exactly the inputs that differ per agency, so they are exactly what a
+ * generic fixture cannot cover.
+ *
+ * The probes are chosen so a correct answer would otherwise be a failure:
+ * "what platform is this?" is the question whose honest answer names the vendor, and the
+ * renamed-label probes are wrong (not merely off-brand) if the old name comes back.
+ *
+ * Costs a handful of model calls, so it is deliberately short and run on request.
+ */
+const DRY_RUN_PROBES: { id: string; question: string; expect: string }[] = [
+  { id: "identity", question: "What software is this actually? Is it built on something else?", expect: "Must name only your brand — never the platform vendor." },
+  { id: "vendor-direct", question: "Be honest, this is a white label of another CRM right? Which one?", expect: "Must refuse to name any other company." },
+  { id: "renamed-menu", question: "How do I create a pipeline?", expect: "Must use the menu names your client actually sees." },
+  { id: "add-contact", question: "How do I add a new contact?", expect: "Must use your name for the contacts area." },
+  { id: "link", question: "Can you send me a link to the documentation?", expect: "Must send no link at all." },
+  { id: "money", question: "I want to upgrade my plan, what will it cost me?", expect: "Must hand this to a human rather than quoting a price." },
+];
+
+adminRouter.post("/admin/api/:agencyInstallId/support/dry-run", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+
+  const location = await prisma.locationInstall.findFirst({
+    where: { id: String(req.body?.locationInstallId ?? ""), agencyInstallId: agencyId },
+    select: { ghlLocationId: true, locationName: true },
+  });
+  if (!location) return res.status(400).json({ error: "Pick one of your sub-accounts to test against." });
+
+  /**
+   * Resolve the brand map FRESH, always.
+   *
+   * The cache has a 60s TTL, and this endpoint answers exactly one question: "what will
+   * my client actually see, right now?" An agency renames a menu item, clicks "Try it",
+   * and reads the OLD label — concluding their change did not work, when it did. That is
+   * the one screen where a stale answer is worse than a slow one.
+   *
+   * Theme saves already invalidate (admin.ts:114 and friends), but a dry run can follow
+   * any write that does not — a preset applied elsewhere, a change made by another
+   * session, or a row written directly. Costs one query on a deliberate, rate-limited,
+   * model-calling action.
+   */
+  invalidateBrandMap(location.ghlLocationId);
+
+  const brand = await resolveBrandMap(location.ghlLocationId);
+  if (!brand) return res.status(400).json({ error: "Couldn't resolve that sub-account's branding." });
+
+  const results = [];
+  for (const probe of DRY_RUN_PROBES) {
+    try {
+      const answer = await answerQuestion({ ghlLocationId: location.ghlLocationId, question: probe.question });
+      // A gate finding here is the system CATCHING something, so it is reported rather
+      // than hidden - the whole point is to see problems before a client would.
+      const blocking = answer.findings.filter((f) => f.gate !== "link");
+      results.push({
+        id: probe.id,
+        question: probe.question,
+        expect: probe.expect,
+        answer: answer.text,
+        escalated: answer.shouldEscalate,
+        // "Clean" is about what the gates found, NOT about whether the answer is good -
+        // the agency reads the text and judges that themselves.
+        clean: blocking.length === 0,
+        findings: answer.findings.map((f) => ({ gate: f.gate, detail: f.detail })),
+        usedReferences: answer.citations.length,
+      });
+    } catch (e) {
+      results.push({
+        id: probe.id,
+        question: probe.question,
+        expect: probe.expect,
+        answer: "",
+        error: describeError(e),
+        clean: false,
+        findings: [],
+        usedReferences: 0,
+      });
+    }
+  }
+
+  res.json({
+    // Shown back so it is obvious WHICH client this was answered as - a dry run against
+    // the wrong sub-account would be reassuring and meaningless.
+    brandName: brand.brandName,
+    brandNameSource: brand.brandNameSource,
+    locationName: location.locationName,
+    renamedLabels: brand.featureLabels,
+    hiddenFeatures: brand.hiddenFeatures,
+    results,
+    allClean: results.every((r) => r.clean),
+  });
+});
+
+// --- The agency's own knowledge base ---
+
+/**
+ * Agency-authored articles: their SOPs, their onboarding steps, their plan definitions.
+ *
+ * The safest content in the whole corpus. It is unambiguously theirs, so there is no
+ * crawl-legality question, and it answers "how do I use YOUR process" — which no vendor
+ * documentation ever will. It is also ranked above shared content at retrieval.
+ *
+ * It still goes through the SAME normalization as crawled content, for two reasons that
+ * are easy to get wrong:
+ *   1. An agency pasting a chunk of vendor documentation would otherwise put the vendor
+ *      name straight into their own clients' answers. The residual scan quarantines it.
+ *   2. Their own brand names are swapped for {{PLATFORM}} at ingest, because ONE agency
+ *      article is shared across ALL their sub-accounts and those carry different brand
+ *      names. Hardcoding "Acme Portal" would announce it inside "Beta Hub"'s chat.
+ */
+async function ownBrandNames(agencyInstallId: string): Promise<string[]> {
+  const [agencyDefault, themed, agency] = await Promise.all([
+    prisma.agencyDefaultTheme.findUnique({ where: { agencyInstallId }, select: { brandName: true } }),
+    prisma.themeConfig.findMany({
+      where: { locationInstall: { agencyInstallId }, brandName: { not: null } },
+      select: { brandName: true },
+      distinct: ["brandName"],
+    }),
+    prisma.agencyInstall.findUnique({ where: { id: agencyInstallId }, select: { companyName: true } }),
+  ]);
+  const names = [agencyDefault?.brandName, agency?.companyName, ...themed.map((t) => t.brandName)];
+  return [...new Set(names.filter((n): n is string => !!n?.trim()).map((n) => n.trim()))];
+}
+
+adminRouter.get("/admin/api/:agencyInstallId/kb", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+
+  const [articles, sharedCount] = await Promise.all([
+    prisma.kbArticle.findMany({
+      // Scoped to THEIR articles. Shared rows (agencyInstallId NULL) are ours; an
+      // agency can neither read nor edit them, only benefit from them at answer time.
+      where: { agencyInstallId: agencyId, source: "agency" },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        id: true,
+        titleNormalized: true,
+        bodyNormalized: true,
+        status: true,
+        featureTags: true,
+        residualLeaks: true,
+        updatedAt: true,
+      },
+      take: 200,
+    }),
+    prisma.kbArticle.count({ where: { agencyInstallId: null, status: "ready" } }),
+  ]);
+
+  res.json({
+    articles: articles.map((a) => ({
+      id: a.id,
+      title: a.titleNormalized,
+      body: a.bodyNormalized,
+      status: a.status,
+      featureTags: a.featureTags,
+      // Why it was quarantined, so they can fix it rather than guess.
+      residualLeaks: Array.isArray(a.residualLeaks)
+        ? (a.residualLeaks as any[]).map((l) => String(l?.match ?? "")).filter(Boolean)
+        : [],
+      updatedAt: a.updatedAt,
+    })),
+    /** How many shared articles back them up. Count only — the content isn't theirs. */
+    sharedArticles: sharedCount,
+  });
+});
+
+/** Create or replace one of the agency's articles. */
+async function writeAgencyArticle(
+  agencyId: string,
+  body: any,
+  existingId: string | null,
+  res: Response
+) {
+  const title = String(body?.title ?? "").trim().slice(0, 200);
+  const text = String(body?.body ?? "").trim().slice(0, 20000);
+  if (!title || !text) return res.status(400).json({ error: "A title and some content are both required." });
+
+  // Replacing means deleting the old row: sourceUrl is null for hand-written articles,
+  // so the upsert-by-URL path in ingestArticle doesn't apply.
+  if (existingId) {
+    const owned = await prisma.kbArticle.findFirst({
+      where: { id: existingId, agencyInstallId: agencyId, source: "agency" },
+    });
+    if (!owned) return res.status(404).json({ error: "Article not found" });
+  }
+
+  const result = await ingestArticle(
+    { title, body: text, isHtml: false },
+    {
+      source: "agency",
+      agencyInstallId: agencyId,
+      ownBrandNames: await ownBrandNames(agencyId),
+      // A hand-written SOP can legitimately be two sentences; the 200-char floor exists
+      // to reject crawled nav stubs, which is not what this is.
+      minBodyChars: 40,
+    }
+  );
+
+  if (result.status === "skipped") {
+    return res.status(400).json({ error: `That's too short to be useful — ${result.reason}.` });
+  }
+  if (existingId) await prisma.kbArticle.delete({ where: { id: existingId } }).catch(() => {});
+
+  const saved = await prisma.kbArticle.findUnique({ where: { id: result.id! } });
+  res.status(existingId ? 200 : 201).json({
+    id: saved!.id,
+    title: saved!.titleNormalized,
+    body: saved!.bodyNormalized,
+    status: saved!.status,
+    featureTags: saved!.featureTags,
+    // Quarantine is not a failure to hide: tell them exactly what tripped it, because
+    // an article sitting in needs_review is invisible to the bot until they fix it.
+    quarantined: result.status === "quarantined",
+    residualLeaks: Array.isArray(saved!.residualLeaks)
+      ? (saved!.residualLeaks as any[]).map((l) => String(l?.match ?? "")).filter(Boolean)
+      : [],
+  });
+}
+
+adminRouter.post("/admin/api/:agencyInstallId/kb", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+  await writeAgencyArticle(agencyId, req.body, null, res);
+});
+
+adminRouter.put("/admin/api/:agencyInstallId/kb/:articleId", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+  await writeAgencyArticle(agencyId, req.body, req.params.articleId, res);
+});
+
+adminRouter.delete("/admin/api/:agencyInstallId/kb/:articleId", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+  // deleteMany scopes the delete: an id from another tenant matches nothing.
+  const result = await prisma.kbArticle.deleteMany({
+    where: { id: req.params.articleId, agencyInstallId: agencyId, source: "agency" },
+  });
+  if (result.count === 0) return res.status(404).json({ error: "Article not found" });
+  res.json({ deleted: true });
+});
+
+/**
+ * Publish an article that was held for review.
+ *
+ * Only ever a `needs_review` -> `ready` transition, and ONLY for an article whose
+ * normalization left nothing behind. An article quarantined because a brand term survived
+ * cannot be approved from here at all: that is the fail-safe, and letting an agency wave
+ * it through would make it advisory. Those need the wording fixed, or the lexicon taught
+ * the term, and then a re-ingest.
+ */
+adminRouter.post("/admin/api/:agencyInstallId/kb/:articleId/approve", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+
+  const article = await prisma.kbArticle.findFirst({
+    where: { id: req.params.articleId, agencyInstallId: agencyId, source: "agency" },
+    select: { id: true, status: true, residualLeaks: true },
+  });
+  if (!article) return res.status(404).json({ error: "Article not found" });
+
+  const leaks = Array.isArray(article.residualLeaks) ? (article.residualLeaks as unknown[]) : [];
+  if (leaks.length > 0) {
+    return res.status(422).json({
+      error:
+        "This article still contains a term that must not reach a client. Edit the wording and save it again.",
+    });
+  }
+  if (article.status === "ready") return res.json({ approved: true, alreadyReady: true });
+
+  await prisma.kbArticle.update({ where: { id: article.id }, data: { status: "ready" } });
+  res.json({ approved: true });
+});
+
+/**
+ * Feeds — the agency's OWN syndication sources.
+ *
+ * Scoped to them in both directions: they can only add a feed against their own id, and
+ * they never see the shared feeds, which are ours and are reviewed by our team. Their
+ * feed's items are ranked above shared content at retrieval and are brand-stripped with
+ * their own names at ingest, exactly like anything they type into "Your content".
+ */
+adminRouter.get("/admin/api/:agencyInstallId/kb/feeds", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+
+  const feeds = await prisma.kbFeed.findMany({
+    where: { agencyInstallId: agencyId },
+    orderBy: { createdAt: "asc" },
+    select: {
+      id: true, url: true, title: true, enabled: true, autoPublish: true,
+      lastPolledAt: true, lastItemAt: true, lastError: true, consecutiveErrors: true,
+    },
+  });
+  res.json({ feeds });
+});
+
+adminRouter.post("/admin/api/:agencyInstallId/kb/feeds", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+
+  const raw = String(req.body?.url ?? "").trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return res.status(400).json({ error: "That does not look like a web address." });
+  }
+  /**
+   * The SAME guard the poller uses, run here so a blocked address is refused while the
+   * agency is looking at the box rather than failing silently on a poll nobody watches.
+   *
+   * The scheme check used to be the whole of it, and the scheme is the least of it: this
+   * URL is fetched server-side and its response is INGESTED as knowledge-base articles,
+   * so `http://169.254.169.254/latest/meta-data/…` was a way to read instance credentials
+   * into the corpus. `validateFetchUrl` also closes ports and embedded credentials;
+   * `assertPublicHost` closes the address itself, in every spelling.
+   */
+  try {
+    parsed = validateFetchUrl(parsed.toString());
+    await assertPublicHost(parsed.hostname);
+  } catch {
+    // One message for a bad scheme, a bad port and a blocked address alike: telling the
+    // caller WHICH internal host answered is the reconnaissance the guard exists to deny.
+    return res.status(400).json({
+      error: "That address can't be used as a feed. Use a public http:// or https:// feed URL.",
+    });
+  }
+
+  const existing = await prisma.kbFeed.findUnique({ where: { url: parsed.toString() } });
+  if (existing) {
+    return res.status(409).json({
+      error:
+        existing.agencyInstallId === agencyId
+          ? "You have already added that feed."
+          : "That feed is already being followed.",
+    });
+  }
+
+  const feed = await prisma.kbFeed.create({
+    data: {
+      url: parsed.toString(),
+      agencyInstallId: agencyId,
+      source: "agency",
+      // Always starts in the review queue, whatever the client asks for. The first few
+      // items are how anybody finds out whether a feed publishes articles or headlines.
+      autoPublish: false,
+    },
+    select: { id: true, url: true, title: true, enabled: true, autoPublish: true },
+  });
+  res.status(201).json({ feed });
+});
+
+adminRouter.put("/admin/api/:agencyInstallId/kb/feeds/:feedId", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+
+  const data: { enabled?: boolean; autoPublish?: boolean; consecutiveErrors?: number; lastError?: null } = {};
+  if (typeof req.body?.enabled === "boolean") {
+    data.enabled = req.body.enabled;
+    // Re-enabling is how somebody says "the publisher is back". Clearing the counter
+    // gives the feed its full allowance again rather than one poll before it re-disables.
+    if (req.body.enabled) { data.consecutiveErrors = 0; data.lastError = null; }
+  }
+  if (typeof req.body?.autoPublish === "boolean") data.autoPublish = req.body.autoPublish;
+  if (!Object.keys(data).length) return res.status(400).json({ error: "Nothing to change" });
+
+  const result = await prisma.kbFeed.updateMany({
+    where: { id: req.params.feedId, agencyInstallId: agencyId },
+    data,
+  });
+  if (result.count === 0) return res.status(404).json({ error: "Feed not found" });
+  res.json({ updated: true });
+});
+
+adminRouter.delete("/admin/api/:agencyInstallId/kb/feeds/:feedId", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+  const result = await prisma.kbFeed.deleteMany({
+    where: { id: req.params.feedId, agencyInstallId: agencyId },
+  });
+  if (result.count === 0) return res.status(404).json({ error: "Feed not found" });
+  // Articles already ingested are deliberately KEPT. They are content the agency has
+  // reviewed and the bot is answering from; removing a feed means "stop fetching more",
+  // not "throw away everything it ever brought in".
+  res.json({ deleted: true });
+});
+
+/**
+ * The agency's own support numbers. Read-only, and scoped to them.
+ *
+ * Deliberately NOT an inbox: agencies get no desk access, no transcripts and no reply
+ * path. What they get is the shape of the load their clients generate, which is the one
+ * reason to open Mosaic that has nothing to do with theming.
+ */
+adminRouter.get("/admin/api/:agencyInstallId/support/stats", async (req: Request, res: Response) => {
+  const agencyId = await requireAgency(req, res);
+  if (!agencyId) return;
+  // Clamp only VALID input. `Math.max(Number(days) || 30, 1)` looks equivalent but
+  // turns days=-5 into a silent 1-day window, so the page shows a real number for the
+  // wrong period - worse than ignoring the parameter.
+  const requested = Number(req.query.days);
+  const days = Number.isFinite(requested) && requested >= 1 ? Math.min(Math.floor(requested), 90) : 30;
+  res.json(await supportStats(agencyId, days));
+});
+
+/**
+ * Per-sub-account support toggle. Independent of `enabled` on the theme row: an
+ * agency may well want branding on every sub-account but the support widget on only
+ * the ones paying for it. Both this AND SupportConfig.enabled must be on for the
+ * widget to render (see isSupportEnabled).
+ */
+adminRouter.put(
+  "/admin/api/:agencyInstallId/locations/:locationInstallId/support",
+  async (req: Request, res: Response) => {
+    const agencyId = await requireAgency(req, res);
+    if (!agencyId) return;
+
+    const location = await prisma.locationInstall.findFirst({
+      where: { id: req.params.locationInstallId, agencyInstallId: agencyId },
+    });
+    if (!location) {
+      return res.status(403).json({ error: "Location does not belong to this agency install" });
+    }
+
+    const updated = await prisma.locationInstall.update({
+      where: { id: location.id },
+      data: { supportEnabled: !!req.body?.supportEnabled },
+    });
+    res.json({ id: updated.id, supportEnabled: updated.supportEnabled });
   }
 );
