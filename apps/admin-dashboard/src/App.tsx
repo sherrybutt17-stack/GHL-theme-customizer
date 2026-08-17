@@ -22,6 +22,7 @@ import {
   type ThemeInput,
   type ThemePreset,
 } from "./api";
+import { summariseBulk } from "./bulkEnableLogic";
 import { ThemeEditorModal } from "./ThemeEditor";
 import { CssExportModal } from "./CssExportModal";
 import { SupportSettingsModal } from "./SupportSettings";
@@ -79,6 +80,8 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [resetTarget, setResetTarget] = useState<{ id: string; name: string } | null>(null);
   const [resettingDefault, setResettingDefault] = useState(false);
+  const [deletingPreset, setDeletingPreset] = useState<{ id: string; name: string } | null>(null);
+  const [confirmDisableAll, setConfirmDisableAll] = useState(false);
   const [editingLocation, setEditingLocation] = useState<LocationRow | null>(null);
   const [editingDefault, setEditingDefault] = useState(false);
   const [showCssExport, setShowCssExport] = useState(false);
@@ -272,11 +275,20 @@ export function App() {
     }
   }
 
-  async function removePreset(id: string) {
+  /**
+   * Asked first, like every other destructive action on this screen. Presets are NOT
+   * versioned — unlike a sub-account theme, which has a History tab — so this is the one
+   * thing here that cannot be undone, and it was the only one triggered by a bare click
+   * on a small × with no prompt at all.
+   */
+  async function doRemovePreset() {
+    const target = deletingPreset;
+    setDeletingPreset(null);
+    if (!target) return;
     setError(null);
     try {
-      await deletePreset(agencyId!, id);
-      setPresets((prev) => prev.filter((p) => p.id !== id));
+      await deletePreset(agencyId!, target.id);
+      setPresets((prev) => prev.filter((p) => p.id !== target.id));
     } catch (e) {
       setError((e as Error).message);
     }
@@ -298,13 +310,30 @@ export function App() {
     });
   }
 
+  /**
+   * Turn branding on or off for every selected sub-account.
+   *
+   * `Promise.allSettled`, not `Promise.all`, and then a REFETCH. With `all`, the first
+   * rejection skipped the local state update entirely while the other requests carried on
+   * committing — so the table showed nothing changed and the database had changed most of
+   * them. `handleBulkApply` directly below already refetched for exactly this reason; this
+   * one did not, and the two are twenty lines apart.
+   *
+   * The count is reported honestly rather than as a single pass/fail: "38 of 41" is
+   * something the agency can act on, and re-running it for the three that failed is safe.
+   */
   async function bulkSetEnabled(enabled: boolean) {
     if (selected.size === 0) return;
     setError(null);
     setBusy(true);
+    const ids = [...selected];
     try {
-      await Promise.all([...selected].map((id) => setEnabled(agencyId!, id, enabled)));
-      setLocations((prev) => prev.map((l) => (selected.has(l.id) ? { ...l, enabled } : l)));
+      const results = await Promise.allSettled(ids.map((id) => setEnabled(agencyId!, id, enabled)));
+      // The server is the truth either way, so ask it rather than patching rows locally
+      // from an outcome that was only partly ours.
+      setLocations(await fetchLocations(agencyId!));
+      const { message } = summariseBulk(results as { status: "fulfilled" | "rejected"; reason?: { message?: string } }[]);
+      if (message) setError(message);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -376,11 +405,22 @@ export function App() {
 
       {/* Action buttons */}
       <div className="cp-actions">
+        {/*
+          The COUNT is on the button, because "select all" spans every filtered page, not
+          just the 25 on screen: on a 41-sub-account agency you can be looking at 25 rows
+          with 41 selected. "Apply to N" already said so; these two said only "selected".
+        */}
         <button className="pill-btn" disabled={!selected.size || busy} onClick={() => bulkSetEnabled(true)}>
-          ✓ Enable selected
+          ✓ Enable {selected.size || ""}
         </button>
-        <button className="pill-btn" disabled={!selected.size || busy} onClick={() => bulkSetEnabled(false)}>
-          ✕ Disable selected
+        <button
+          className="pill-btn"
+          disabled={!selected.size || busy}
+          // Asked first, unlike enabling: this is the direction that takes branding away
+          // from live clients, and it is visible in their CRM on the next page load.
+          onClick={() => setConfirmDisableAll(true)}
+        >
+          ✕ Disable {selected.size || ""}
         </button>
         <button className="pill-btn" onClick={() => setEditingDefault(true)}>
           ⚙ Agency default
@@ -418,7 +458,11 @@ export function App() {
             <span className="preset-chip" key={p.id}>
               <span className="preset-dot" style={{ background: p.primaryColor ?? "#ccc" }} />
               {p.name}
-              <button className="preset-remove" onClick={() => removePreset(p.id)} title="Delete preset">
+              <button
+                className="preset-remove"
+                onClick={() => setDeletingPreset({ id: p.id, name: p.name })}
+                title="Delete preset"
+              >
                 &times;
               </button>
             </span>
@@ -682,6 +726,38 @@ export function App() {
           danger
           onConfirm={doReset}
           onCancel={() => setResetTarget(null)}
+        />
+      )}
+
+      {confirmDisableAll && (
+        <ConfirmDialog
+          title={`Turn off branding for ${selected.size} sub-account${selected.size === 1 ? "" : "s"}?`}
+          // Says how many are OFF-SCREEN, because that is the number nobody can check by
+          // looking. Select-all covers every page of the current filter.
+          message={
+            `Their clients go back to unbranded GoHighLevel on the next page load. Nothing is deleted — each theme is kept and comes back when you switch it on again.` +
+            (selected.size > paged.filter((l) => selected.has(l.id)).length
+              ? ` ${selected.size - paged.filter((l) => selected.has(l.id)).length} of them are on another page.`
+              : "")
+          }
+          confirmLabel={`Turn off ${selected.size}`}
+          danger
+          onConfirm={() => {
+            setConfirmDisableAll(false);
+            void bulkSetEnabled(false);
+          }}
+          onCancel={() => setConfirmDisableAll(false)}
+        />
+      )}
+
+      {deletingPreset && (
+        <ConfirmDialog
+          title="Delete this preset?"
+          message={`"${deletingPreset.name}" will be gone for good — presets have no history to restore from. Sub-accounts you already applied it to keep their look.`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={doRemovePreset}
+          onCancel={() => setDeletingPreset(null)}
         />
       )}
 

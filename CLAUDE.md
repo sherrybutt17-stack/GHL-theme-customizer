@@ -1263,6 +1263,41 @@ they can be checked directly (21 checks):
 - Scans run **sequentially** — 41 simultaneous fetches at other people's websites is how
   an IP gets blocked.
 
+### Bulk enable/disable, and the blast radius nobody could see (2026-08-17)
+The toolbar's "Enable/Disable selected" is the widest-reaching control in the product, and
+three things about it were wrong in the same direction — all of them with the correct
+pattern already present in the same file.
+
+- **`Promise.all` left the table disagreeing with the database.** The first rejection
+  skipped the local state update entirely while every other request carried on committing:
+  the UI showed nothing changed, the database had changed most of them, and nothing
+  refetched. `handleBulkApply` — twenty lines below — already refetched for exactly this
+  reason. Now `allSettled` + an unconditional refetch, so the table is the server's answer
+  whatever happened, and the message states the SUCCESSES ("38 of 41") because "3 failed"
+  leaves the reader wondering about the other 38.
+- **"Select all" spans every filtered PAGE, not the 25 on screen.** On a 41-sub-account
+  agency you can be looking at 25 rows with 41 selected. `Apply to N` disclosed the number;
+  `Disable selected` did not, and had no confirmation — so the widest-blast-radius action
+  was the one with the least information. Both buttons now carry the count, and turning
+  branding OFF asks first, naming how many are **on another page**, which is the number
+  nobody can check by looking. Enabling is not guarded: it is not the destructive direction.
+- **Deleting a preset had no prompt at all** — a bare click on a small `×`, and presets are
+  the one thing on that screen with **no history to restore from**, while a single
+  sub-account's theme (which *has* a History tab) has always confirmed.
+- **`summariseBulk` is extracted** (`bulkEnableLogic.ts`), same reasoning as
+  `bulkBrandLogic.ts`: it is arithmetic that produces a sentence somebody acts on, and
+  inline in a component it can only be checked by clicking. It passes a session expiry
+  through **verbatim**, because `App.tsx` branches on that exact string to choose the amber
+  instruction banner over the red error one — wrapping it in a count would turn the one
+  failure with a remedy into one without.
+- **`SESSION_EXPIRED_MESSAGE` moved to its own module.** It lived in `api.ts`, which reads
+  `import.meta.env` at module load, so importing the constant dragged in Vite's build-time
+  environment and any logic depending on it could not be exercised outside a browser.
+  `api.ts` re-exports it, so every existing import is unchanged.
+- Verified: 13 checks (`scratchpad/verify-bulk-enable.ts`). One check was **deleted rather
+  than kept**: grepping the bundle for `allSettled` passes whatever the code does, because
+  the initial four-resource page load has used it since long before this change.
+
 #### The SSRF guard was defeated by SPELLING
 `brandScan.ts` fetches a URL the agency pastes, server-side — textbook SSRF, and the thing
 on the other side of it is `169.254.169.254`, which hands out instance credentials to

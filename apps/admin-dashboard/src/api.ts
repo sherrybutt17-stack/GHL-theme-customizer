@@ -30,13 +30,11 @@ function authHeaders(): Record<string, string> {
   return TOKEN ? { "x-mosaic-token": TOKEN } : {};
 }
 
-/**
- * The message an agency owner can act on. "Missing or invalid dashboard token" is what
- * the server says and it is accurate; it is also meaningless to the person reading it,
- * and it looked identical to a network error in the same banner.
- */
-export const SESSION_EXPIRED_MESSAGE =
-  "Your Mosaic session has expired. Click Mosaic in your GoHighLevel sidebar to open it again — any unsaved changes on this screen will be lost.";
+// Defined in its own module so it can be imported without pulling in `import.meta.env`
+// (see sessionMessage.ts). Re-exported here because every existing caller imports it
+// from this file.
+export { SESSION_EXPIRED_MESSAGE } from "./sessionMessage";
+import { SESSION_EXPIRED_MESSAGE } from "./sessionMessage";
 
 export class SessionExpiredError extends Error {
   readonly sessionExpired = true;
