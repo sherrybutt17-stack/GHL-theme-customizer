@@ -1,0 +1,12 @@
+-- Why a LocationInstall was soft-removed. `status` alone conflates two different facts,
+-- and the difference decides whether a REINSTALL brings the sub-account back:
+--
+--   agency-uninstall  the agency removed the app; GHL still has this sub-account, so it
+--                     must return when they reinstall
+--   location-delete   the sub-account itself was deleted in GHL
+--   absent-from-ghl   it stopped appearing in GHL's list (a missed LocationDelete)
+--
+-- Nullable, with no backfill: every existing row is either live (null is correct) or
+-- was removed before this column existed, where "we don't know why" is the honest value
+-- and the conservative one — an unknown reason is never resurrected.
+ALTER TABLE "LocationInstall" ADD COLUMN "removedReason" TEXT;

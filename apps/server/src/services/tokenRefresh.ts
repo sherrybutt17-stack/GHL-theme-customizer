@@ -2,6 +2,7 @@ import axios from "axios";
 import { prisma } from "./prisma";
 import { sessionStorage } from "./ghlClient";
 import { describeError } from "./security";
+import { classifyRefreshFailure, REFRESH_REMEDY, type RefreshFailure } from "./tokenFailure";
 
 /**
  * Proactively refreshes agency tokens before they expire, using a raw HTTP call
@@ -46,18 +47,45 @@ export async function refreshAgencyTokenIfNeeded(agencyInstallId: string): Promi
   console.log(`Proactively refreshed token for agency ${agency.id}`);
 }
 
+/**
+ * Permanent failures already reported this process. A wrong key or a revoked grant
+ * cannot fix itself, so saying so every 30 minutes buries the transient failures that
+ * ARE worth reading. Per-process rather than persisted: a restart is the moment
+ * somebody is looking, and that is a good time to say it again.
+ */
+const reportedPermanent = new Map<string, RefreshFailure>();
+
 export async function refreshAllExpiringAgencyTokens(): Promise<void> {
   const agencies = await prisma.agencyInstall.findMany({
     where: { status: "active", tokenExpiresAt: { lt: new Date(Date.now() + REFRESH_BUFFER_MS) } },
     select: { id: true },
   });
+
+  let attempted = 0;
+  let decryptFailures = 0;
+
   for (const agency of agencies) {
     try {
+      attempted++;
       await refreshAgencyTokenIfNeeded(agency.id);
+      reportedPermanent.delete(agency.id); // recovered
     } catch (error) {
-      // describeError, not the raw error: an Axios failure here carries the POST body
-      // (client_secret + refresh_token) in config.data and must never hit the logs.
-      console.error(`Background token refresh failed for agency ${agency.id}: ${describeError(error)}`);
+      const kind = classifyRefreshFailure(error);
+      if (kind === "decrypt") decryptFailures++;
+      if (kind !== "transient" && reportedPermanent.get(agency.id) === kind) continue;
+      if (kind !== "transient") reportedPermanent.set(agency.id, kind);
+      console.error(
+        `[token-refresh] ${kind} failure for agency ${agency.id}: ${describeError(error)} — ${REFRESH_REMEDY[kind]}`
+      );
     }
+  }
+
+  // EVERY agency failing to decrypt is not an agency problem, it is the key. Said once
+  // per pass and separately, because one line per agency buries the only fact that
+  // matters when the install is large.
+  if (decryptFailures > 0 && decryptFailures === attempted) {
+    console.error(
+      `[token-refresh] ALL ${attempted} agencies failed to decrypt. This is TOKEN_ENCRYPTION_KEY, not the agencies. ${REFRESH_REMEDY.decrypt}`
+    );
   }
 }

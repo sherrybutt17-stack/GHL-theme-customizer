@@ -5,27 +5,26 @@
  * the DASHBOARD can run the existing client-side palette extractor on it (same code
  * path as logo upload) without any cross-origin canvas tainting.
  *
- * SECURITY: this fetches an arbitrary user-supplied URL server-side, which is a
- * classic SSRF vector. We defend by (1) allowing only http/https on ports 80/443,
- * (2) resolving the hostname and rejecting any private / loopback / link-local /
- * reserved IP, (3) handling redirects manually and re-validating every hop, and
- * (4) capping response size + total time. Never relax these without care.
+ * SECURITY: this fetches an arbitrary user-supplied URL server-side, which is a classic
+ * SSRF vector. The guard is all four of scheme/port validation, address blocklisting,
+ * manual per-hop redirect re-validation and size/time caps — and it now lives in
+ * `safeFetch.ts` rather than here.
  *
- * DNS rebinding / TOCTOU is closed by a custom undici dispatcher whose connect-time
- * `lookup` re-validates the resolved IP for the ACTUAL connection (not a separate
- * earlier resolution), so an attacker's low-TTL domain can't pass validation on a
- * public IP then connect to a private one. The pre-fetch assertPublicHost + per-hop
- * redirect re-validation remain as belt-and-suspenders.
+ * That move IS the lesson. The guard was written in this file, was thorough, was tested
+ * against every bypass form, and was documented at length — and the next feature that
+ * needed to fetch a user-supplied URL (feed polling) got none of it, because a defence
+ * that exists in one file is a defence the next feature does not get. Anything that
+ * fetches a URL somebody else chose goes through `safeFetch`.
  */
-import dns from "node:dns/promises";
-import { lookup as dnsLookupCb } from "node:dns";
-import net from "node:net";
-import { Agent } from "undici";
+import { safeFetch, isPrivateIp } from "./safeFetch";
+
+// Re-exported so the unit tests documenting every bypass form keep their import here,
+// beside the feature whose exploit produced them.
+export { isPrivateIp };
 
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_HTML_BYTES = 2_000_000;
 const MAX_IMAGE_BYTES = 3_000_000;
-const MAX_REDIRECTS = 3;
 
 export interface BrandScanResult {
   sourceUrl: string;
@@ -36,137 +35,16 @@ export interface BrandScanResult {
   imageDataUrl?: string;
 }
 
-function isPrivateIpv4(ip: string): boolean {
-  const p = ip.split(".").map(Number);
-  if (p.length !== 4 || p.some((n) => Number.isNaN(n))) return true;
-  const [a, b, c] = p;
-  if (a === 0 || a === 10 || a === 127) return true;
-  if (a === 169 && b === 254) return true; // link-local
-  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16/12
-  if (a === 192 && b === 168) return true;
-  if (a === 192 && b === 0 && c === 2) return true; // TEST-NET-1
-  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64/10
-  if (a >= 224) return true; // multicast + reserved
-  return false;
-}
-
-function isPrivateIpv6(ip: string): boolean {
-  const s = ip.toLowerCase();
-  if (s === "::1" || s === "::") return true;
-  if (s.startsWith("fe80")) return true; // link-local
-  if (s.startsWith("fc") || s.startsWith("fd")) return true; // unique-local fc00::/7
-  const mapped = s.match(/::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
-  if (mapped) return isPrivateIpv4(mapped[1]);
-  return false;
-}
-
-function isPrivateIp(ip: string): boolean {
-  return net.isIPv4(ip) ? isPrivateIpv4(ip) : isPrivateIpv6(ip);
-}
-
-/** Reject hostnames that resolve to any non-public address (SSRF guard). */
-async function assertPublicHost(hostname: string): Promise<void> {
-  if (net.isIP(hostname)) {
-    if (isPrivateIp(hostname)) throw new Error("blocked host");
-    return;
-  }
-  const addrs = await dns.lookup(hostname, { all: true });
-  if (!addrs.length) throw new Error("unresolvable host");
-  for (const a of addrs) {
-    if (isPrivateIp(a.address)) throw new Error("blocked host");
-  }
-}
-
-function validateUrl(raw: string): URL {
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    throw new Error("invalid url");
-  }
-  if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("bad scheme");
-  if (u.username || u.password) throw new Error("credentials not allowed");
-  const port = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
-  if (port !== 80 && port !== 443) throw new Error("bad port");
-  return u;
-}
-
-/** Read a response body up to `maxBytes`, aborting if it runs over. */
-async function readCapped(resp: Response, maxBytes: number): Promise<Buffer> {
-  const cl = Number(resp.headers.get("content-length"));
-  if (Number.isFinite(cl) && cl > maxBytes) throw new Error("too large");
-  const reader = resp.body?.getReader();
-  if (!reader) return Buffer.alloc(0);
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value) {
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel();
-        throw new Error("too large");
-      }
-      chunks.push(value);
-    }
-  }
-  return Buffer.concat(chunks);
-}
-
-/**
- * A DNS lookup that rejects any hostname resolving to a non-public IP. Used as the
- * undici connect-time lookup so the IP we validate is the exact one connected to
- * (closes DNS-rebinding: no separate earlier resolution to race).
- */
-function guardedLookup(hostname: string, options: any, callback: any) {
-  dnsLookupCb(hostname, { all: true, verbatim: true }, (err, addresses: any) => {
-    if (err) return callback(err, undefined, undefined);
-    const addrs = Array.isArray(addresses) ? addresses : [addresses];
-    for (const a of addrs) {
-      if (isPrivateIp(a.address)) return callback(new Error("blocked host (private IP)"), undefined, undefined);
-    }
-    if (options && options.all) callback(null, addrs, undefined);
-    else callback(null, addrs[0].address, addrs[0].family);
+/** brandScan wants a hard failure on any non-2xx; the shared fetch reports the status. */
+async function get(rawUrl: string, maxBytes: number, accept: string) {
+  const r = await safeFetch(rawUrl, {
+    maxBytes,
+    timeoutMs: FETCH_TIMEOUT_MS,
+    userAgent: "MosaicBrandScan/1.0",
+    accept,
   });
-}
-const ssrfAgent = new Agent({ connect: { lookup: guardedLookup } });
-
-/** Fetch with SSRF re-validation on every redirect hop + size/time caps. */
-async function safeFetch(
-  rawUrl: string,
-  maxBytes: number,
-  accept: string
-): Promise<{ url: URL; contentType: string; buf: Buffer }> {
-  let url = validateUrl(rawUrl);
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    await assertPublicHost(url.hostname);
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
-    let resp: Response;
-    try {
-      resp = await fetch(url.toString(), {
-        method: "GET",
-        redirect: "manual",
-        signal: ac.signal,
-        headers: { "user-agent": "MosaicBrandScan/1.0", accept },
-        // Connect-time IP guard (closes DNS rebinding). `dispatcher` is a valid undici
-        // fetch option not yet in the DOM lib types, hence the cast.
-        dispatcher: ssrfAgent,
-      } as any);
-    } finally {
-      clearTimeout(timer);
-    }
-    if (resp.status >= 300 && resp.status < 400 && resp.headers.get("location")) {
-      url = validateUrl(new URL(resp.headers.get("location") as string, url).toString());
-      continue;
-    }
-    if (!resp.ok) throw new Error(`fetch failed ${resp.status}`);
-    const contentType = (resp.headers.get("content-type") ?? "").toLowerCase();
-    const buf = await readCapped(resp, maxBytes);
-    return { url, contentType, buf };
-  }
-  throw new Error("too many redirects");
+  if (r.status < 200 || r.status >= 300) throw new Error(`fetch failed ${r.status}`);
+  return r;
 }
 
 function firstMatch(html: string, re: RegExp): string | undefined {
@@ -220,7 +98,7 @@ function toDataUrl(contentType: string, buf: Buffer): string {
  * both). The caller decides what to do when neither is present.
  */
 export async function scanBrand(rawUrl: string): Promise<BrandScanResult> {
-  const page = await safeFetch(rawUrl, MAX_HTML_BYTES, "text/html,application/xhtml+xml,*/*");
+  const page = await get(rawUrl, MAX_HTML_BYTES, "text/html,application/xhtml+xml,*/*");
 
   // If they pasted an image URL directly, use it as the brand image.
   if (/^image\//.test(page.contentType)) {
@@ -234,7 +112,7 @@ export async function scanBrand(rawUrl: string): Promise<BrandScanResult> {
   let imageDataUrl: string | undefined;
   for (const cand of imageCandidates) {
     try {
-      const img = await safeFetch(cand, MAX_IMAGE_BYTES, "image/*");
+      const img = await get(cand, MAX_IMAGE_BYTES, "image/*");
       if (/^image\//.test(img.contentType) && img.buf.length > 0) {
         imageDataUrl = toDataUrl(img.contentType, img.buf);
         break;

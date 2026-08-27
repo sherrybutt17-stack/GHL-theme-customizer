@@ -1,5 +1,5 @@
 # Render Blueprint for Mosaic (GHL Theme Builder)
-# Brings up: the API server and the admin-dashboard static site.
+# Brings up: the API server, the admin-dashboard static site, and the support desk.
 #
 # Deploy: in Render -> "New +" -> "Blueprint" -> pick this repo. Then set every
 # `sync: false` value in the dashboard (see the checklist at the bottom).
@@ -30,7 +30,10 @@ services:
       && npm --workspace @ghl-theme-builder/server run build
       && npm --workspace @ghl-theme-builder/server run prisma:migrate:deploy
     startCommand: npm --workspace @ghl-theme-builder/server run start
-    healthCheckPath: /
+    # /health does a real SELECT 1 (see index.ts). Pointing this at `/` - a static
+    # string - is why Render reported the service healthy right through the August 2026
+    # database outage.
+    healthCheckPath: /health
     envVars:
       # Neon connection string. Use the DIRECT (unpooled) endpoint, not the pooled
       # one: the pooler runs PgBouncer in transaction mode, which breaks
@@ -78,6 +81,42 @@ services:
       - key: WEBHOOK_PUBLIC_KEY # legacy fallback; optional
         sync: false
 
+      # --- Support (the widget + the Mosaic-staffed desk) ---
+      #
+      # None of these fail the boot if unset, by design — theming must never be taken
+      # down by the support product. But the DEGRADED states are silent, so read this:
+      #
+      # OPENAI_API_KEY unset  -> the bot answers every question with "let me get someone
+      #                          from the team". The widget appears and works; it simply
+      #                          never deflects anything. That is the single most likely
+      #                          way to ship support "successfully" and have it do nothing.
+      - key: OPENAI_API_KEY
+        sync: false
+      # Model ids and prices move faster than this code, so it is an env var. Measured
+      # 2026-08-12 (`npm run eval-models`): gpt-5.6-luna, 0/11 failures, ~$0.16/1k convs
+      # — ~7x cheaper per CONVERSATION than gpt-5-mini despite a higher rate card,
+      # because reasoning tokens dominate. Compare on measured tokens, never the price.
+      - key: OPENAI_MODEL
+        value: gpt-5.6-luna
+      # SUPPORT_DESK_URL unset -> CORS falls back to the localhost dev origin, so the
+      # DEPLOYED desk cannot reach the API at all: staff log in and see nothing. It is
+      # also the only origin allowed to send the `x-mosaic-desk: 1` CSRF header. Set it
+      # to the mosaic-desk URL below.
+      - key: SUPPORT_DESK_URL
+        sync: false
+      # Email is a convenience, never the mechanism — an escalation is recorded before
+      # any send, and services/email.ts returns {sent:false} rather than throwing. Unset
+      # is a SUPPORTED state: it logs what it would have sent. EMAIL_FROM needs SPF/DKIM
+      # on the domain before it actually delivers.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      # Comma-separated. Unset = no alert when a client escalates; the desk inbox is the
+      # source of truth either way, which is why it surfaces waiting time.
+      - key: DESK_NOTIFY_EMAIL
+        sync: false
+
   # --- Admin dashboard (Vite static build; static sites are free on Render) ---
   - type: web
     name: mosaic-dashboard
@@ -93,17 +132,58 @@ services:
         source: /*
         destination: /index.html
 
+  # --- Support desk (Mosaic's OWN staff; agencies never get an account here) ---
+  #
+  # A separate origin from the dashboard on purpose, not for tidiness. The dashboard is
+  # iframed inside GHL where cookies are unreliable, so it carries a stateless HMAC token
+  # in sessionStorage. The desk owns its URL, which buys httpOnly Secure cookies and real
+  # REVOCATION — a support agent who leaves loses access immediately, where a stateless
+  # token stays valid until it expires. The two auth systems must never be interchangeable.
+  #
+  # Accounts are created by hand (`npm run create-desk-user`); there is deliberately no
+  # signup, because every desk account can read every agency's support conversations.
+  - type: web
+    name: mosaic-desk
+    runtime: static
+    rootDir: .
+    buildCommand: npm ci && npm --workspace @ghl-theme-builder/support-desk run build
+    staticPublishPath: apps/support-desk/dist
+    envVars:
+      - key: VITE_API_BASE_URL # = the mosaic-server URL (baked in at build time)
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
 # ---------------------------------------------------------------------------
 # POST-DEPLOY CHECKLIST
+#
+# 0. Run `npm run verify-migrations --workspace @ghl-theme-builder/server` BEFORE
+#    deploying. Migrations run inside the build command, and a migration that is fine
+#    locally can still fail on an empty database — one referencing a table a LATER
+#    migration creates works on your machine forever and only breaks here. A failure
+#    also leaves a row in `_prisma_migrations` that blocks EVERY subsequent deploy
+#    until it is resolved by hand against production.
 #
 # 1. Create the Neon project FIRST and set DATABASE_URL, or the build's
 #    `prisma migrate deploy` step has nothing to migrate against and fails.
 #
-# 2. The two URL values are circular with Render's generated hostnames: deploy once,
-#    read the assigned .onrender.com URLs, then set APP_PUBLIC_URL,
-#    ADMIN_DASHBOARD_URL and VITE_API_BASE_URL and redeploy. VITE_API_BASE_URL is
-#    compiled into the dashboard bundle, so the dashboard needs a REBUILD (not just a
-#    restart) after it changes.
+# 2. The URL values are circular with Render's generated hostnames: deploy once, read
+#    the assigned .onrender.com URLs, then set APP_PUBLIC_URL, ADMIN_DASHBOARD_URL,
+#    SUPPORT_DESK_URL, and VITE_API_BASE_URL on BOTH static sites, and redeploy.
+#    VITE_API_BASE_URL is compiled into each bundle, so the dashboard and the desk each
+#    need a REBUILD (not just a restart) after it changes.
+#
+# 2b. SUPPORT_DESK_URL must be the mosaic-desk URL exactly. It is the only origin
+#    granted credentialed CORS and the only one able to send the `x-mosaic-desk: 1`
+#    header every non-GET /desk/api call requires. Unset, it falls back to the localhost
+#    dev origin and the deployed desk silently cannot reach the API.
+#
+# 2c. Create at least one desk account by hand — there is no signup:
+#      npm run create-desk-user --workspace @ghl-theme-builder/server -- \
+#        --email you@agency.com --name "Your Name" --role mosaic_admin
+#    Run it with DATABASE_URL pointed at Neon.
 #
 # 3. Re-point three URLs in the GHL Developer Portal to the new server host:
 #      - OAuth redirect  -> <APP_PUBLIC_URL>/authorize-handler
@@ -120,4 +200,85 @@ services:
 #    render-blocking, a cold start delays the agency's whole GHL UI, not just the
 #    branding. Either upgrade the web service to a paid plan, or keep it warm with a
 #    scheduled ping to `/` every ~10 minutes.
+#
+# 6. SUPPORT SHIPS SILENT IF OPENAI_API_KEY IS MISSING. The widget still appears and
+#    still answers — with "let me get someone from the team", every single time. Nothing
+#    errors and nothing logs a failure, so the way to check is to run the per-agency dry
+#    run from the dashboard (Client support -> Setup -> "Try it") against a real
+#    sub-account and read the six answers. If they are all hand-offs, the key is missing.
+#
+# 7. KNOWLEDGE BASE FEEDS NEED A SCHEDULER. `npm run poll-feeds` is a script on purpose,
+#    not a setInterval in the server: the free web service sleeps after ~15 minutes so an
+#    in-process timer simply stops, and if the service ever runs more than one instance
+#    every instance would poll every feed and race the same upserts.
+#
+#    Render cron jobs are a paid feature — so this is ALREADY SOLVED, off Render, by
+#    `.github/workflows/poll-feeds.yml`. GitHub Actions cron is free, runs one job at a
+#    time (the `concurrency` group covers the racing-instances problem above), and needs
+#    exactly one secret:
+#
+#      Settings -> Secrets and variables -> Actions -> New repository secret
+#        DATABASE_URL = <the same Neon URL this service uses>
+#
+#    Until that secret exists the workflow runs hourly and exits 0 with a notice, on
+#    purpose: a scheduled job that fails red every hour until somebody configures it
+#    teaches people to ignore this repo's CI, and the next failure it hides is a real one.
+#
+#    Once on a paid Render plan you could instead add:
+#
+#      - type: cron
+#        name: mosaic-feed-poll
+#        runtime: node
+#        schedule: "17 * * * *"          # hourly, off the hour to avoid the stampede
+#        buildCommand: npm ci && npm run build:server
+#        startCommand: npm run poll-feeds --workspace @ghl-theme-builder/server
+#        envVars:
+#          - key: DATABASE_URL
+#            sync: false
+#
+#    Not scheduling it is a SUPPORTED state — feeds simply never update, and the corpus
+#    stays exactly as seeded. Nothing breaks; it just stops getting fresher.
+#
+# 8. SEED THE KNOWLEDGE BASE after the first deploy, or the bot has nothing to answer
+#    from: `npm run seed-kb --workspace @ghl-theme-builder/server` with DATABASE_URL
+#    pointed at Neon. It is idempotent, so re-running it after a content change updates
+#    in place rather than duplicating.
+#
+# 9. Support needs the SECOND paste. Theming is the `@import` line; the widget, the
+#    browser-tab title and the favicon all ride in the optional JavaScript from
+#    "Get the code" -> Custom JavaScript. It is pasted once and never again — the widget
+#    self-gates on the server's config, so switching support on later needs no re-paste.
+#
+# 10. EVERY DESK ACCOUNT STARTS AT TIER 1, because that is the column default. So on a
+#    fresh deploy the first tier-2 escalation has nobody who can take it and sits in the
+#    queue indefinitely. The desk says so at the moment of escalation (the response
+#    carries `agentsAtTier`, and the UI reads "NOBODY is at tier 2"), but the fix is to
+#    promote somebody: Staff tab -> Tier, or PATCH /desk/api/users/:id/routing.
+#    `maxConcurrent` defaults to 3 per agent and is what "all agents are busy" is
+#    computed from — set it to what your people actually carry, not to what looks tidy.
+#
+# 11. RUN THE READINESS CHECK when you think you are finished:
+#       npm run readiness --workspace @ghl-theme-builder/server
+#    with DATABASE_URL pointed at Neon. It exits non-zero on a blocker, and every item
+#    on this list that it can see (steps 8 and 10 included) is one it will name.
+#
+#    It exists because the failures that hurt most here are DATABASE facts, not config:
+#    an unseeded knowledge base, a desk with no accounts, a tier nobody holds. Every one
+#    of them boots clean, logs nothing, serves 200s and answers nobody — the same state
+#    this product has already shipped twice. The server also logs the same report at
+#    boot, so it is in the deploy log whether or not anybody runs the command.
+#
+# 12. THEN SMOKE-TEST THE DEPLOY FROM OUTSIDE:
+#       npm run smoke --workspace @ghl-theme-builder/server -- \
+#         --base https://mosaic-server.onrender.com \
+#         --dashboard https://mosaic-dashboard.onrender.com \
+#         --desk https://mosaic-desk.onrender.com \
+#         --agency <agencyInstallId> --location <ghlLocationId>
+#
+#    Readiness asks the database; this asks the three services over the network, which is
+#    the only way to catch what lives BETWEEN them — a static site still baked against the
+#    old API URL (VITE_API_BASE_URL is compiled in, so it needs a REBUILD not a restart),
+#    an admin API that is not actually requiring a token, a desk origin CORS refuses, or
+#    webhooks being accepted unverified. Read-only apart from one webhook probe that a
+#    correctly configured server rejects before it writes anything.
 # ---------------------------------------------------------------------------

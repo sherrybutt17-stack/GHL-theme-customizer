@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { prisma } from "../services/prisma";
 import { generateThemeCssBundle } from "../services/themeCssBundle";
 import { describeError } from "../services/security";
+import { CircuitBreaker } from "../services/circuitBreaker";
 
 export const themeCssRouter = Router();
 
@@ -15,9 +16,18 @@ export const themeCssRouter = Router();
  *
  * Two guards, in order of preference:
  *   1. a wall-clock timeout, so we respond even if the driver never errors;
- *   2. a last-known-good cache, so a DB blip keeps serving the real theme.
+ *   2. a last-known-good cache, so a DB blip keeps serving the real theme;
+ *   3. a per-agency circuit breaker, so requests during an outage don't each pay it.
  */
-const DB_TIMEOUT_MS = Number(process.env.THEME_CSS_TIMEOUT_MS ?? 8000);
+
+/**
+ * 2.5s, not 8s. This is a RENDER-BLOCKING asset: the browser holds the whole GHL page
+ * until it answers, so the timeout is the worst-case stall we impose on every page load
+ * during an outage. Eight seconds of white screen is indefensible when the
+ * last-known-good cache can answer instantly - the timeout only needs to be longer than
+ * a healthy build (single-digit ms), not generous.
+ */
+const DB_TIMEOUT_MS = Number(process.env.THEME_CSS_TIMEOUT_MS ?? 2500);
 
 class TimeoutError extends Error {}
 
@@ -51,17 +61,39 @@ const lastKnownGood = new Map<string, { css: string; at: number }>();
  * a build fails we stop dialling the database for a short cooldown and answer straight
  * from cache. After the cooldown one request is let through to probe for recovery, so
  * the theme comes back on its own within a cooldown of the database returning.
+ *
+ * KEYED BY AGENCY, deliberately. As a process global, ANY failure - including one
+ * agency's malformed theme data throwing inside generateThemeCssBundle - stopped every
+ * other agency's stylesheet from being rebuilt for the cooldown. One tenant's bug
+ * degraded all of them, which is the failure mode this product can least afford.
+ *
+ * The trade-off is explicit: when the database really is down, each agency now pays one
+ * timeout before its own breaker opens, instead of the first one paying for everybody.
+ * At a 2.5s timeout and a handful of agencies that is a far better deal than
+ * cross-tenant coupling.
  */
 const BREAKER_COOLDOWN_MS = Number(process.env.THEME_CSS_BREAKER_MS ?? 10_000);
-let dbDownUntil = 0;
+const breaker = new CircuitBreaker(BREAKER_COOLDOWN_MS);
 
 themeCssRouter.get("/theme-css/:agencyInstallId", async (req: Request, res: Response) => {
   const agencyInstallId = req.params.agencyInstallId;
-  // The whole point of the @import approach is that theme edits apply live; a cached
-  // copy would silently serve stale CSS and mask logo/theme updates.
-  res.set("Cache-Control", "no-store, no-cache, must-revalidate");
+  /**
+   * `no-cache`, NOT `no-store` — the difference is the whole cost of this endpoint.
+   *
+   * Theme edits must apply live, and the pasted `@import` line carries a `?v=` fixed at
+   * paste time, so it can never bust a cache: an agency edits their theme and never
+   * re-pastes. That rules out `max-age`. It does NOT rule out revalidation.
+   *
+   * `no-store` forbids the browser from keeping a copy at all, so it cannot send
+   * `If-None-Match` and the full body ships on EVERY page load. Measured on a realistic
+   * agency — 41 sub-accounts with 40KB logos base64-inlined — that is **1.7MB gzipped,
+   * render-blocking, every single page**. `no-cache` still forces a revalidation round
+   * trip before use, so an edit is live exactly as before, but an unchanged theme
+   * answers 304 with no body.
+   */
+  res.set("Cache-Control", "no-cache, must-revalidate");
 
-  if (Date.now() < dbDownUntil) return respondDegraded(res, agencyInstallId, "circuit open");
+  if (breaker.isOpen(agencyInstallId)) return respondDegraded(res, agencyInstallId, "circuit open");
 
   try {
     const css = await withTimeout(
@@ -72,6 +104,11 @@ themeCssRouter.get("/theme-css/:agencyInstallId", async (req: Request, res: Resp
         // GHL's Custom CSS field and keeps hitting us after UninstallCompany; serve
         // nothing so we don't keep theming for an org that uninstalled us.
         if (agency.status === "uninstalled") {
+          // EVICT the last-known-good copy, don't just stop refreshing it. Left in place
+          // it outlives the uninstall: the next database blip opens this agency's breaker,
+          // `respondDegraded` finds the stale entry and serves the full pre-uninstall
+          // stylesheet as a 200 — re-branding, from cache, an org that removed the app.
+          lastKnownGood.delete(agencyInstallId);
           return { status: 200 as const, body: "/* This Mosaic install has been removed. */" };
         }
         return { status: 200 as const, body: await generateThemeCssBundle(agency.id), cache: true };
@@ -80,12 +117,13 @@ themeCssRouter.get("/theme-css/:agencyInstallId", async (req: Request, res: Resp
       `theme-css build for ${agencyInstallId}`
     );
 
-    // A build got through, so the database is healthy again - close the breaker.
-    dbDownUntil = 0;
+    // A build got through for THIS agency, so close its breaker. Deliberately not a
+    // global reset: another agency may still be failing for its own reason.
+    breaker.close(agencyInstallId);
     if (css.cache) lastKnownGood.set(agencyInstallId, { css: css.body, at: Date.now() });
     return res.status(css.status).type("text/css").send(css.body);
   } catch (e) {
-    dbDownUntil = Date.now() + BREAKER_COOLDOWN_MS;
+    breaker.open(agencyInstallId);
     const reason = e instanceof TimeoutError ? "timed out" : "failed";
     console.error(`[theme-css] build ${reason} for ${agencyInstallId}: ${describeError(e)}`);
     return respondDegraded(res, agencyInstallId, reason);
@@ -100,13 +138,20 @@ themeCssRouter.get("/theme-css/:agencyInstallId", async (req: Request, res: Resp
 function respondDegraded(res: Response, agencyInstallId: string, reason: string) {
   const stale = lastKnownGood.get(agencyInstallId);
   if (stale) {
-    const ageSec = Math.round((Date.now() - stale.at) / 1000);
+    // The age goes in a HEADER, not in the body, so the body stays byte-identical
+    // between requests and keeps its ETag. Interpolated into the CSS it changed every
+    // second, which changes the ETag every second, which means no browser can ever
+    // revalidate to a 304 — so the full stylesheet (megabytes, for an agency with
+    // logos) would ship on every page load for the whole outage. That is precisely
+    // when the database is least able to help and the page can least afford it.
+    res.set("X-Mosaic-Stale-Age", String(Math.round((Date.now() - stale.at) / 1000)));
+    res.set("X-Mosaic-Degraded", reason);
     // Valid CSS and a 200, so the browser actually applies it - the agency keeps its
     // branding through the outage.
     return res
       .status(200)
       .type("text/css")
-      .send(`/* Mosaic: last-known-good theme (${ageSec}s old, ${reason}) - datastore unreachable. */\n${stale.css}`);
+      .send(`/* Mosaic: last-known-good theme (${reason}) - datastore unreachable. */\n${stale.css}`);
   }
   // Nothing cached. Answer anyway: a fast failure lets the page render unstyled,
   // where a hang would stall it.

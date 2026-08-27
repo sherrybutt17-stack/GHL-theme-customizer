@@ -1,0 +1,575 @@
+:root {
+  --bg: #0f1115;
+  --surface: #171a21;
+  --surface-2: #1f2430;
+  --border: #2a3040;
+  --text: #e7eaf0;
+  --muted: #9aa4b8;
+  --accent: #5b8cff;
+  --danger: #ff6b6b;
+  --ok: #3ddc97;
+  --radius: 10px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 9px 16px;
+  border-radius: var(--radius);
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #0b1020;
+  font-weight: 600;
+}
+
+/*
+ * `textarea` was MISSING here, and the one it left behind is the compose box — the single
+ * most-used control in the desk. It rendered as a white box with default black text in an
+ * otherwise dark UI, because `.compose textarea` only ever set width, resize and type
+ * metrics: the rule existed, so `audit-styles.js` was green, and no server-side check can
+ * see a colour. `.modal-body textarea` sets its own background and colour, which is why the
+ * two modals looked right and this did not — the inconsistency is the proof of intent.
+ *
+ * Only rendering shows this class of thing: a class being DEFINED is not the same as its
+ * rule being COMPLETE.
+ */
+input,
+select,
+textarea {
+  font: inherit;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+label {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.field {
+  margin-bottom: 16px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 28px;
+}
+
+.error {
+  background: rgba(255, 107, 107, 0.1);
+  border: 1px solid rgba(255, 107, 107, 0.35);
+  color: #ffb3b3;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.notice {
+  background: rgba(91, 140, 255, 0.08);
+  border: 1px solid rgba(91, 140, 255, 0.3);
+  color: #c6d6ff;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.login-wrap {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.login-card .notice {
+  margin-bottom: 16px;
+}
+
+/* Re-authenticating OVER the live desk rather than replacing it. The agent's half-typed
+   reply — already through the brand and link gates as they typed it — lives in a
+   component underneath, and unmounting that to show a login screen would throw the work
+   away, which is worse than the expiry that caused it. */
+.session-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  overflow: auto;
+  background: rgba(8, 10, 16, 0.86);
+  backdrop-filter: blur(2px);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 400px;
+}
+
+.brand {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0 0 4px;
+}
+
+.brand-sub {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 0 0 24px;
+}
+
+header.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+header.topbar .who {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.pill {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.pill.admin {
+  color: var(--accent);
+  border-color: rgba(91, 140, 255, 0.4);
+}
+
+/* At their limit: they are not refusing work, they are already doing it. Amber, not
+   red — the same instruction-not-fault distinction the session banners make. */
+.pill.full {
+  color: #ffcf8f;
+  border-color: rgba(255, 176, 87, 0.45);
+}
+
+/* A routing error belongs beside the control that produced it. The page-level `.error`
+   sits ~390px above the first row and further above every row below it, so on a desk
+   with more than a handful of accounts the refusal was off-screen and the only thing
+   visible was the value the server had just declined. */
+.row-error {
+  margin-top: 4px;
+  max-width: 200px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #ffb3b3;
+}
+
+main.page {
+  padding: 28px 22px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+h2 {
+  font-size: 17px;
+  margin: 0 0 14px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+tr.disabled td {
+  opacity: 0.5;
+}
+
+.row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.row > * {
+  flex: 1;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+code.secret {
+  display: block;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  margin-top: 8px;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+/* ---------- Desk layout: queue on the left, ticket on the right ---------- */
+.desk {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  height: calc(100vh - 57px);
+  overflow: hidden;
+}
+@media (max-width: 900px) {
+  .desk { grid-template-columns: 1fr; }
+  .desk .inbox { max-height: 40vh; }
+}
+.pad { padding: 16px; }
+.small { font-size: 12px; }
+.spacer { flex: 1; }
+
+.topbar-left { display: flex; align-items: center; gap: 16px; }
+.topbar-nav { display: flex; gap: 4px; }
+.topbar-nav button {
+  background: none; border: none; color: var(--muted); font-size: 13px;
+  padding: 6px 10px; border-radius: 8px; cursor: pointer;
+}
+.topbar-nav button:hover { color: var(--text); }
+.topbar-nav button.active { color: var(--text); background: var(--surface-2); }
+
+/* ---------- Inbox ---------- */
+.inbox { border-right: 1px solid var(--border); overflow-y: auto; background: var(--surface); }
+.inbox-head { padding: 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.inbox-filters { display: flex; flex-wrap: wrap; gap: 4px; }
+.chip {
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--muted);
+  font-size: 12px; padding: 5px 10px; border-radius: 999px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.chip:hover { color: var(--text); }
+.chip.active { color: var(--text); border-color: var(--accent); }
+.chip .count { background: var(--accent); color: #fff; border-radius: 999px; padding: 0 6px; font-size: 11px; }
+.mine-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+
+.inbox-list { list-style: none; margin: 0; padding: 0; }
+.inbox-row {
+  width: 100%; text-align: left; background: none; border: none;
+  border-bottom: 1px solid var(--border); padding: 11px 12px; cursor: pointer; color: var(--text);
+  border-left: 3px solid transparent;
+}
+.inbox-row:hover { background: var(--surface-2); }
+.inbox-row.selected { background: var(--surface-2); border-left-color: var(--accent); }
+/* Waiting time, only while nobody has replied yet. */
+.inbox-row.wait-warn { border-left-color: #d9a441; }
+.inbox-row.wait-bad { border-left-color: var(--danger); }
+.inbox-row-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.brand-tag { font-size: 12px; font-weight: 700; color: var(--accent); }
+.prio { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted); }
+.prio.high, .prio.urgent { color: var(--danger); border-color: var(--danger); }
+.when { margin-left: auto; font-size: 11px; color: var(--muted); }
+.inbox-row-preview { font-size: 13px; line-height: 1.35; margin-bottom: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.inbox-row-meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--muted); }
+.assignee { color: var(--ok); }
+.handed { color: #d9a441; }
+.leaks { color: var(--danger); }
+
+/* ---------- Ticket ---------- */
+.ticket { display: flex; flex-direction: column; overflow: hidden; }
+.ticket.empty { align-items: center; justify-content: center; }
+.ticket-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.ticket-head h2 { margin: 0 0 3px; font-size: 16px; }
+.ticket-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.ticket-actions select { padding: 6px 8px; font-size: 12px; }
+.ticket-actions button { padding: 6px 10px; font-size: 12px; }
+
+.snapshot { display: flex; flex-wrap: wrap; gap: 12px; padding: 8px 18px; font-size: 11.5px; color: var(--muted); border-bottom: 1px solid var(--border); background: var(--bg); }
+.snapshot .warn { color: var(--danger); }
+
+.transcript { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+.msg { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: var(--surface); max-width: 78%; }
+.msg-user { align-self: flex-start; }
+.msg-bot, .msg-agent { align-self: flex-end; background: var(--surface-2); }
+.msg-agent { border-color: var(--accent); }
+.msg-system { align-self: center; max-width: 100%; background: none; border-style: dashed; color: var(--muted); font-size: 12px; }
+.msg-meta { display: flex; gap: 10px; font-size: 11px; color: var(--muted); margin-bottom: 5px; }
+.msg-body { font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; }
+.msg-cites { margin-top: 6px; font-size: 11px; color: var(--muted); font-style: italic; }
+
+/* The brand banner sits directly above the compose box on purpose — it is the last
+   thing read before typing, not a sidebar the agent stops noticing on day three. */
+.brand-banner { border-top: 1px solid var(--border); background: var(--surface-2); padding: 10px 18px; }
+.brand-banner-main { font-size: 13.5px; }
+.brand-banner-main strong { color: var(--accent); }
+.brand-banner-rules { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 5px; font-size: 11.5px; color: var(--muted); }
+.brand-banner-rules code { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin-right: 4px; color: var(--text); }
+.hidden-features { color: #d9a441; }
+.forbidden { color: var(--danger); }
+
+/* ---------- Compose ---------- */
+.compose { border-top: 1px solid var(--border); padding: 12px 18px 16px; background: var(--surface); }
+.compose textarea { width: 100%; resize: vertical; font-family: inherit; font-size: 13.5px; line-height: 1.5; }
+.compose textarea.blocked { border-color: var(--danger); }
+.block-warning { background: rgba(255, 107, 107, .09); border: 1px solid var(--danger); border-radius: var(--radius); padding: 9px 12px; margin-bottom: 10px; font-size: 12.5px; }
+.block-warning strong { display: block; color: var(--danger); margin-bottom: 4px; }
+.block-warning ul { margin: 0; padding-left: 18px; line-height: 1.5; }
+.canned-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.compose-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.compose-actions button { font-size: 12.5px; padding: 7px 12px; }
+.compose-actions .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.compose-actions .primary:disabled { opacity: .45; cursor: not-allowed; }
+.internal-toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+
+/* ---------- Queue board ---------- */
+/* Occupies the same left column as the inbox, so switching between "what's waiting"
+   and "browse everything" doesn't move the ticket pane out from under the agent. */
+.queue-board { border-right: 1px solid var(--border); overflow-y: auto; background: var(--surface); padding: 12px; }
+.queue-head { margin-bottom: 12px; }
+.queue-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.queue-actions .primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.availability.available { color: #6bd39a; border-color: #6bd39a; }
+.availability.away { color: var(--muted); }
+.queue-notice { margin: 8px 0 0; font-size: 12px; color: var(--muted); line-height: 1.45; }
+
+.queue-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-bottom: 8px; }
+.stat { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 6px; text-align: center; }
+.stat-value { display: block; font-size: 17px; font-weight: 700; }
+.stat-value em { font-style: normal; font-size: 12px; color: var(--muted); font-weight: 400; }
+.stat-label { display: block; font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+/* The basis is stated beside the number: "median reply" alone invites reading a
+   7-day figure as "right now", and a stat nobody can source is a stat nobody trusts. */
+.queue-basis { font-size: 11.5px; line-height: 1.5; margin: 0 0 10px; }
+.queue-alarm { background: rgba(255, 107, 107, .1); border: 1px solid var(--danger); border-radius: var(--radius); padding: 8px 10px; font-size: 12px; margin: 0 0 10px; }
+
+.queue-list { list-style: none; margin: 0 0 12px; padding: 0; }
+.queue-row { width: 100%; display: flex; align-items: center; gap: 8px; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--border); padding: 8px 4px; cursor: pointer; }
+.queue-row:hover { background: var(--surface-2); }
+.queue-pos { min-width: 20px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.queue-main { flex: 1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-width: 0; }
+.queue-subject { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-wait { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.queue-wait.warn { color: #d9a441; }
+.queue-wait.bad { color: var(--danger); font-weight: 600; }
+.tier { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; padding: 1px 5px; border-radius: 4px; border: 1px solid #d9a441; color: #d9a441; }
+
+.agent-load { width: 100%; border-collapse: collapse; font-size: 12px; }
+.agent-load td { padding: 4px 6px; border-top: 1px solid var(--border); color: var(--muted); }
+.agent-load td:first-child { color: var(--text); }
+.agent-load tr.away td { opacity: .5; }
+.tier-cell { font-size: 11px; }
+
+/* ---------- Routing controls on a ticket ---------- */
+.ticket-routing { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.ticket-routing select, .ticket-routing button { font-size: 12px; padding: 5px 9px; }
+.routing-cell { display: flex; gap: 4px; align-items: center; }
+.routing-cell input { width: 52px; font-size: 12px; padding: 3px 5px; }
+
+/* ---------- Modals ----------
+   The desk shipped `NewTicket` (raise a ticket) with a full modal and NOT ONE of these
+   rules, so it rendered as unstyled markup in the page flow: no backdrop, no panel, the
+   form simply appended below the fold. Every server-side check of it passed the whole
+   time, because they drove it over HTTP — the same blind spot as a green suite for a
+   widget that never called the endpoint. Shared by NewTicket and ChangePassword. */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+  background: rgba(8, 10, 14, 0.66);
+}
+.modal {
+  display: flex; flex-direction: column;
+  width: min(560px, 100%); max-height: min(86vh, 720px);
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+.modal.narrow { width: min(400px, 100%); }
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 18px; border-bottom: 1px solid var(--border); font-size: 14px;
+}
+/* The only scrolling part, so the title and the buttons stay put on a long form. */
+.modal-body { padding: 16px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+/* BLOCK, not a column flex. NewTicket writes `Their name <span class="muted">optional</span>`
+   inside the label, and as a flex column that span becomes its own row — so every optional
+   field read as a two-line label with "optional" stranded underneath it. Block lets the
+   text and its hint flow on one line the way they were written, and the control below. */
+.modal-body label { display: block; font-size: 12px; color: var(--muted); }
+.modal-body label > input,
+.modal-body label > textarea,
+.modal-body label > select { display: block; margin-top: 5px; }
+.modal-body label .muted { margin-left: 4px; }
+.modal-body input[type="text"],
+.modal-body input[type="password"],
+.modal-body input[type="email"],
+.modal-body textarea,
+.modal-body select {
+  width: 100%; padding: 8px 10px; font-family: inherit; font-size: 13px;
+  color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+.modal-body input:focus, .modal-body textarea:focus, .modal-body select:focus {
+  outline: none; border-color: var(--accent);
+}
+.modal-body textarea { min-height: 96px; resize: vertical; }
+.modal-actions {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 18px; border-top: 1px solid var(--border);
+}
+.modal-body .row { display: flex; gap: 12px; }
+.modal-body .row > label { flex: 1; min-width: 0; }
+.modal-body label.check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
+.modal-body label.check input { width: auto; display: inline-block; margin-top: 0; }
+
+button.icon {
+  background: none; border: none; color: var(--muted);
+  font-size: 20px; line-height: 1; padding: 0 4px; cursor: pointer;
+}
+button.icon:hover { color: var(--text); }
+button.link { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0; font-size: 12px; }
+button.link:hover { text-decoration: underline; }
+
+.hint { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.45; }
+.warn-inline { font-size: 11.5px; color: #d9a441; }
+
+/* Sub-account picker in "Raise a ticket": a typeahead, never the full list. */
+.picker { list-style: none; margin: 0; padding: 0; max-height: 180px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 8px; }
+.picker li + li { border-top: 1px solid var(--border); }
+.picker button {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left;
+  padding: 8px 10px; background: none; border: none; color: var(--text); cursor: pointer; font-size: 13px;
+}
+.picker button:hover { background: var(--surface-2); }
+.picker .muted { font-size: 11.5px; }
+.picker li.pad { padding: 10px; font-size: 12px; }
+/* Once chosen, the client's brand leads — seeing the agency's name where the client's
+   should be is how a cross-brand slip starts, the same rule the inbox rows follow. */
+.picked { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+  padding: 8px 10px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; }
+.picked .muted { font-size: 11.5px; }
+
+/* ---------- Ticket badges and banners (the automation work) ---------- */
+.plan, .ttype, .snoozed, .raised {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+  padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); color: var(--muted);
+}
+/* What the client pays for, and what kind of problem this is: quiet, because they label
+   the work rather than demand attention. */
+.plan { border-color: #4a5a7a; color: #9fb4de; }
+.ttype { border-color: #3f5344; color: #8fc7a1; }
+/* Parked, and coming back on its own — stated so a row that is deliberately quiet is not
+   read as one nobody has picked up. */
+.snoozed { border-color: #6a5a3a; color: #d9a441; }
+/* Raised from the desk rather than by a client through the widget. */
+.raised { border-color: #5a4a6a; color: #c0a4de; }
+
+.snoozed-banner, .away-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 8px 18px; font-size: 12.5px;
+  border-bottom: 1px solid var(--border); background: var(--surface-2); color: var(--muted);
+}
+.snoozed-banner { border-left: 3px solid #d9a441; }
+.away-banner { border-left: 3px solid var(--accent); }
+
+/* Transfers, escalations, automatic raises and returns to the queue. Deliberately dimmer
+   than the transcript: it is what happened TO the ticket, not what anyone said. */
+.automation-history {
+  margin: 0; padding: 8px 18px; list-style: none;
+  font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--border);
+}
+.automation-history li { padding: 2px 0; }
+
+/*
+  THE AGENCY'S OWN CONTENT panel, above the brand banner in the ticket pane.
+
+  Deliberately quieter than the brand banner directly below it. That banner is the desk's
+  safety surface and must stay the loudest thing next to the compose box; this is a
+  reference an agent chooses to open, so it reads as a disclosure rather than an alert.
+
+  `textarea` is not in the base `input, select` rule, which is how the compose box shipped
+  white in a dark UI — so the filter input carries its own colours rather than trusting a
+  bare-element rule to reach it.
+*/
+.agency-kb { border-top: 1px solid var(--border); background: var(--surface); }
+.agency-kb-toggle {
+  width: 100%; text-align: left; background: none; border: 0; color: var(--muted);
+  padding: 8px 18px; font-size: 12px; cursor: pointer; font-family: inherit;
+}
+.agency-kb-toggle:hover { color: var(--text); }
+.agency-kb-caret { display: inline-block; width: 14px; color: var(--muted); }
+.agency-kb-body { padding: 0 18px 12px; max-height: 260px; overflow-y: auto; }
+.agency-kb-filter {
+  width: 100%; margin-bottom: 8px; padding: 6px 9px; font-size: 12.5px;
+  background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; font-family: inherit;
+}
+.agency-kb-list { display: flex; flex-direction: column; gap: 4px; }
+.agency-kb-item { border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.agency-kb-title {
+  background: none; border: 0; color: var(--accent); font-size: 12.5px; text-align: left;
+  padding: 3px 0; cursor: pointer; font-family: inherit; width: 100%;
+}
+.agency-kb-title:hover { text-decoration: underline; }
+.agency-kb-text {
+  white-space: pre-wrap; font-size: 12.5px; line-height: 1.55; color: var(--text);
+  background: var(--surface-2); border-radius: 6px; padding: 9px 11px; margin: 4px 0 8px;
+}
+.agency-kb-note { font-size: 11.5px; color: var(--muted); line-height: 1.5; padding: 6px 0; }

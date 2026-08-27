@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "../services/loadEnv";
 import { prisma } from "../services/prisma";
 import { syncLocationsForAgency } from "../services/locationSync";
 import { ensureAgencyAdminMenuLink } from "../services/customMenuLink";

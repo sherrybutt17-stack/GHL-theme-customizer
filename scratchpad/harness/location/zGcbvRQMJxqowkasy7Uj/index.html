@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mock sub-account</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14'>⬜</text></svg>">
+<link rel="shortcut icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14'>⬜</text></svg>">
+<style>
+  /* A stand-in for GHL's own chrome. The ids, the meta= attributes and the flex column
+     are copied from the real DOM; everything else here is just so the page looks like
+     something. This CANNOT prove our selectors match live GHL — only that the stylesheet
+     we generate does what we think it does. */
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, sans-serif; display: flex; min-height: 100vh; }
+  #sidebar-v2 {
+    width: 232px; background: #1f2937; color: #fff; padding: 14px 10px;
+    display: flex; flex-direction: column; gap: 2px;   /* <- the flex assumption */
+  }
+  #sidebar-v2 .agency-logo { max-width: 140px; margin: 4px 8px 16px; }
+  #sidebar-v2 a {
+    display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px;
+    color: #cbd5e1; text-decoration: none; font-size: 13.5px;
+  }
+  #sidebar-v2 a.active { background: rgba(255,255,255,.14); color: #fff; }
+  #sidebar-v2 a i { width: 16px; height: 16px; display: inline-block; background: #94a3b8; border-radius: 3px; }
+  .hl_header { background: #fff; border-bottom: 1px solid #e5e7eb; }
+  .hl_header .container-fluid { background: #fff; padding: 10px 18px; }
+  .hl_header .topmenu-nav { background: #fff; padding: 8px 18px; color: #607179; font-size: 13px; }
+  main { flex: 1; display: flex; flex-direction: column; }
+  .body-pad { padding: 24px; }
+  .note { max-width: 620px; color: #475569; font-size: 13px; }
+  code { background: #f1f5f9; padding: 1px 5px; border-radius: 4px; }
+</style>
+<style>
+/* THIS is the line the agency pastes into GHL -> Settings -> Company -> Custom CSS. */
+@import url("http://localhost:3210/theme-css/cmr9o8vze0001x8d5phm2egm2?v=1786985695988");
+</style>
+</head>
+<body class="zGcbvRQMJxqowkasy7Uj">
+  <nav id="sidebar-v2">
+    <img class="agency-logo" src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='34'><rect width='140' height='34' rx='6' fill='%23334155'/><text x='12' y='22' fill='white' font-family='sans-serif' font-size='13'>Agency logo</text></svg>" alt="">
+    <a id="sb_dashboard" meta="dashboard" href="/location/zGcbvRQMJxqowkasy7Uj/dashboard"><i></i><span class="nav-title">Dashboard</span></a>
+    <a id="sb_conversations" meta="conversations" href="/location/zGcbvRQMJxqowkasy7Uj/conversations"><i></i><span class="nav-title">Conversations</span></a>
+    <a id="sb_calendars" meta="calendars" href="/location/zGcbvRQMJxqowkasy7Uj/calendars"><i></i><span class="nav-title">Calendars</span></a>
+    <a id="sb_contacts" meta="contacts" href="/location/zGcbvRQMJxqowkasy7Uj/contacts"><i></i><span class="nav-title">Contacts</span></a>
+    <a id="sb_opportunities" meta="opportunities" href="/location/zGcbvRQMJxqowkasy7Uj/opportunities"><i></i><span class="nav-title">Opportunities</span></a>
+    <a id="sb_payments" meta="payments" href="/location/zGcbvRQMJxqowkasy7Uj/payments"><i></i><span class="nav-title">Payments</span></a>
+    <a id="sb_marketing" meta="marketing" href="/location/zGcbvRQMJxqowkasy7Uj/marketing"><i></i><span class="nav-title">Marketing</span></a>
+    <a id="sb_automation" meta="automation" href="/location/zGcbvRQMJxqowkasy7Uj/automation"><i></i><span class="nav-title">Automation</span></a>
+    <a id="sb_sites" meta="sites" href="/location/zGcbvRQMJxqowkasy7Uj/sites"><i></i><span class="nav-title">Sites</span></a>
+    <a id="sb_memberships" meta="memberships" href="/location/zGcbvRQMJxqowkasy7Uj/memberships"><i></i><span class="nav-title">Memberships</span></a>
+    <a id="sb_reputation" meta="reputation" href="/location/zGcbvRQMJxqowkasy7Uj/reputation"><i></i><span class="nav-title">Reputation</span></a>
+    <a id="sb_reporting" meta="reporting" href="/location/zGcbvRQMJxqowkasy7Uj/reporting"><i></i><span class="nav-title">Reporting</span></a>
+  </nav>
+  <main>
+    <div class="hl_header">
+      <div class="container-fluid">Top bar (icon row)</div>
+      <div class="topmenu-nav">Page title · Tab one · Tab two</div>
+    </div>
+    <div class="body-pad">
+      <h1>Mock sub-account</h1>
+      <p class="note">
+        This page loads the <strong>real</strong> theme stylesheet by <code>@import</code> and the
+        <strong>real</strong> pasted JavaScript, against sub-account
+        <code>zGcbvRQMJxqowkasy7Uj</code> (Cobani).
+        The sidebar markup mimics GHL's — same ids, same <code>meta=</code> attributes, and a flex
+        column — but it is a stand-in: it can show that our CSS does what we intend, and it
+        <em>cannot</em> prove those selectors match live GoHighLevel.
+      </p>
+      <p class="note">Look for: sidebar colour · renamed menu item · hidden item gone ·
+      recoloured icons · the browser tab's title and icon · the support bubble, bottom-right.</p>
+    </div>
+  </main>
+
+<script>
+/*
+ * THE REAL SNIPPET, FETCHED — never a copy.
+ *
+ * This block used to be 639 lines of hand-pasted javascript under the comment "THIS is what
+ * the agency pastes". It was a copy of something generated server-side, so it rotted: by the
+ * time anybody compared, the committed harness was missing the single-poller guard
+ * (state.polling), the POLL_NUDGE fix to `quicken`, and the server-built wait sentence. All
+ * three are documented fixes, so anyone opening this page to "see the widget" was looking at
+ * behaviour that had already been corrected, and any conclusion they drew about polling was
+ * wrong. Exactly the drift the onboarding snippet had, and the same answer: one source.
+ *
+ * TWO local-dev facts make this need a loader rather than a script tag:
+ *  - the snippet is built from APP_PUBLIC_URL, which env.ts requires to be https even
+ *    locally, while the dev server serves plain http — so the scheme is rewritten here, and
+ *    ONLY the scheme;
+ *  - the admin API allows only the dashboard's origin, correctly, so a page served from any
+ *    other port cannot read the snippet at all.
+ *
+ * Both are why this loader usually ENDS in the visible complaint below rather than a widget,
+ * and that is the honest outcome: the stylesheet is what this page exists to show. The real
+ * widget is rendered by scratchpad/shoot-widget.mjs, which fetches the snippet from Node
+ * (no CORS), rewrites only the scheme, and serves the page itself. What matters is that this
+ * file no longer carries a COPY that quietly disagrees with what ships.
+ */
+(function () {
+  var AGENCY = "cmr9o8vze0001x8d5phm2egm2";
+  var API = "http://localhost:3210";
+  function complain(why) {
+    var d = document.createElement("div");
+    d.style.cssText = "position:fixed;left:16px;bottom:16px;max-width:420px;padding:10px 12px;" +
+      "background:#7f1d1d;color:#fff;font:13px/1.45 system-ui;border-radius:8px;z-index:2147483000";
+    d.textContent = "Widget not loaded (" + why + "). This page is showing the STYLESHEET only, " +
+      "which is what it is for. To see the real widget run: node scratchpad/shoot-widget.mjs";
+    document.body.appendChild(d);
+  }
+  if (location.protocol === "file:") return complain("open it over http, not file://");
+  fetch(API + "/admin/api/" + AGENCY + "/embed")
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (!j || !j.jsSnippet) throw new Error("no jsSnippet in the embed response");
+      // Scheme only. Anything else and this would stop being the real paste.
+      var src = j.jsSnippet.split("https://localhost:3210").join(API);
+      var s = document.createElement("script");
+      s.textContent = src;
+      document.body.appendChild(s);
+    })
+    .catch(function (e) { complain(String(e && e.message ? e.message : e)); });
+})();
+</script>
+</body>
+</html>

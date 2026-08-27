@@ -62,8 +62,13 @@ interface RateLimitOptions {
 /**
  * Fixed-window per-IP rate limiter, in-memory. Fine at this scale (a handful of
  * agencies, single Render instance); a multi-instance deploy would want a shared
- * store, but that's premature here. Requires `app.set("trust proxy", true)` so
- * req.ip is the real client IP behind Render/Cloudflare.
+ * store, but that's premature here.
+ *
+ * Requires `app.set("trust proxy", <hop count>)` so req.ip is the real client behind
+ * Render/Cloudflare — a COUNT, never `true`. `true` trusts the whole `X-Forwarded-For`
+ * chain, so any client can prepend an address and get a fresh bucket per request, which
+ * on `/desk/api/login` is unlimited password guessing. `index.ts` uses
+ * `trustProxyHops()`, which defaults to 1 and refuses a value it cannot read.
  */
 export function rateLimit({ windowMs, max, name }: RateLimitOptions) {
   const hits = new Map<string, { count: number; reset: number }>();

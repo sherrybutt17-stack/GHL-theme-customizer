@@ -143,7 +143,15 @@ export class PrismaSessionStorage extends SessionStorage {
     if (location) {
       await prisma.locationInstall.update({
         where: { id: location.id },
-        data: { status: "removed", enabled: false, accessTokenEnc: null, refreshTokenEnc: null },
+        // Reached only when the SDK deletes a LOCATION session, i.e. this sub-account
+        // removed the app itself — not a cascade, so a later re-sync must leave it alone.
+        data: {
+          status: "removed",
+          enabled: false,
+          removedReason: "location-delete",
+          accessTokenEnc: null,
+          refreshTokenEnc: null,
+        },
       });
     }
   }
