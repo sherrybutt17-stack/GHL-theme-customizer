@@ -1,5 +1,7 @@
 import "../services/loadEnv";
 import { execFileSync } from "node:child_process";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import { PrismaClient } from "@prisma/client";
 
 /**
@@ -25,6 +27,50 @@ import { PrismaClient } from "@prisma/client";
  *   - it must carry a GIN index, or every KB search degrades to a sequential scan.
  */
 const SCRATCH_DB = "mosaic_migration_check";
+const MIGRATIONS_DIR = join(__dirname, "..", "..", "prisma", "migrations");
+
+/**
+ * RENDER DEPLOYS FROM GIT, NOT FROM YOUR DISK — so "every migration applies" is only half
+ * the question. The other half is whether the deploy will HAVE them.
+ *
+ * This gate read the folder, applied 27 migrations to an empty database and printed ✓,
+ * while git knew about 26. The missing one added `origin`, `ticketType`, `snoozedUntil`,
+ * `botPaused`, the automation claim columns and `SupportConfig.slaFirstResponseMins`, and
+ * dropped NOT NULL from `accessTokenHash`. Measured by applying only the git-tracked set to
+ * a scratch database: **eleven columns absent** and `accessTokenHash` still NOT NULL.
+ *
+ * Prisma selects every scalar field by default, so that deploy does not degrade — the desk
+ * 500s on any conversation query, the widget cannot open one, and the ticket automations
+ * crash on every pass. Exactly the shape this script was written for ("invisible in
+ * development, because your machine already has the columns"), one layer further out: the
+ * gate itself could not see it, because it was looking at the wrong copy of the repo.
+ *
+ * Both directions are checked. A migration in git but deleted locally is the mirror image:
+ * it would apply on the deploy and never be exercised by the run above.
+ */
+function gitTrackingProblems(): { untracked: string[]; onlyInGit: string[]; skipped: string } | null {
+  let tracked: Set<string>;
+  try {
+    tracked = new Set(
+      execFileSync("git", ["ls-files", "--", MIGRATIONS_DIR], { encoding: "utf8" })
+        .split("\n")
+        .filter(Boolean)
+        .map((f) => f.split("/").slice(-2)[0])
+    );
+  } catch {
+    // Not a git checkout (a tarball, a container). Say so rather than passing silently:
+    // a check that cannot run is not a check that passed.
+    return { untracked: [], onlyInGit: [], skipped: "not a git checkout" };
+  }
+  const onDisk = readdirSync(MIGRATIONS_DIR, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name);
+  return {
+    untracked: onDisk.filter((d) => !tracked.has(d)),
+    onlyInGit: [...tracked].filter((d) => d !== "migrations" && !onDisk.includes(d)),
+    skipped: "",
+  };
+}
 
 function adminUrl(base: string, db: string): string {
   return base.replace(/\/[^/?]+(\?|$)/, `/${db}$1`);
@@ -37,6 +83,13 @@ async function main() {
     // This drops and recreates a database. It must never be aimed at a real one.
     throw new Error("Refusing to run against a hosted database — point DATABASE_URL at localhost.");
   }
+
+  /**
+   * Checked BEFORE the database work: it needs nothing, and there is no sense spending
+   * thirty seconds proving that a migration set applies when the deploy will not receive
+   * it. Reported through the same list at the end so there is one verdict.
+   */
+  const git = gitTrackingProblems()!;
 
   // Uses the Prisma client already in the workspace rather than adding a `pg` dependency
   // just for a dev script.
@@ -72,6 +125,18 @@ async function main() {
   await db.$disconnect();
 
   const checks: [string, boolean, string][] = [
+    [
+      "every migration is committed — the deploy builds from GIT, not from this disk",
+      git.untracked.length === 0,
+      git.skipped
+        ? `skipped (${git.skipped})`
+        : `${git.untracked.join(", ")} — applied here and ABSENT from the deploy, so its columns will not exist`,
+    ],
+    [
+      "  ↳ and nothing in git is missing locally, so the run above covered them all",
+      git.onlyInGit.length === 0,
+      `${git.onlyInGit.join(", ")} — these would apply on the deploy and were never exercised here`,
+    ],
     ["every migration applied", Number(failed.n) === 0, `${failed.n} unfinished`],
     ["migrations recorded", Number(applied.n) > 0, `${applied.n}`],
     ["searchVector is a GENERATED column", generated?.g === "s", generated?.g ?? "missing"],

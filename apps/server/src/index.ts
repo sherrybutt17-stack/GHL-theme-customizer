@@ -3,7 +3,7 @@ import "./services/loadEnv";
 import express, { Express } from "express";
 import { json } from "body-parser";
 import cors from "cors";
-import { validateEnv } from "./services/env";
+import { validateEnv, trustProxyHops } from "./services/env";
 import { prisma } from "./services/prisma";
 import { oauthRouter } from "./routes/oauth";
 import { onboardingRouter } from "./routes/onboarding";
@@ -34,7 +34,7 @@ const app: Express = express();
 // X-Forwarded-For chain, letting a client spoof req.ip and get a fresh rate-limit
 // bucket per request. Default 1 (Render's single TLS proxy); override if more hops
 // (e.g. Cloudflare in front → 2).
-app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS ?? 1));
+app.set("trust proxy", trustProxyHops());
 app.use(securityHeaders);
 app.use(json({ type: "application/json" }));
 
@@ -58,6 +58,15 @@ app.use("/theme-bundle", rateLimit({ windowMs: 60_000, max: 300, name: "theme-bu
 // login is a credential-guessing target, so it gets its own much tighter bucket
 // mounted first (Express runs both; the stricter one wins for that path).
 app.use("/desk/api/login", rateLimit({ windowMs: 60_000, max: 10, name: "desk-login" }));
+// Changing a password submits the CURRENT one, so it is a credential-guessing target too —
+// it just needs a live session first. That is not a high bar in the case that matters: an
+// unattended signed-in desk machine, where guessing the current password is the difference
+// between reading today's tickets and holding the account permanently. It sat on the
+// generous 600/min desk budget purely because nothing could reach it — no screen called
+// the route at all until the dialog was built, which is exactly when the limit starts
+// mattering. A separate instance from the login bucket on purpose: a busy office behind
+// one NAT must not spend its sign-ins on somebody rotating a password.
+app.use("/desk/api/password", rateLimit({ windowMs: 60_000, max: 10, name: "desk-password" }));
 app.use("/desk/api", rateLimit({ windowMs: 60_000, max: 600, name: "desk-api" }));
 // The widget is public and unauthenticated, and each message costs a model call - so
 // this limit is about cost as much as abuse. Generous enough for a real conversation,

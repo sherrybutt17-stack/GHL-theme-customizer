@@ -20,9 +20,14 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "seed-kb": "tsx src/scripts/seedKb.ts",
     "poll-feeds": "tsx src/scripts/pollFeeds.ts",
+    "ticket-automations": "tsx src/scripts/runTicketAutomations.ts",
+    "review-kb": "tsx src/scripts/reviewKb.ts",
+    "seed-canned-replies": "tsx src/scripts/seedCannedReplies.ts",
     "verify-migrations": "tsx src/scripts/verifyMigrations.ts",
+    "verify-deployable": "tsx src/scripts/verifyDeployable.ts",
     "readiness": "tsx src/scripts/readiness.ts",
-    "smoke": "tsx src/scripts/smoke.ts"
+    "smoke": "tsx src/scripts/smoke.ts",
+    "repair-kb-chrome": "tsx src/scripts/repairCrawledChrome.ts"
   },
   "dependencies": {
     "@gohighlevel/api-client": "^3.0.0",

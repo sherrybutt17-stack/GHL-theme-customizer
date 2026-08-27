@@ -171,6 +171,70 @@ export function SupportActivity({ agencyId }: { agencyId: string }) {
         </div>
       )}
 
+      {/*
+        What needed a person, by kind. Shown BELOW "what they asked about" because it is
+        the smaller number and the sharper one: those are the conversations that cost a
+        human. Hidden entirely when nothing has been handed off, rather than rendering an
+        empty chart that reads as "no data" when it means "nothing went wrong".
+      */}
+      {/*
+        * Rendered whenever anything reached a person — NOT only when something has been
+        * categorised. Requiring `types.length > 0` hid the whole tile in the state every
+        * install starts in: types are set by hand on the desk, so a new agency has
+        * hand-offs and no categories, and the number this file calls their most actionable
+        * saw them nothing at all. Worse, it hid its own reason — an empty tile at least
+        * asks a question, an absent one does not exist.
+        *
+        * Same principle as reporting `untyped` beside the breakdown rather than quietly
+        * describing a subset: silence about what is missing is the one answer that misleads.
+        */}
+      {stats.handoffTypes.total > 0 && (
+        <div className="field">
+          <label>What needed a person</label>
+          {/* No empty container when there is nothing to list — the sentence below carries
+              the whole message in that case. */}
+          {stats.handoffTypes.types.length > 0 && (
+          <div className="topic-list">
+            {stats.handoffTypes.types.map((t) => (
+              <div className="topic-row" key={t.key}>
+                <span className="topic-label">{t.label}</span>
+                <span
+                  className="topic-bar handoff"
+                  style={{ width: `${(t.count / stats.handoffTypes.types[0].count) * 100}%` }}
+                />
+                <span className="topic-count">{t.count}</span>
+              </div>
+            ))}
+          </div>
+          )}
+          <p className="field-hint">
+            {stats.handoffTypes.types.length === 0 ? (
+              <>
+                {stats.handoffTypes.total} conversation
+                {stats.handoffTypes.total === 1 ? "" : "s"} needed a person, and none have been
+                categorised yet — so there is no breakdown to show. This is the one number that
+                doesn't depend on the bot having found an article, which is exactly why it's
+                worth filling in.
+              </>
+            ) : stats.handoffTypes.untyped > 0 ? (
+              <>
+                Of {stats.handoffTypes.total} conversation
+                {stats.handoffTypes.total === 1 ? "" : "s"} that reached a person,{" "}
+                {stats.handoffTypes.untyped} {stats.handoffTypes.untyped === 1 ? "hasn't" : "haven't"} been
+                categorised yet — so this describes the rest.
+              </>
+            ) : (
+              <>
+                All {stats.handoffTypes.total} conversation
+                {stats.handoffTypes.total === 1 ? "" : "s"} that reached a person. Unlike the list
+                above, this doesn't depend on the bot having found an article — which is exactly
+                why it's the one that shows what's missing.
+              </>
+            )}
+          </p>
+        </div>
+      )}
+
       {stats.byLocation.length > 1 && (
         <div className="field">
           <label>By sub-account</label>

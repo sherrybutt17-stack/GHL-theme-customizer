@@ -5,6 +5,7 @@ import StaffAdmin from "./StaffAdmin";
 import Inbox from "./Inbox";
 import Ticket from "./Ticket";
 import QueueBoard from "./QueueBoard";
+import ChangePassword from "./ChangePassword";
 
 export default function App() {
   const [user, setUser] = useState<DeskUser | null>(null);
@@ -19,6 +20,17 @@ export default function App() {
   const [checking, setChecking] = useState(true);
   // Set when the server stops accepting our session while the desk is on screen.
   const [sessionEnded, setSessionEnded] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
+  /**
+   * Suspend the "your session ended" handler while the password dialog is open.
+   *
+   * A WRONG CURRENT PASSWORD comes back 401, and the central handler reads any 401 as the
+   * session dying — so getting your own password wrong would throw the re-login overlay
+   * over the top of the form, which is both false and unrecoverable-looking. A ref, not
+   * state, because the handler is registered once and must not close over a stale value:
+   * the same reason `hasSignedIn` is one.
+   */
+  const suppressUnauthorized = useRef(false);
   // Whether we have EVER been signed in this page load. /me 401s on a first visit, which
   // is the ordinary path and not a session ending; a ref because the handler is
   // registered once and must not close over a stale `user`.
@@ -26,6 +38,7 @@ export default function App() {
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
+      if (suppressUnauthorized.current) return;
       if (hasSignedIn.current) setSessionEnded(true);
     });
     return () => setUnauthorizedHandler(null);
@@ -79,6 +92,21 @@ export default function App() {
     if (user && next.id !== user.id) setSelectedId(null);
     setUser(next);
     setSessionEnded(false);
+    /**
+     * Tell everything underneath to fetch again.
+     *
+     * The desk stays mounted behind the overlay and goes on polling with a cookie that no
+     * longer names anything, so by the time somebody signs back in the lists have been
+     * emptied by 401s — and nothing in the sign-in path asked them to try again. Measured:
+     * the inbox was BLANK for about twelve seconds afterwards, until the next 15s tick.
+     *
+     * An empty inbox is not a neutral thing to show an agent. It is indistinguishable from
+     * "nothing is waiting", which is the same trap the away banner exists for: a quiet desk
+     * that looks like a quiet day. And the whole point of re-authenticating over the live
+     * desk is that signing back in restores what was on screen — restoring the compose box
+     * and not the work queue keeps half of that promise.
+     */
+    setRefreshKey((k) => k + 1);
   }
 
   if (checking) {
@@ -101,6 +129,31 @@ export default function App() {
           />
         </div>
       )}
+      {/**
+       * Away is a decision that goes on producing an effect long after it was made.
+       *
+       * `POST /desk/api/queue/next` already 409s for exactly this reason, and the
+       * availability toggle already says what away means — but both of those are things
+       * you have to go and look at. Once it is set, nothing on screen says so, and the
+       * symptom is a quiet desk that looks like a quiet day. This is deliberately a
+       * standing banner rather than a toast: the state persists, so the notice must too.
+       */}
+      {user.availability === "away" && (
+        <div className="away-banner" role="status">
+          <strong>You're set to away.</strong> New tickets won't be routed to you — the
+          ones you already hold are still yours.
+        </div>
+      )}
+
+      {changingPassword && (
+        <ChangePassword
+          onClose={() => {
+            setChangingPassword(false);
+            suppressUnauthorized.current = false;
+          }}
+        />
+      )}
+
       <header className="topbar">
         <div className="topbar-left">
           <strong>Mosaic</strong> <span className="muted">Support Desk</span>
@@ -125,6 +178,14 @@ export default function App() {
           <span className={`pill${user.role === "mosaic_admin" ? " admin" : ""}`}>
             {user.role === "mosaic_admin" ? "Admin" : "Agent"}
           </span>
+          <button
+            onClick={() => {
+              suppressUnauthorized.current = true;
+              setChangingPassword(true);
+            }}
+          >
+            Password
+          </button>
           <button onClick={() => void signOut()}>Sign out</button>
         </div>
       </header>
@@ -148,7 +209,7 @@ export default function App() {
             }}
           />
           {selectedId ? (
-            <Ticket id={selectedId} onChanged={() => setRefreshKey((k) => k + 1)} />
+            <Ticket id={selectedId} reloadKey={refreshKey} onChanged={() => setRefreshKey((k) => k + 1)} />
           ) : (
             <section className="ticket empty">
               <p className="muted">Take the next ticket, or pick one from the queue.</p>
@@ -159,7 +220,7 @@ export default function App() {
         <main className="desk">
           <Inbox selectedId={selectedId} onSelect={setSelectedId} refreshKey={refreshKey} />
           {selectedId ? (
-            <Ticket id={selectedId} onChanged={() => setRefreshKey((k) => k + 1)} />
+            <Ticket id={selectedId} reloadKey={refreshKey} onChanged={() => setRefreshKey((k) => k + 1)} />
           ) : (
             <section className="ticket empty">
               <p className="muted">Pick a conversation to work on.</p>

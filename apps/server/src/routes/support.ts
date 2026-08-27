@@ -5,12 +5,15 @@ import { answerQuestion, isSupportEnabled, BotMessage } from "../services/suppor
 import { resolveBrandMap } from "../services/brandTerms";
 import { describeError } from "../services/security";
 import { notifyDeskOfEscalation } from "../services/email";
+import { visibleOutsideMosaic } from "../services/transcriptVisibility";
 import { generateSupportWidgetScript } from "../services/supportWidgetScript";
+import { connectHint } from "../services/businessHours";
 import {
   agentSlots,
   capacitySnapshot,
   enterQueuePatch,
   estimateWaitSeconds,
+  waitSentence,
   firstResponseStats,
   queuePosition,
 } from "../services/deskQueue";
@@ -129,15 +132,10 @@ supportRouter.post(
 
 /** Load a conversation by its bearer token, or reply with an error and return null. */
 /**
- * The only roles a CLIENT may ever be shown.
- *
- * `system` is deliberately absent and that is the whole point: internal notes and
- * routing records share the Message table with the transcript, and they carry Mosaic
- * staff names ("[transferred from Ada to Bo]") and our own workflow. An allowlist, not
- * a blocklist — a role added later is invisible to the client until someone decides it
- * should not be.
+ * The only roles a CLIENT may ever be shown — and the definition lives in
+ * `transcriptVisibility.ts` rather than here, because there is a SECOND door out of
+ * Mosaic (the tier-3 hand-off email to the agency) which had no filter at all.
  */
-const CLIENT_VISIBLE_ROLES = new Set<string>(["user", "bot", "agent"]);
 
 async function requireConversation(req: Request, res: Response, conversationId: string) {
   const token = (req.headers["x-mosaic-conversation"] as string | undefined) ?? "";
@@ -175,6 +173,32 @@ supportRouter.post(
     if (!text) return res.status(400).json({ error: "Message is empty" });
 
     await prisma.message.create({ data: { conversationId: conversation.id, role: "user", body: text } });
+
+    /**
+     * A HUMAN HAS THIS ONE — the bot must not answer over the top of them.
+     *
+     * Until this check existed, `answerQuestion` ran unconditionally: an agent could
+     * claim a ticket, reply, and have the bot answer the client's very next message on
+     * top of them. It could contradict the agent, or cheerfully re-offer a hand-off for
+     * a conversation a person was already handling. Everything stored correctly and the
+     * client experienced something nobody intended — the same shape as the desk being
+     * write-only, one layer along.
+     *
+     * The client is told a person has it rather than being met with silence, and the
+     * message is still stored and still updates `lastMessageAt`, so it reaches the desk
+     * and the assignee's reminders keep running against it.
+     */
+    if (conversation.botPaused) {
+      await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { lastMessageAt: new Date() },
+      });
+      return res.json({
+        reply: null,
+        canEscalate: false,
+        handedToHuman: true,
+      });
+    }
 
     const history: BotMessage[] = conversation.messages
       .filter((m) => m.role === "user" || m.role === "bot")
@@ -365,7 +389,7 @@ supportRouter.get(
     // what stops a poller that lost its cursor from replaying the conversation on top
     // of what the client is already reading.
     const replay = req.query.replay === "1";
-    const visible = conversation.messages.filter((m) => CLIENT_VISIBLE_ROLES.has(m.role));
+    const visible = visibleOutsideMosaic(conversation.messages);
     const fresh = replay
       ? visible
       : cursor
@@ -397,21 +421,56 @@ supportRouter.get(
       // widget must KEEP polling in the second case — an agent replying is exactly what
       // happens after a ticket leaves the queue — so this reports "not waiting" without
       // ending the conversation.
-      return res.json({ ...base, waiting: false, position: null, estimatedWaitSeconds: null });
+      return res.json({
+        ...base,
+        waiting: false,
+        position: null,
+        estimatedWaitSeconds: null,
+        estimatedWaitText: null,
+      });
     }
 
-    const [agents, stats] = await Promise.all([agentSlots(), firstResponseStats(7)]);
+    const [agents, stats, supportConfig] = await Promise.all([
+      agentSlots(),
+      firstResponseStats(7),
+      prisma.supportConfig.findUnique({
+        where: { agencyInstallId: ctx.agencyInstallId },
+        select: { businessHours: true },
+      }),
+    ]);
     const capacity = capacitySnapshot(agents);
+    const estimatedWaitSeconds = estimateWaitSeconds({
+      position,
+      medianSeconds: stats.medianSeconds,
+      sampleCount: stats.count,
+      free: capacity.free,
+      capacity: capacity.capacity,
+    });
     res.json({
       ...base,
       waiting: true,
       position,
-      estimatedWaitSeconds: estimateWaitSeconds({
-        position,
-        medianSeconds: stats.medianSeconds,
-        sampleCount: stats.count,
-        free: capacity.free,
+      estimatedWaitSeconds,
+      /**
+       * The sentence itself, not just the number. The widget used to do its own
+       * seconds-to-minutes arithmetic, which made a third definition of one wording and
+       * left the desk's "what the client is told" line showing something the client is
+       * not told. Built here so there is one.
+       */
+      estimatedWaitText: waitSentence(estimatedWaitSeconds),
+      /**
+       * What to say when there is no estimate — which is most of the time, since an
+       * estimate needs five measured responses AND somebody on the desk. A client who
+       * escalated at 9pm used to be shown "You're number 1 in line" and nothing else,
+       * with no way to tell whether that meant minutes or Monday. This never predicts a
+       * duration; it states a fact (the desk is staffed, or when it reopens) or stays
+       * null. It carries no agent count, names and no staffing detail, for the same
+       * reason the config endpoint withholds forbiddenTerms.
+       */
+      connectHint: connectHint({
+        estimatedWaitSeconds,
         capacity: capacity.capacity,
+        businessHours: supportConfig?.businessHours ?? null,
       }),
     });
   }

@@ -132,12 +132,24 @@ function raw(
   // /admin/api/:agencyInstallId/* route is reachable with only the agency id, which is
   // NOT secret - it is in the public @import line. env.ts refuses to boot without it, so
   // this verifies from outside that the running build is the one that refuses.
+  /**
+   * A FABRICATED id is a valid probe, and it did not used to be. `requireAgency` looked the
+   * agency up before checking the token, so a correctly protected deploy answered 404 here
+   * and this gate reported the most expensive setting in the product as broken whenever
+   * `--agency` was omitted — which is the documented default invocation. The token is now
+   * verified first, so 401 is the answer whether or not the id exists.
+   *
+   * That also makes a 404 MEAN something: it can now only come from a server that skipped
+   * the token check, i.e. one running with DASHBOARD_AUTH_ENABLED off.
+   */
   const probeAgency = AGENCY ?? "agency_smoke_probe";
   const unauth = await raw(`${BASE}/admin/api/${probeAgency}/locations`);
   check(
     "an unauthenticated admin-API call is refused",
     unauth.status === 401 || unauth.status === 403,
-    `got ${unauth.status}: ${unauth.body.slice(0, 160)}`
+    unauth.status === 404
+      ? `got 404 — the agency lookup ran WITHOUT a token being checked, so DASHBOARD_AUTH_ENABLED is off and every /admin/api/:agencyInstallId/* route is reachable with only the agency id, which is public`
+      : `got ${unauth.status}: ${unauth.body.slice(0, 160)}`
   );
 
   console.log("\n== the stylesheet keeps its ETag ==");

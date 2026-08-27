@@ -150,8 +150,16 @@ export function SupportKnowledge({
   }
 
   async function patchFeed(id: string, patch: { enabled?: boolean; autoPublish?: boolean }) {
-    // Optimistic: these are toggles, and a round trip before the switch moves feels broken.
-    setFeeds((f) => f.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+    /**
+     * Optimistic: these are toggles, and a round trip before the switch moves feels broken.
+     *
+     * Re-enabling clears the error and the counter SERVER-SIDE ("the publisher is back",
+     * so the feed gets its full allowance again). Moving only `enabled` locally left the
+     * row still reporting a fault we had just forgiven — "Failed 10 times in a row, so
+     * we've stopped checking it" beside a feed that is running. Mirror the whole change.
+     */
+    const cleared = patch.enabled === true ? { lastError: null, consecutiveErrors: 0, gaveUp: false } : {};
+    setFeeds((f) => f.map((x) => (x.id === id ? { ...x, ...patch, ...cleared } : x)));
     try {
       await updateKbFeed(agencyId, id, patch);
     } catch (e) {
@@ -387,7 +395,10 @@ export function SupportKnowledge({
                 <div className="kb-row-main">
                   <div className="kb-row-title">
                     {f.title ?? f.url}
-                    {!f.enabled && <span className="kb-badge">paused</span>}
+                    {/* "Paused" is something THEY did. Saying it over a feed we abandoned
+                        claims an action they never took, and hides the one fact that
+                        matters: nothing will happen until somebody clicks. */}
+                    {!f.enabled && <span className="kb-badge">{f.gaveUp ? "stopped" : "paused"}</span>}
                     {f.autoPublish && <span className="kb-badge">publishes automatically</span>}
                   </div>
                   <div className="kb-row-body">{f.url}</div>
@@ -396,7 +407,10 @@ export function SupportKnowledge({
                     // looks exactly like a publisher who stopped writing.
                     <div className="kb-row-warn">
                       Couldn't read this feed ({f.lastError}). Failed {f.consecutiveErrors ?? 1} time
-                      {(f.consecutiveErrors ?? 1) === 1 ? "" : "s"} in a row.
+                      {(f.consecutiveErrors ?? 1) === 1 ? "" : "s"} in a row
+                      {f.gaveUp
+                        ? ", so we've stopped checking it. Fix the address at your end, then use Try again."
+                        : "."}
                     </div>
                   ) : (
                     <div className="field-hint" style={{ margin: "4px 0 0" }}>
@@ -419,7 +433,10 @@ export function SupportKnowledge({
                     {f.autoPublish ? "Review first" : "Publish automatically"}
                   </button>
                   <button className="btn btn-sm" onClick={() => patchFeed(f.id, { enabled: !f.enabled })}>
-                    {f.enabled ? "Pause" : "Resume"}
+                    {/* Resuming a feed we gave up on is a RETRY: the route clears the error
+                        and the counter, so it gets its full allowance again rather than one
+                        poll before it re-disables. The label should say which it is. */}
+                    {f.enabled ? "Pause" : f.gaveUp ? "Try again" : "Resume"}
                   </button>
                   {confirmDelete === f.id ? (
                     <button className="btn btn-sm" style={{ color: "var(--danger)" }} onClick={() => removeFeed(f.id)}>

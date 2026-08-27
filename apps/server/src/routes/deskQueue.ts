@@ -12,7 +12,9 @@ import {
   planDistribution,
   QUEUE_ORDER,
   queueWhere,
+  waitSentence,
 } from "../services/deskQueue";
+import { slaStatusFor, serialiseSla } from "../services/slaStatus";
 
 /**
  * Routing: pick-up order, capacity, transfer, tiers, and the numbers a manager runs the
@@ -41,6 +43,12 @@ deskQueueRouter.get("/desk/api/queue", requireDeskAuth, async (_req: Request, re
         subject: true,
         queuedAt: true,
         lastMessageAt: true,
+        agencyInstallId: true,
+        // The first-response clock stops at the first human reply and never restarts, so
+        // a ticket that was answered once and later re-queued has no target running. Read
+        // it rather than assuming null: everything here is unassigned, which is not the
+        // same as unanswered.
+        firstAgentReplyAt: true,
         agencyInstall: { select: { companyName: true } },
         locationInstall: { select: { ghlLocationId: true, locationName: true } },
       },
@@ -50,6 +58,22 @@ deskQueueRouter.get("/desk/api/queue", requireDeskAuth, async (_req: Request, re
 
   const capacity = capacitySnapshot(agents);
   const now = Date.now();
+
+  /**
+   * The same lateness the inbox shows and the automations act on. The board's own
+   * `waitingSeconds` is wall clock and stays — a shift lead asking "how long has that
+   * person been sitting there" wants real elapsed time — but whether it is LATE is a
+   * question only the agency's target and hours can answer.
+   */
+  const sla = await slaStatusFor(
+    waiting.map((c) => ({
+      id: c.id,
+      agencyInstallId: c.agencyInstallId,
+      priority: c.priority,
+      queuedAt: c.queuedAt,
+      firstAgentReplyAt: c.firstAgentReplyAt,
+    }))
+  );
 
   const rows = await Promise.all(
     waiting.map(async (c, i) => {
@@ -70,10 +94,18 @@ deskQueueRouter.get("/desk/api/queue", requireDeskAuth, async (_req: Request, re
         agencyName: c.agencyInstall.companyName,
         locationName: c.locationInstall.locationName,
         waitingSeconds: Math.max(0, Math.round((now - queuedAt.getTime()) / 1000)),
+        sla: serialiseSla(sla.get(c.id) ?? null),
       };
     })
   );
 
+  const estimatedWait = estimateWaitSeconds({
+    position: rows.length + 1,
+    medianSeconds: stats.medianSeconds,
+    sampleCount: stats.count,
+    free: capacity.free,
+    capacity: capacity.capacity,
+  });
   res.json({
     queue: rows,
     depth: rows.length,
@@ -90,13 +122,12 @@ deskQueueRouter.get("/desk/api/queue", requireDeskAuth, async (_req: Request, re
     })),
     // What a client at the back of the queue would be told right now — shown to staff
     // so the promise the widget is making is never a surprise to the desk.
-    estimatedWaitSeconds: estimateWaitSeconds({
-      position: rows.length + 1,
-      medianSeconds: stats.medianSeconds,
-      sampleCount: stats.count,
-      free: capacity.free,
-      capacity: capacity.capacity,
-    }),
+    estimatedWaitSeconds: estimatedWait,
+    // The literal sentence, so the desk QUOTES the promise instead of re-deriving it.
+    // Re-deriving is what it used to do, with a compact desk formatter (`1h 7m`) against
+    // the widget's own arithmetic (`about 67 min`) - two answers to the one question this
+    // field exists to answer.
+    estimatedWaitText: waitSentence(estimatedWait),
   });
 });
 
@@ -189,6 +220,25 @@ deskQueueRouter.post("/desk/api/me/availability", requireDeskAuth, async (req: R
   res.json({ availability: updated.availability });
 });
 
+/**
+ * A whole number, or null — and an EMPTY value is null, not zero.
+ *
+ * `Number("")`, `Number(" ")` and `Number(null)` are all 0, so a field read straight
+ * through `Number()` reads a cleared text box as a deliberate zero. That matters here
+ * more than anywhere: a `maxConcurrent` of 0 is a legitimate value meaning "route this
+ * person nothing", so the server cannot tell an emptied box from somebody choosing it.
+ * Measured on the staff screen before this existed: clearing the limit box and clicking
+ * away took a live agent out of rotation, silently, with no error and a blank cell.
+ */
+function wholeNumber(raw: unknown): number | null {
+  if (typeof raw === "number") return Number.isInteger(raw) ? raw : null;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const n = Number(trimmed);
+  return Number.isInteger(n) ? n : null;
+}
+
 /** A manager sets someone's tier and concurrent limit. */
 deskQueueRouter.patch(
   "/desk/api/users/:id/routing",
@@ -197,19 +247,19 @@ deskQueueRouter.patch(
   async (req: Request, res: Response) => {
     const data: { tier?: number; maxConcurrent?: number } = {};
     if (req.body?.tier !== undefined) {
-      const tier = Number(req.body.tier);
-      if (!Number.isInteger(tier) || tier < 1 || tier > MAX_TIER) {
-        return res.status(400).json({ error: `tier must be 1–${MAX_TIER}` });
+      const tier = wholeNumber(req.body.tier);
+      if (tier === null || tier < 1 || tier > MAX_TIER) {
+        return res.status(400).json({ error: `Tier must be a whole number from 1 to ${MAX_TIER}.` });
       }
       data.tier = tier;
     }
     if (req.body?.maxConcurrent !== undefined) {
-      const max = Number(req.body.maxConcurrent);
+      const max = wholeNumber(req.body.maxConcurrent);
       // A limit of 0 is a way to take someone out of rotation without marking them
       // away, so it is allowed; the upper bound just stops a typo parking the entire
       // queue on one person.
-      if (!Number.isInteger(max) || max < 0 || max > 50) {
-        return res.status(400).json({ error: "maxConcurrent must be 0–50" });
+      if (max === null || max < 0 || max > 50) {
+        return res.status(400).json({ error: "The limit must be a whole number from 0 to 50." });
       }
       data.maxConcurrent = max;
     }

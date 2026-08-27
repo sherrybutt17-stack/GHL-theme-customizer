@@ -40,8 +40,10 @@ export interface Readiness {
 export async function checkReadiness(): Promise<Readiness> {
   const findings: Finding[] = [];
 
-  const [activeAgencies, activeLocations, supportAgencies, widgetLocations, kbReady, deskUsers] =
-    await Promise.all([
+  const [
+    activeAgencies, activeLocations, supportAgencies, widgetLocations, kbReady, deskUsers,
+    feeds, sharedPending,
+  ] = await Promise.all([
       prisma.agencyInstall.findMany({ where: { status: "active" }, select: { id: true, companyName: true } }),
       // Grouped per agency for the same reason as widgetLocations below: a global count
       // is satisfied by ONE agency having sub-accounts, which is exactly how an agency
@@ -69,7 +71,28 @@ export async function checkReadiness(): Promise<Readiness> {
         _count: true,
       }),
       prisma.kbArticle.count({ where: { status: "ready" } }),
-      prisma.deskUser.findMany({ where: { status: "active" }, select: { tier: true } }),
+      prisma.deskUser.findMany({ where: { status: "active" }, select: { tier: true, email: true } }),
+      /**
+       * Feeds are the only thing keeping the corpus current, and every way they fail is
+       * silent by construction: polling is an external script, so nothing in the request
+       * path ever notices it stopped.
+       *
+       * A SHARED feed is the sharp case. An agency's own feed at least surfaces its error
+       * in their "Your content" tab; a shared one belongs to no agency, so there is no
+       * dashboard anywhere that shows it. Exactly the gap that made the shared review
+       * queue write-only — shared content has no owner, so no per-tenant screen covers it.
+       */
+      prisma.kbFeed.findMany({
+        select: {
+          id: true, url: true, enabled: true, autoPublish: true, createdAt: true,
+          lastPolledAt: true, lastError: true, consecutiveErrors: true, agencyInstallId: true,
+        },
+      }),
+      prisma.kbArticle.groupBy({
+        by: ["feedId"],
+        where: { status: "needs_review", agencyInstallId: null },
+        _count: true,
+      }),
     ]);
   const agenciesWithWidget = new Set(widgetLocations.map((g) => g.agencyInstallId));
 
@@ -98,6 +121,75 @@ export async function checkReadiness(): Promise<Readiness> {
           .join(", ")}`,
         why: "The stylesheet is generated per sub-account, so their theme is empty — the agency pastes the @import and nothing whatsoever changes.",
         fix: "npm run sync-locations --workspace apps/server",
+      });
+    }
+  }
+
+  // --- Feeds: the corpus goes stale silently, and staleness has no error path ---
+  //
+  // Polling is an external script by design (the free instance sleeps, and two instances
+  // would race the same upserts). The cost of that decision is that NOTHING in the
+  // request path can notice it stopped: the bot keeps answering, confidently, from
+  // whatever it learned last. A wrong answer delivered fluently is worse than a hand-off.
+  if (feeds.length > 0) {
+    const DAY = 86_400_000;
+    const describe = (f: (typeof feeds)[number]) => (f.agencyInstallId ? f.url : `${f.url} (shared)`);
+
+    // A feed added an hour ago has legitimately not polled yet; one added last week has
+    // not been scheduled at all. Without the age window this trips the moment anyone
+    // adds a feed, and a check that cries wolf on correct behaviour gets ignored.
+    const neverPolled = feeds.filter(
+      (f) => f.enabled && !f.lastPolledAt && Date.now() - f.createdAt.getTime() > DAY
+    );
+    if (neverPolled.length > 0) {
+      add({
+        id: "feed-never-polled",
+        severity: "warning",
+        what: `${neverPolled.length} feed(s) have never been polled: ${neverPolled.map(describe).join(", ")}.`,
+        why: "Somebody configured a feed and reasonably believes the corpus is updating itself. It is not — polling is an external script, so a feed nobody schedules is a setting that looks live and does nothing.",
+        fix: "Schedule `npm run poll-feeds --workspace @ghl-theme-builder/server` (hourly is plenty), or run it by hand to confirm the feed works.",
+      });
+    }
+
+    // The scheduler dying looks exactly like a publisher who stopped writing.
+    const stale = feeds.filter(
+      (f) => f.enabled && f.lastPolledAt && Date.now() - f.lastPolledAt.getTime() > 7 * DAY
+    );
+    if (stale.length > 0) {
+      add({
+        id: "feed-stale",
+        severity: "warning",
+        what: `${stale.length} feed(s) have not been polled in over a week: ${stale.map(describe).join(", ")}.`,
+        why: "The scheduler has stopped, or was never carried over to this environment. Nothing errors: the bot keeps answering from a corpus that is quietly ageing, which is indistinguishable from a publisher who went quiet.",
+        fix: "Check whatever calls `poll-feeds` is still running against this deployment.",
+      });
+    }
+
+    // Auto-disabled after 10 consecutive failures. An AGENCY's feed at least shows its
+    // error on their own "Your content" tab; a SHARED feed belongs to no agency, so no
+    // screen in the product displays it. This is the only place it can be seen.
+    const dead = feeds.filter((f) => !f.enabled);
+    if (dead.length > 0) {
+      const shared = dead.filter((f) => !f.agencyInstallId).length;
+      add({
+        id: "feed-disabled",
+        severity: "warning",
+        what: `${dead.length} feed(s) are disabled after repeated failures${shared ? `, ${shared} of them shared` : ""}: ${dead.map((f) => `${describe(f)} — ${f.lastError ?? "no error recorded"}`).join("; ")}.`,
+        why: "Disabled rather than deleted, so the URL is recoverable — but a shared feed has no agency dashboard to surface its error, so nothing else in the product will ever mention it again.",
+        fix: "Fix or replace the URL, then re-enable the feed. If the publisher is genuinely gone, delete it so this stops reporting.",
+      });
+    }
+
+    // Items that arrived, passed every gate, and are waiting on a human who does not
+    // know they exist. The feed reports success the whole time.
+    const pending = sharedPending.reduce((n, g) => n + (g.feedId ? g._count : 0), 0);
+    if (pending > 0) {
+      add({
+        id: "feed-review-backlog",
+        severity: "warning",
+        what: `${pending} shared feed article(s) are waiting for review.`,
+        why: "They are not retrievable, so the corpus is not actually growing. The feed reports success on every poll and nothing else mentions the backlog — shared content has no agency dashboard to appear on.",
+        fix: "npm run review-kb --workspace @ghl-theme-builder/server",
       });
     }
   }
@@ -168,6 +260,33 @@ export async function checkReadiness(): Promise<Readiness> {
     }
 
     /**
+     * A LIVE desk account on a reserved test domain is a harness fixture that outlived its
+     * run, and every one of them can read every agency's support conversations.
+     *
+     * The suites create these with a password that is a constant in the repository, and
+     * their teardown is armed on SIGINT/SIGTERM — which a SIGKILL (a CI timeout, a killed
+     * terminal) does not honour. Measured 2026-08-26 on this database: two accounts left
+     * `active` by a run the harness timed out and killed at 120 seconds. Per-run stamps
+     * make such leftovers inert to the SUITES; they do nothing about the accounts being
+     * usable, and nothing else in the product will ever mention them again.
+     *
+     * `.test` is RESERVED by RFC 6761 — the same argument `env.ts` makes for `.localhost` —
+     * so this is a rule rather than a guess: nobody creates a real account there.
+     */
+    const fixtureAccounts = deskUsers.filter((u) => /\.(test|invalid|example)$/i.test(u.email.split("@")[1] ?? ""));
+    if (fixtureAccounts.length > 0) {
+      add({
+        id: "harness-desk-accounts",
+        severity: "warning",
+        what: `${fixtureAccounts.length} active desk account(s) are on a reserved test domain: ${fixtureAccounts
+          .map((u) => u.email)
+          .join(", ")}.`,
+        why: "These are test fixtures a suite failed to clean up, and their passwords are constants in the repository. Every desk account can read every agency's support conversations, and nothing else in the product will ever mention them.",
+        fix: "Delete them, or disable them if one is a deliberate local login.",
+      });
+    }
+
+    /**
      * A ticket assigned to a disabled account is held by somebody who cannot sign in.
      * `releaseTicketsFrom` now returns them on disable, but the state is still reachable
      * without that route — a psql session, or any row written before it existed — and it
@@ -197,6 +316,61 @@ export async function checkReadiness(): Promise<Readiness> {
         what: "Support is on but no email provider is configured.",
         why: "A supported state, not a fault: escalations are recorded before any send, so the queue is the source of truth. But nobody is alerted, so the desk must be watched.",
         fix: "Set RESEND_API_KEY, EMAIL_FROM (needs SPF/DKIM) and DESK_NOTIFY_EMAIL — or accept it and watch the queue.",
+      });
+    }
+
+    /**
+     * Is anything actually RUNNING the ticket automations?
+     *
+     * This check is self-validating rather than a configuration read, which is the only
+     * version worth having: the scheduler lives in GitHub Actions, outside this
+     * deployment entirely, so nothing in the request path can observe whether it fired.
+     * What we CAN observe is its work not being done — a conversation well past any
+     * plausible response target whose `slaBreachedAt` is still null could not exist if a
+     * pass had run.
+     *
+     * The window is deliberately generous (a full day against a ten-minute cadence). The
+     * job runs on a free scheduler that delays under load, and a readiness blocker that
+     * fires because Actions was twenty minutes late is one people learn to ignore — at
+     * which point it is worse than absent.
+     */
+    const AUTOMATION_GRACE_HOURS = 24;
+    const unsweptSince = new Date(Date.now() - AUTOMATION_GRACE_HOURS * 3_600_000);
+    const unswept = await prisma.conversation.count({
+      where: {
+        status: "escalated",
+        firstAgentReplyAt: null,
+        slaBreachedAt: null,
+        queuedAt: { not: null, lte: unsweptSince },
+      },
+    });
+    if (unswept > 0) {
+      add({
+        id: "automations-never-run",
+        severity: "blocker",
+        what: `${unswept} conversation(s) have been waiting over ${AUTOMATION_GRACE_HOURS}h with no response-target check recorded.`,
+        why: "Nothing is running the ticket automations, so no unclaimed ticket is ever nudged, no missed response target escalates, no snooze comes back and no idle chat is closed. The desk looks the same either way — the queue still lists everything — which is exactly why this is invisible until a client complains.",
+        fix: "Add the DATABASE_URL secret in GitHub → Settings → Secrets → Actions so .github/workflows/ticket-automations.yml can run, or run `npm run ticket-automations --workspace @ghl-theme-builder/server` on a schedule of your own.",
+      });
+    }
+
+    /**
+     * Desk-raised tickets with nobody to reach.
+     *
+     * A warning rather than a blocker: the ticket is still worked, and the transcript is
+     * still the record. What is lost is every follow-up — there is no address, so any
+     * notification about it is silently a no-op.
+     */
+    const noContact = await prisma.conversation.count({
+      where: { origin: "desk", contactEmail: null, status: { in: ["open", "escalated"] } },
+    });
+    if (noContact > 0) {
+      add({
+        id: "tickets-without-contact",
+        severity: "warning",
+        what: `${noContact} desk-raised ticket(s) have no contact email.`,
+        why: "The client reached us by phone or through their agency, so the widget is not where they are looking. Without an address there is no way to tell them anything, and every notification about the ticket quietly does nothing.",
+        fix: "Add the client's email on the ticket in the desk, or follow up through whoever reported it.",
       });
     }
   }

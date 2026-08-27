@@ -98,6 +98,26 @@ export async function ingestArticle(
      * why `residualLeaks` stays empty and the review queue can tell them apart.
      */
     forceReview?: boolean;
+    /**
+     * Which feed this arrived from, so one publisher's items can be acted on as a group.
+     * Absent for hand-written and crawled content, which have no feed.
+     */
+    feedId?: string | null;
+    /**
+     * Normalize, classify and report — writing NOTHING.
+     *
+     * This has to live here rather than in the caller, and it did not: `crawlHelpCenter`
+     * called this function unconditionally and then checked its own `dryRun` flag only to
+     * decide how to LOG the result. So `--dry-run` printed "DRY RUN - nothing will be
+     * written" and then wrote every article it visited. Measured on a cleared database: a
+     * 3-page dry run left 2 rows behind.
+     *
+     * That inverts the one procedure this repo insists on ("ALWAYS dry-run first"), and it
+     * is worst exactly where it is used most — pointing the crawler at an unfamiliar site
+     * to see what extraction produces, which is precisely when you do not want the result
+     * in your corpus. It is how 60 rows of navigation furniture got in.
+     */
+    dryRun?: boolean;
   }
 ): Promise<IngestResult> {
   const contentHash = hashContent(raw);
@@ -108,10 +128,23 @@ export async function ingestArticle(
       // Unchanged upstream. Touch the crawl timestamp so staleness reporting stays
       // honest, but skip re-normalizing and (importantly) skip re-quarantining an
       // article a human already reviewed.
-      await prisma.kbArticle.update({
-        where: { id: existing.id },
-        data: { lastCrawledAt: new Date() },
-      });
+      //
+      // Also adopt the feed link if it is missing. That is not inference: this poll is
+      // fetching this exact URL from this exact feed right now, so the origin is a fact.
+      // Without it, rows ingested before `feedId` existed could never acquire one — the
+      // short-circuit above means an unchanged item is never rewritten — and they would
+      // stay permanently unreachable from `--approve-all --feed`, which is precisely the
+      // group action they need. Only ever fills a NULL; it never re-points an article at
+      // a different feed.
+      if (!opts.dryRun) {
+        await prisma.kbArticle.update({
+          where: { id: existing.id },
+          data: {
+            lastCrawledAt: new Date(),
+            ...(existing.feedId == null && opts.feedId ? { feedId: opts.feedId } : {}),
+          },
+        });
+      }
       return { status: "unchanged", id: existing.id };
     }
   }
@@ -145,6 +178,7 @@ export async function ingestArticle(
   const data = {
     source: opts.source,
     agencyInstallId: opts.agencyInstallId ?? null,
+    feedId: opts.feedId ?? null,
     sourceUrl: raw.url ?? null,
     titleNormalized: normalized.titleNormalized,
     bodyNormalized: normalized.bodyNormalized,
@@ -156,6 +190,22 @@ export async function ingestArticle(
     residualLeaks: quarantined ? (normalized.residualLeaks as unknown as object) : undefined,
     lastCrawledAt: new Date(),
   };
+
+  if (opts.dryRun) {
+    // Everything above is pure computation — the hash, the normalization, the residual
+    // scan — so the classification here is exactly what a real run would store. Reported
+    // WITHOUT the write, which is the entire promise the flag makes.
+    const existingId = raw.url
+      ? (await prisma.kbArticle.findUnique({ where: { sourceUrl: raw.url }, select: { id: true } }))?.id
+      : undefined;
+    if (quarantined) {
+      return { status: "quarantined", id: existingId, residualCount: normalized.residualLeaks.length };
+    }
+    if (held) {
+      return { status: "held", id: existingId, reason: "awaiting review (feed is not set to publish automatically)" };
+    }
+    return { status: existingId ? "updated" : "created", id: existingId };
+  }
 
   const row = raw.url
     ? await prisma.kbArticle.upsert({ where: { sourceUrl: raw.url }, create: data, update: data })
@@ -257,6 +307,67 @@ export function parseSitemap(xml: string): string[] {
   return urls;
 }
 
+/**
+ * Strip help-centre chrome that survived extraction, at the TEXT level.
+ *
+ * `extractMainContent` below already argues the case — "every article carries the same
+ * boilerplate, which poisons ranking (every article matches every query)" — and then the
+ * corpus walked straight into it: none of its container patterns match a Freshdesk portal,
+ * so 424 of 1,190 crawled articles (36%) fell through to `<body>` and were stored with the
+ * whole page. Measured on the live corpus, every one of them opens:
+ *
+ *   • Home • Knowledge base • X • Y • <title> All Articles Recent Searches Clear all
+ *   No recent searches Popular Articles Articles View all Topics View all Tickets View all
+ *   Sorry! nothing found for <title> Modified on: Thu, 4 Dec, 2025 at 4:59 PM
+ *
+ * …and only then the article. Archiving those 424 took "the wanted article is in the top 5"
+ * from 20/30 to 24/30, so the boilerplate demonstrably crowds out real answers.
+ *
+ * Done on TEXT, not markup, deliberately. A markup fix needs the portal's live HTML in
+ * front of you and only helps the next crawl; this also repairs what is already stored, and
+ * it works whatever wrapper the vendor ships next. It is narrow on purpose:
+ *
+ *   - the nav markers must be present, so a normal article is never touched;
+ *   - the cut is anchored to Freshdesk's own "Modified on: <date>" line, which is the last
+ *     thing before the prose and cannot be confused with body text;
+ *   - it refuses to cut more than MAX_CHROME_CHARS or to leave less than MIN_BODY_CHARS,
+ *     because a stripper that can empty an article is worse than the chrome.
+ */
+const MAX_CHROME_CHARS = 2000;
+const CHROME_MARKERS = ["Recent Searches", "All Articles", "Popular Articles"];
+const MODIFIED_ON = /Modified on:\s*[A-Za-z]{3},\s*\d{1,2}\s+[A-Za-z]{3},\s*\d{4}\s+at\s+\d{1,2}:\d{2}\s*[AP]M/;
+
+export function stripHelpCentreChrome(text: string): string {
+  let out = text;
+
+  const head = out.slice(0, MAX_CHROME_CHARS);
+  const marked = CHROME_MARKERS.filter((m) => head.includes(m)).length;
+  const m = MODIFIED_ON.exec(head);
+  // Two independent signals, because either alone has a plausible innocent explanation:
+  // an article may mention "Popular Articles", and a changelog may print a modified date.
+  if (marked >= 2 && m) {
+    const cut = out.slice(m.index + m[0].length).replace(/^[\s•]+/, "");
+    if (cut.length >= MIN_BODY_CHARS) out = cut;
+  }
+
+  // The portal's search overlay leaves this on the end of every page.
+  out = out.replace(/\s*X\s+0 of 0\s*$/, "");
+  return out.trim();
+}
+
+/**
+ * Freshdesk serves the portal name in <title>, so the stored title reads
+ * "Text-To-Pay Links: {{PLATFORM}} Support Portal". Titles are weighted A — the highest
+ * weight in the tsvector — so this is the most expensive place in the row to carry three
+ * words that say nothing about the article.
+ *
+ * Handles both separators seen live: a colon, and a title that already ends in "?".
+ */
+export function stripPortalSuffix(title: string): string {
+  const cut = title.replace(/[\s:|–—-]*\{\{PLATFORM\}\}\s+Support Portal\s*$/, "").trim();
+  return cut.length ? cut.replace(/[:\s]+$/, "") : title;
+}
+
 /** Best-effort <title>, falling back to the first heading. */
 export function extractTitle(html: string): string {
   const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1];
@@ -292,11 +403,118 @@ export interface CrawlOptions {
   origin: string;
   /** Only ingest URLs whose path starts with one of these. */
   pathPrefixes?: string[];
+  /**
+   * Skip URLs already crawled within this many days, WITHOUT fetching them.
+   *
+   * `ingestArticle` already short-circuits an unchanged article on its content hash — but
+   * only after the page has been downloaded, so a resumed run still spends one request per
+   * article it is about to discard. That is what makes a large help centre uncrawlable:
+   * help.gohighlevel.com rate-limits by requests-per-hour, so a resume that re-fetches
+   * 1,062 known articles exhausts the budget before reaching a single new one, and the
+   * crawl can never finish however many times it is run.
+   *
+   * Skipping them here makes the crawl RESUMABLE — each run picks up where the last
+   * stopped — and is also simply politer: re-downloading a thousand pages to learn nothing
+   * is the behaviour that got us blocked in the first place.
+   *
+   * Defaults to 7 days, so a periodic re-crawl still refreshes content that has changed.
+   * `0` disables skipping and re-fetches everything.
+   */
+  refetchAfterDays?: number;
+  /**
+   * Where the sitemap actually lives, when it is not at `/sitemap.xml`.
+   *
+   * Assuming the root is wrong for a large share of real help centres: Freshdesk (which is
+   * what help.gohighlevel.com runs) publishes at `/support/sitemap.xml` and returns 404 at
+   * the root. The failure was quiet in the worst way — "no sitemap - nothing to crawl",
+   * summary all zeros, exit 0 — which reads as "that site has no crawlable content"
+   * rather than "we looked in one place".
+   *
+   * Must be same-origin as `origin`: it selects what gets ingested, so accepting an
+   * arbitrary host would let one site's sitemap direct the crawl of another.
+   */
+  sitemapUrl?: string;
   /** Hard cap, so a misconfigured run can't hammer a host or fill the database. */
   maxPages: number;
   /** Parse and normalize but write nothing. Use this first, always. */
   dryRun?: boolean;
   onProgress?: (msg: string) => void;
+}
+
+/**
+ * Freshdesk publishes every article as JSON at `<article-url>.json`, and on a JS-rendered
+ * portal that is the ONLY way to get the actual text.
+ *
+ * help.gohighlevel.com is exactly that: 172KB of HTML per article containing no article
+ * body at all — the prose arrives via JS. `extractMainContent` therefore returned the
+ * portal shell ("• Home • Knowledge base • Surveys … All Articles Recent Searches … Sorry!
+ * nothing found"), which is 4KB of text and sails past the 200-char nav-stub floor.
+ *
+ * THAT IS THE DANGEROUS PART. The chrome contains no vendor name and no URL, so it passed
+ * every gate: 60 articles ingested `ready`, 0 quarantined, and the corpus would have gained
+ * 2,854 rows of navigation furniture that retrieval happily serves to real clients. The
+ * brand gates prove an article is SAFE; nothing proved it was an ARTICLE.
+ */
+interface StructuredArticle {
+  title: string;
+  body: string;
+}
+
+/** Freshdesk `status`: 1 = draft, 2 = published. A draft must never reach a client. */
+const FRESHDESK_PUBLISHED = 2;
+
+/**
+ * Absent and REFUSED are different answers and must never collapse into one.
+ *
+ * The first version returned `null` for both, and that was the most damaging bug in this
+ * whole crawl: once the host started rate-limiting, every `.json` came back 403, every
+ * article read as "this one has no JSON", and the caller marked it `archived` with
+ * `lastCrawledAt` set — which the resume filter then skips FOREVER. A rate limit silently
+ * and permanently retired 584 perfectly good articles, and because that path never calls
+ * `fetchText`, the consecutive-refusal guard never saw a single refusal to count.
+ *
+ * A crawler must be able to tell "there is nothing here" from "you are not allowed to ask".
+ */
+type StructuredResult =
+  | { kind: "article"; article: StructuredArticle }
+  /** Genuinely no JSON for this URL (404), or it is not an article endpoint. */
+  | { kind: "absent" }
+  /** The host refused us — rate limit, block, or an outage. Applies to every URL. */
+  | { kind: "refused"; status: number };
+
+async function fetchStructuredArticle(url: string): Promise<StructuredResult> {
+  if (!/\/solutions\/articles\//.test(url)) return { kind: "absent" };
+  let parsed: unknown;
+  try {
+    const res = await fetchText(`${url}.json`);
+    if (!res.ok) {
+      // 404/410 mean this article has no JSON. Anything else — 401, 403, 429, 5xx — is the
+      // host declining to answer, which says nothing about the article.
+      return res.status === 404 || res.status === 410
+        ? { kind: "absent" }
+        : { kind: "refused", status: res.status };
+    }
+    parsed = JSON.parse(res.body);
+  } catch {
+    // Not a Freshdesk portal, or it does not expose JSON. The HTML path still applies.
+    return { kind: "absent" };
+  }
+  const article = (parsed as { article?: Record<string, unknown> })?.article;
+  if (!article) return { kind: "absent" };
+  if (typeof article.status === "number" && article.status !== FRESHDESK_PUBLISHED) {
+    return { kind: "absent" };
+  }
+  const title = typeof article.title === "string" ? article.title : "";
+  // `description` is the authored HTML; `desc_un_html` is its flattened twin. Prefer the
+  // HTML so the existing normalizer sees list and heading structure rather than a wall.
+  const body =
+    typeof article.description === "string" && article.description.trim()
+      ? article.description
+      : typeof article.desc_un_html === "string"
+        ? article.desc_un_html
+        : "";
+  if (!title || !body) return { kind: "absent" };
+  return { kind: "article", article: { title, body } };
 }
 
 export interface CrawlSummary {
@@ -310,6 +528,10 @@ export interface CrawlSummary {
   failed: number;
   /** Set when the run stopped at maxPages, so a silent truncation is never implied. */
   truncated: boolean;
+  /** Why the run stopped early, when it did. Absent on a run that reached the end. */
+  abortReason?: string;
+  /** Skipped without a request because they were crawled recently. */
+  alreadyHave?: number;
 }
 
 /**
@@ -343,9 +565,18 @@ export async function crawlHelpCenter(opts: CrawlOptions): Promise<CrawlSummary>
   const seen = new Set<string>();
   const queue: string[] = [];
   try {
-    const sm = await fetchText(new URL("/sitemap.xml", opts.origin).toString());
+    const sitemapUrl = new URL(opts.sitemapUrl ?? "/sitemap.xml", opts.origin);
+    if (sitemapUrl.origin !== new URL(opts.origin).origin) {
+      throw new Error(
+        `sitemap ${sitemapUrl.origin} is not on ${opts.origin} — the sitemap chooses what gets ingested, so it must belong to the site being crawled`
+      );
+    }
+    const sm = await fetchText(sitemapUrl.toString());
     if (!sm.ok) {
-      log(`no sitemap at /sitemap.xml (HTTP ${sm.status}) - nothing to crawl`);
+      // Name the URL actually tried. "No sitemap" for a site that has one somewhere else
+      // reads as "nothing to crawl here", which is a different and wrong conclusion.
+      log(`no sitemap at ${sitemapUrl.pathname} (HTTP ${sm.status}) - nothing to crawl`);
+      log(`  if this site publishes one elsewhere, pass --sitemap <path> (Freshdesk uses /support/sitemap.xml)`);
       return summary;
     }
     for (const url of parseSitemap(sm.body)) {
@@ -385,44 +616,251 @@ export async function crawlHelpCenter(opts: CrawlOptions): Promise<CrawlSummary>
   });
 
   summary.discovered = candidates.length;
-  const targets = candidates.slice(0, opts.maxPages);
-  summary.truncated = candidates.length > targets.length;
-  log(`${candidates.length} candidate URL(s); crawling ${targets.length}${summary.truncated ? " (capped)" : ""}`);
+
+  // Drop what we already have, BEFORE spending a request on it. See `refetchAfterDays`.
+  const refetchAfterDays = opts.refetchAfterDays ?? 7;
+  let fresh = candidates;
+  if (refetchAfterDays > 0) {
+    const cutoff = new Date(Date.now() - refetchAfterDays * 86_400_000);
+    const known = await prisma.kbArticle.findMany({
+      where: { sourceUrl: { in: candidates }, lastCrawledAt: { gte: cutoff } },
+      select: { sourceUrl: true },
+    });
+    const skip = new Set(known.map((k) => k.sourceUrl));
+    fresh = candidates.filter((u) => !skip.has(u));
+    if (skip.size > 0) {
+      summary.alreadyHave = skip.size;
+      log(`${skip.size} already crawled within ${refetchAfterDays}d - skipping without fetching`);
+    }
+  }
+
+  const targets = fresh.slice(0, opts.maxPages);
+  summary.truncated = fresh.length > targets.length;
+  log(`${candidates.length} candidate URL(s), ${fresh.length} not yet crawled; crawling ${targets.length}${summary.truncated ? " (capped)" : ""}`);
+
+  /*
+   * TEMPLATE DETECTOR — the guard for the failure above, in the general case.
+   *
+   * When extraction silently returns page furniture instead of content, every page yields
+   * nearly the SAME text. Nothing else notices: it is long enough to clear the nav-stub
+   * floor, it names no vendor, it carries no link, so it ingests `ready` and retrieval
+   * serves it. The single reliable signal is the repetition itself.
+   *
+   * So: fingerprint each body's opening, and if one fingerprint dominates the run, stop.
+   * Aborting mid-crawl is right — the alternative is thousands of rows that must then be
+   * identified and deleted, and a corpus nobody trusts in the meantime.
+   */
+  const shapes = new Map<string, { n: number; sample: string }>();
+  const SHAPE_MIN_SAMPLE = 8;
+  const SHAPE_DOMINANCE = 0.6;
+  let structuredHits = 0;
+  /**
+   * Set when the run must stop for a reason that applies to EVERY remaining URL.
+   *
+   * It has to live outside the per-article `try`, because that block's `catch` counts a
+   * failure and moves to the next URL — which is right for one dead link and exactly wrong
+   * for "the host is refusing us". The first version threw from inside it, so the abort was
+   * swallowed and the crawl made **217 further requests to a server that had already said
+   * stop**. Being told to back off and continuing anyway is the one crawler behaviour that
+   * earns a permanent block.
+   */
+  let abort: string | null = null;
+  /** Consecutive non-2xx responses — the shape of a rate limit, not of a broken link. */
+  let consecutiveRefusals = 0;
+  const MAX_CONSECUTIVE_REFUSALS = 5;
 
   for (const url of targets) {
+    if (abort) break;
     // Serialised, with a delay. Concurrency here would be rude and would get us
     // blocked; the whole run is a background job, so wall-clock cost is irrelevant.
     await new Promise((r) => setTimeout(r, rules.crawlDelayMs));
     summary.attempted++;
     try {
-      const page = await fetchText(url);
-      if (!page.ok) {
+      // Structured first: on a JS-rendered portal the HTML has no article in it at all.
+      const structured = await fetchStructuredArticle(url);
+
+      // A refusal is about the HOST, not this article. Count it and let the same guard that
+      // watches HTML refusals stop the run — otherwise a rate limit is read as "none of
+      // these articles exist" and permanently retires every one of them.
+      if (structured.kind === "refused") {
         summary.failed++;
-        log(`HTTP ${page.status} for ${url}`);
+        log(`HTTP ${structured.status} for ${url}.json`);
+        if (++consecutiveRefusals >= MAX_CONSECUTIVE_REFUSALS) {
+          abort =
+            `${consecutiveRefusals} consecutive refusals from the host (last: HTTP ${structured.status}). ` +
+            `That is a rate limit or a block, not a bad link — stopping rather than making it worse. ` +
+            `Re-run later; already-ingested articles short-circuit on their content hash, so nothing is redone.`;
+        }
         continue;
       }
+
+      let title: string;
+      let body: string;
+      if (structured.kind === "article") {
+        // Reset ONLY on content actually obtained. An unconditional reset here (which is
+        // what I first wrote) runs before the HTML branch below has had a chance to count
+        // its own refusal, so the counter is zeroed every iteration and never reaches the
+        // threshold — the guard looks present and can never fire.
+        consecutiveRefusals = 0;
+        structuredHits++;
+        ({ title, body } = structured.article);
+      } else if (structuredHits > 0) {
+        /*
+         * The portal publishes JSON — it has done so for every article so far — and this
+         * URL did not answer with any. Do NOT fall back to HTML here: on a JS-rendered
+         * portal the HTML carries no article at all, so the fallback can only ever return
+         * the page shell, which is long enough to pass the length floor and clean enough to
+         * pass every brand gate.
+         *
+         * Measured: a 600-article resume produced 41 shells out of 68 pages and tripped the
+         * template detector, which aborted the whole run. The pages were not the problem —
+         * the fallback was. Skipping them lets the crawl continue past a handful of
+         * articles that simply have no JSON, instead of stopping on them.
+         */
+        summary.skipped++;
+        log(`no JSON for ${url} on a portal that publishes it - skipping rather than storing the page shell`);
+        if (!opts.dryRun) {
+          await prisma.kbArticle
+            .upsert({
+              where: { sourceUrl: url },
+              create: {
+                source: "ghl", sourceUrl: url, titleNormalized: url, bodyNormalized: "",
+                contentHash: `no-json:${url}`, featureTags: [], status: "archived",
+                lastCrawledAt: new Date(),
+              },
+              update: { lastCrawledAt: new Date() },
+            })
+            .catch(() => {});
+        }
+        continue;
+      } else {
+        const page = await fetchText(url);
+        if (!page.ok) {
+          summary.failed++;
+          log(`HTTP ${page.status} for ${url}`);
+          // A run of refusals is a host saying stop — a rate limit, a block, an outage —
+          // and it applies to every URL left, not just this one. Measured: GHL answers
+          // `403 "You have exceeded the limit of requests per hour"` after a few hundred
+          // requests in an hour, and the old code read each one as a single dead link and
+          // kept going. One dead link among successes still costs nothing: any 2xx resets
+          // the counter.
+          if (++consecutiveRefusals >= MAX_CONSECUTIVE_REFUSALS) {
+            abort =
+              `${consecutiveRefusals} consecutive refusals from the host (last: HTTP ${page.status}). ` +
+              `That is a rate limit or a block, not a bad link — stopping rather than making it worse. ` +
+              `Re-run later; already-ingested articles short-circuit on their content hash, so nothing is redone.`;
+          }
+          continue;
+        }
+        consecutiveRefusals = 0;
+        // Both strippers run on the HTML path only. A JSON body carries no chrome, so
+        // applying them there would be a no-op that still has to be reasoned about.
+        title = stripPortalSuffix(extractTitle(page.body));
+        body = stripHelpCentreChrome(extractMainContent(page.body));
+      }
+
+      const normalisedOpening = body.replace(/\s+/g, " ").trim().slice(0, 300);
+      const shape = createHash("sha256").update(normalisedOpening).digest("hex");
+      const seenShape = shapes.get(shape) ?? { n: 0, sample: normalisedOpening };
+      seenShape.n++;
+      shapes.set(shape, seenShape);
+      if (summary.attempted >= SHAPE_MIN_SAMPLE) {
+        const [worstHash, worst] = [...shapes.entries()].sort((a, b) => b[1].n - a[1].n)[0];
+        if (worst.n / summary.attempted >= SHAPE_DOMINANCE) {
+          // Report the DOMINANT shape's own text, not whatever page happened to be in hand
+          // when the threshold tripped. The first version printed the current page, which
+          // showed a perfectly good article beside a claim that everything looked alike —
+          // so the report argued against itself and I misread a true positive as a false one.
+          abort =
+            `${worst.n} of ${summary.attempted} pages produced near-identical text, so extraction is ` +
+            `returning the same thing for every URL rather than articles. This can pass every brand gate — ` +
+            `it names no vendor and carries no link — so nothing downstream would catch it. ` +
+            `The repeated text (shape ${worstHash.slice(0, 8)}): ${JSON.stringify(worst.sample.slice(0, 160))}`;
+          continue;
+        }
+      }
+
       const result = await ingestArticle(
-        { url, title: extractTitle(page.body), body: extractMainContent(page.body), isHtml: true },
-        { source: "ghl" }
+        { url, title, body, isHtml: true },
+        { source: "ghl", dryRun: opts.dryRun }
       );
       if (opts.dryRun) {
-        log(`[dry-run] ${result.status} ${url}${result.reason ? ` (${result.reason})` : ""}`);
-        continue;
+        log(`[dry-run] would ${result.status}: ${url}${result.reason ? ` (${result.reason})` : ""}`);
+        // Counted even on a dry run — the summary is the whole point of doing one, and
+        // reporting all zeros made a dry run look like it had found nothing to do.
       }
       summary[result.status === "created" ? "created"
         : result.status === "updated" ? "updated"
         : result.status === "unchanged" ? "unchanged"
         : result.status === "quarantined" ? "quarantined"
         : "skipped"]++;
+
+      /*
+       * REMEMBER what we decided not to keep, or the crawl never finishes.
+       *
+       * A quarter of this help centre is video-only — the body is a bare Loom iframe — and
+       * those are correctly skipped, since a text-retrieval bot cannot use a video. But a
+       * skip writes no row, so the resume filter sees them as "not yet crawled" and fetches
+       * them again on every pass, forever. They keep their place near the front of the
+       * remaining list, so each run spends more of a rate-limited budget re-discovering
+       * them, and a later pass would fetch nothing but articles already known to be
+       * unusable. The crawl would stop converging while still reporting progress.
+       *
+       * Stored `archived` — "manually retired", already in the enum — which retrieval skips
+       * exactly like a quarantine. Deliberately done HERE and not in `ingestArticle`: a
+       * too-short article from the dashboard or a feed must still be rejected outright
+       * rather than quietly filed, and only the crawler has a resume to protect.
+       */
+      if (result.status === "skipped" && !opts.dryRun) {
+        const marker = {
+          source: "ghl" as const,
+          sourceUrl: url,
+          titleNormalized: title.slice(0, 300) || url,
+          bodyNormalized: "",
+          contentHash: `skipped:${createHash("sha256").update(body).digest("hex")}`,
+          featureTags: [],
+          status: "archived" as const,
+          lastCrawledAt: new Date(),
+        };
+        await prisma.kbArticle
+          .upsert({ where: { sourceUrl: url }, create: marker, update: { lastCrawledAt: marker.lastCrawledAt } })
+          .catch(() => {
+            // A marker is an optimisation, never the point of the run. Losing one costs a
+            // re-fetch next time, which is exactly the status quo.
+          });
+      }
     } catch (e) {
       summary.failed++;
       log(`failed ${url}: ${describeError(e)}`);
     }
   }
 
-  if (summary.truncated) {
+  if (abort) {
+    // Must be louder than the summary and must set `truncated`, or a run that stopped a
+    // quarter of the way through reads as complete coverage of a small help centre.
+    summary.truncated = true;
+    summary.abortReason = abort;
+    log(`ABORTED: ${abort}`);
+  }
+  if (summary.truncated && !abort) {
     // Never let a capped run read as complete coverage.
     log(`NOTE: stopped at maxPages=${opts.maxPages}; ${summary.discovered - targets.length} URL(s) not crawled.`);
+  }
+  // Which path the text actually came from. Worth stating rather than inferring: on a
+  // JS-rendered portal the HTML route yields furniture that passes every gate, so "did we
+  // get real article bodies" is the question a reader of this summary is really asking.
+  if (summary.attempted > 0) {
+    // Say what the REMAINDER actually did. Subtracting and calling it "HTML extraction" was
+    // arithmetic dressed as a fact: once a portal is known to publish JSON the HTML route is
+    // never taken, so those pages were skipped, refused or aborted — not extracted.
+    const others = summary.attempted - structuredHits;
+    log(
+      structuredHits === summary.attempted
+        ? `all ${structuredHits} article(s) came from the portal's JSON — real article bodies`
+        : structuredHits > 0
+          ? `${structuredHits}/${summary.attempted} from the portal's JSON; the other ${others} had none and were not scraped from HTML`
+          : `${summary.attempted} page(s) via HTML extraction — this portal published no article JSON`
+    );
   }
   return summary;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog } from "./Dialog";
 import { SupportActivity } from "./SupportActivity";
 import { SupportKnowledge } from "./SupportKnowledge";
@@ -57,6 +57,21 @@ function localTimezone(): string {
   }
 }
 
+/**
+ * Ordered most urgent first, and the fallbacks match `DEFAULT_SLA_MINUTES` on the server.
+ * They are only ever a display fallback: the GET returns a resolved policy, so these show
+ * up solely if a response arrives without one.
+ */
+/** The server refuses anything below this, so the form must not offer it either. */
+const SLA_FLOOR_MINS = 5;
+
+const SLA_LEVELS: { key: string; label: string; fallback: number }[] = [
+  { key: "urgent", label: "Urgent", fallback: 15 },
+  { key: "high", label: "High", fallback: 60 },
+  { key: "normal", label: "Normal", fallback: 240 },
+  { key: "low", label: "Low", fallback: 480 },
+];
+
 function defaultHours(): BusinessHours {
   const days: Record<string, [number, number] | null> = {};
   for (const d of DAYS) days[d.key] = ["sat", "sun"].includes(d.key) ? null : [9, 17];
@@ -78,7 +93,7 @@ function ChipInput({
   max,
   invalid,
 }: {
-  value: string[];
+  value: string[] | null;
   onChange: (next: string[]) => void;
   placeholder: string;
   max: number;
@@ -87,13 +102,24 @@ function ChipInput({
 }) {
   const [draft, setDraft] = useState("");
 
+  /**
+   * A missing list is an EMPTY list, never a crash.
+   *
+   * The server is the real fix for the one column that did this (quickActions), but this
+   * component renders four different fields and the cost of it being wrong is not a blank
+   * field — it is `.map` of null, which unmounts the entire dashboard and leaves a white
+   * page with nothing on screen saying why. No form input is worth that failure mode, so
+   * the type admits null and the component absorbs it.
+   */
+  const chips = Array.isArray(value) ? value : [];
+
   function commit(raw: string) {
     const parts = raw
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
     if (!parts.length) return;
-    const next = [...value];
+    const next = [...chips];
     for (const p of parts) if (!next.includes(p) && next.length < max) next.push(p);
     onChange(next);
     setDraft("");
@@ -102,12 +128,12 @@ function ChipInput({
   return (
     <div className="chip-input">
       <div className="chip-row">
-        {value.map((v) => {
+        {chips.map((v) => {
           const why = invalid?.(v) ?? null;
           return (
             <span className={`chip${why ? " chip-bad" : ""}`} key={v} title={why ?? undefined}>
               {v}
-              <button type="button" onClick={() => onChange(value.filter((x) => x !== v))} aria-label={`Remove ${v}`}>
+              <button type="button" onClick={() => onChange(chips.filter((x) => x !== v))} aria-label={`Remove ${v}`}>
                 &times;
               </button>
             </span>
@@ -117,16 +143,16 @@ function ChipInput({
       <input
         type="text"
         value={draft}
-        placeholder={value.length >= max ? `Limit of ${max} reached` : placeholder}
-        disabled={value.length >= max}
+        placeholder={chips.length >= max ? `Limit of ${max} reached` : placeholder}
+        disabled={chips.length >= max}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={() => commit(draft)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === ",") {
             e.preventDefault();
             commit(draft);
-          } else if (e.key === "Backspace" && !draft && value.length) {
-            onChange(value.slice(0, -1));
+          } else if (e.key === "Backspace" && !draft && chips.length) {
+            onChange(chips.slice(0, -1));
           }
         }}
       />
@@ -237,6 +263,68 @@ export function SupportSettingsModal({
 
   const hours = config?.businessHours ?? null;
   const setHours = (next: BusinessHours | null) => set("businessHours", next);
+
+  /**
+   * The GET always returns a complete policy (the server resolves the stored value
+   * against its own defaults), so the form has one code path and the numbers on screen
+   * are the ones the automations actually use — never a placeholder that differs from
+   * what would happen today.
+   */
+  const sla = config?.slaFirstResponseMins ?? {};
+
+  /**
+   * The box holds TEXT while it is being typed, and the policy is written on BLUR.
+   *
+   * It used to clamp on every keystroke — `Math.max(5, Math.round(minutes))` inside
+   * onChange — with the reason written down: "below the server's floor the save is
+   * refused outright, which would lose the rest of the form's edits to a stray keystroke
+   * in a number box." Right about the problem, wrong about the fix, and it made the field
+   * report a number nobody typed. Measured keystroke by keystroke:
+   *
+   *   type 240 into Normal -> 2 becomes 5, then 54, then 540
+   *   type  30 into Urgent -> 3 becomes 5, then 50
+   *   clear a box entirely -> 5
+   *
+   * Any first digit below 5 is rewritten to a 5 and the rest appended to it, so the
+   * common targets (15, 30, 45, 120, 240, 480) all store something else. This is the
+   * field the automations read to decide when a ticket is chased, escalated a tier and
+   * unassigned: 240 -> 540 leaves a client waiting nine hours while the agency believes
+   * four, and a cleared box means every ticket at that priority breaches almost at once —
+   * the "backlog manufactured entirely by the clock" the open-hours rule exists to
+   * prevent, arriving through the form instead.
+   *
+   * So: never rewrite what somebody is typing. A blank or out-of-range value is REFUSED
+   * on blur, said beside the row, and the box goes back to what is actually stored —
+   * the desk's `maxConcurrent` fix exactly, in the other app.
+   */
+  const [slaText, setSlaText] = useState<Record<string, string>>({});
+  const [slaError, setSlaError] = useState<Record<string, string>>({});
+  const slaValue = (key: string, fallback: number) => slaText[key] ?? String(sla[key] ?? fallback);
+
+  const setSla = (key: string, minutes: number) =>
+    set("slaFirstResponseMins", {
+      ...SLA_LEVELS.reduce<Record<string, number>>((acc, l) => {
+        acc[l.key] = sla[l.key] ?? l.fallback;
+        return acc;
+      }, {}),
+      [key]: minutes,
+    });
+
+  function commitSla(key: string, raw: string, fallback: number): void {
+    const stored = sla[key] ?? fallback;
+    const trimmed = raw.trim();
+    // A blank box is a mid-edit state, not an instruction to pick a number for them.
+    const n = trimmed === "" ? NaN : Number(trimmed);
+    if (!Number.isFinite(n) || n < SLA_FLOOR_MINS) {
+      setSlaError((e) => ({ ...e, [key]: `Must be a whole number of minutes, ${SLA_FLOOR_MINS} or more.` }));
+      setSlaText((t) => ({ ...t, [key]: String(stored) }));
+      return;
+    }
+    const rounded = Math.round(n);
+    setSlaError((e) => ({ ...e, [key]: "" }));
+    setSlaText((t) => ({ ...t, [key]: String(rounded) }));
+    if (rounded !== stored) setSla(key, rounded);
+  }
 
   async function save() {
     if (!config) return;
@@ -467,6 +555,44 @@ export function SupportSettingsModal({
                     </p>
                   </>
                 )}
+              </div>
+
+              {/*
+                Response targets. These are read by the automations that chase a ticket
+                nobody has answered — without a field here the column is one nothing can
+                write, which this product has shipped twice before (faviconUrl, the
+                agency-level brandName) and which reads as finished from every angle
+                except a live test.
+              */}
+              <div className="field">
+                <label>Response targets</label>
+                <div className="sla-grid">
+                  {SLA_LEVELS.map((level) => (
+                    <Fragment key={level.key}>
+                      <label className="sla-row">
+                        <span className="sla-name">{level.label}</span>
+                        <input
+                          type="number"
+                          min={SLA_FLOOR_MINS}
+                          step={5}
+                          value={slaValue(level.key, level.fallback)}
+                          onChange={(e) => setSlaText((t) => ({ ...t, [level.key]: e.target.value }))}
+                          onBlur={(e) => commitSla(level.key, e.target.value, level.fallback)}
+                        />
+                        <span className="sla-unit">minutes</span>
+                      </label>
+                      {/* Beside the row, never in the modal's top banner: with four rows and
+                          a scrolling body, a refusal up there is a refusal nobody reads. */}
+                      {slaError[level.key] && <p className="field-error">{slaError[level.key]}</p>}
+                    </Fragment>
+                  ))}
+                </div>
+                <p className="field-hint">
+                  How long a client may wait for their first reply from a person, before we chase it
+                  ourselves. <strong>Counted in the business hours above</strong>, not on the wall clock — so a
+                  ticket raised at 9pm doesn't escalate three times overnight with nobody there to answer it.
+                  Set the levels well apart, or the priority stops meaning anything.
+                </p>
               </div>
             </>
           )}

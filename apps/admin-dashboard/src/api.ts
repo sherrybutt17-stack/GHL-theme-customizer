@@ -44,9 +44,16 @@ export class SessionExpiredError extends Error {
   }
 }
 
-export function isSessionExpiredError(e: unknown): boolean {
-  return !!(e as { sessionExpired?: boolean })?.sessionExpired;
-}
+/**
+ * There is deliberately NO `isSessionExpiredError` predicate, and one was removed.
+ *
+ * `App.tsx` decides between the amber instruction banner and the red error one by
+ * comparing the stored message to SESSION_EXPIRED_MESSAGE, because every catch block
+ * stores `e.message` rather than the error — and `summariseBulk` composes a SENTENCE, so
+ * at the one call site that matters there is no error object left to test. A predicate
+ * sitting here reads as the better branch and cannot be used for it; taking it would
+ * silently drop the bulk path back to a red banner with no remedy in it.
+ */
 
 /**
  * When this session stops being accepted, read straight off the token.
@@ -94,6 +101,8 @@ export interface VisualTheme {
   sidebarIconColor: string | null;
   buttonShape: string | null;
   darkMode: boolean;
+  contentBgColor: string | null;
+  contentTextColor: string | null;
   hideUpgrade: boolean;
   alertMessage: string | null;
   alertColor: string | null;
@@ -145,6 +154,8 @@ export interface ThemePreset {
   sidebarIconColor: string | null;
   buttonShape: string | null;
   darkMode: boolean;
+  contentBgColor: string | null;
+  contentTextColor: string | null;
   menuOrder: string[] | null;
 }
 
@@ -156,6 +167,12 @@ export interface LocationRow {
   /** Whether the support widget is offered in THIS sub-account (independent of theming). */
   supportEnabled: boolean;
   theme: ThemeConfig | null;
+  /**
+   * How many saved theme versions this sub-account has. Reset DELETES all of them, so this
+   * is what the confirm dialog needs to state the blast radius — the same reason the desk's
+   * Staff screen carries a Holding count beside Disable.
+   */
+  themeVersions: number;
 }
 
 export interface SidebarFeature {
@@ -187,6 +204,8 @@ export interface ThemeInput {
   sidebarIconColor: string;
   buttonShape: string;
   darkMode: boolean;
+  contentBgColor: string;
+  contentTextColor: string;
   hideUpgrade: boolean;
   alertMessage: string;
   alertColor: string;
@@ -246,7 +265,10 @@ export const fetchThemeVersions = (a: string, loc: string): Promise<ThemeConfig[
 export const setEnabled = (a: string, loc: string, enabled: boolean) =>
   fetch(`${API_BASE}/admin/api/${a}/locations/${loc}/enabled`, j("PUT", { enabled })).then(handle);
 
-export const resetTheme = (a: string, loc: string): Promise<{ reset: boolean }> =>
+export const resetTheme = (
+  a: string,
+  loc: string
+): Promise<{ reset: boolean; versionsDeleted: number }> =>
   fetch(`${API_BASE}/admin/api/${a}/locations/${loc}/theme`, j("DELETE")).then(handle);
 
 export const fetchDefaultTheme = (a: string): Promise<AgencyDefaultTheme | null> =>
@@ -271,6 +293,7 @@ export interface DefaultThemeVersion {
   brandName: string | null;
   primaryColor: string | null;
   accentColor: string | null;
+  topBarColor: string | null;
   hasLogo: boolean;
 }
 
@@ -335,6 +358,27 @@ export interface SupportConfig {
   greeting: string | null;
   quickActions: string[];
   businessHours: BusinessHours | null;
+  /**
+   * Minutes a client may wait for their first human reply, per priority.
+   *
+   * MUST be sent on every save: the PUT clears any field it is not sent (`?? DbNull`, the
+   * same whole-object convention as businessHours), so a payload that omits this key
+   * resets the targets to the defaults rather than leaving them alone. Measured, not
+   * assumed — the editor's own save round-trips the GET's object, which already carried
+   * the field, so the targets were never LOST here. They were simply unreachable: nothing
+   * on any screen could change them, exactly like `faviconUrl` and the agency-level
+   * `brandName` before it.
+   */
+  slaFirstResponseMins: Record<string, number> | null;
+  /**
+   * `{ locationInstallId: "Starter" }` — what each client actually bought, which turns
+   * "isn't part of your setup" into "isn't included on your Starter plan".
+   *
+   * Carried here so the editor's save round-trips it. The PUT writes this column
+   * unconditionally and defaults it to `{}`, so a config object without the key does not
+   * leave the plan names alone — it deletes them.
+   */
+  planTiers: Record<string, string>;
   escalationEmails: string[];
   supportBoundary: SupportBoundary;
   boundaryNotes: string | null;
@@ -378,6 +422,18 @@ export interface SupportStats {
     escalated: number;
   }[];
   topTopics: { key: string; label: string; count: number }[];
+  /**
+   * What the conversations that needed a PERSON were about.
+   *
+   * The complement to `topTopics`, which is built from the tags of articles the bot cited
+   * and therefore only ever describes questions the knowledge base already answered. The
+   * ones that beat the bot cite nothing and are invisible there.
+   */
+  handoffTypes: {
+    total: number;
+    untyped: number;
+    types: { key: string; label: string; count: number }[];
+  };
   daily: { date: string; conversations: number; deflected: number }[];
 }
 
@@ -393,16 +449,33 @@ export interface DryRunResult {
   findings: { gate: string; detail: string }[];
   usedReferences: number;
   error?: string;
+  /** Why this row is not an answer. Null for a real answer or a correct hand-off. */
+  modelFailure: string | null;
 }
 
 export interface DryRunResponse {
   brandName: string;
   brandNameSource: string;
   locationName: string | null;
-  renamedLabels: Record<string, string>;
+  /** Only the menu items this agency actually renamed, as from → to pairs. */
+  renamedLabels: Array<{ key: string; from: string; to: string }>;
   hiddenFeatures: string[];
   results: DryRunResult[];
+  /** The GATES found nothing. True of a bot that answered nothing at all — see `ready`. */
   allClean: boolean;
+  /** Clean AND the model actually ran. This is the "safe to switch on" answer. */
+  ready: boolean;
+  /**
+   * Why the assistant did not answer, when it did not. Null when it did.
+   * `rows` of `of` because a correct pre-model hand-off (the money guard) is not a failure.
+   */
+  modelFailure: {
+    kind: "not-configured" | "auth" | "no-credits" | "rate-limited" | "transient";
+    rows: number;
+    of: number;
+    remedy: string;
+    permanent: boolean;
+  } | null;
 }
 
 export const runSupportDryRun = (a: string, locationInstallId: string): Promise<DryRunResponse> =>
@@ -446,6 +519,11 @@ export interface KbFeed {
   lastItemAt?: string | null;
   lastError?: string | null;
   consecutiveErrors?: number;
+  /**
+   * The poller gave up on it — ten straight failures — as opposed to the agency pausing
+   * it. Both are `enabled: false`, and only one of them is something we did.
+   */
+  gaveUp?: boolean;
 }
 
 export const fetchKbFeeds = (a: string): Promise<{ feeds: KbFeed[] }> =>

@@ -45,7 +45,14 @@ const REQUEST_GAP_MS = 500;
  * Not deleted — a feed that 500s for a week is usually a publisher outage, and silently
  * dropping it means somebody has to remember it existed. Disabled and visible beats gone.
  */
-const MAX_CONSECUTIVE_ERRORS = 10;
+/**
+ * Exported so the ONE screen that reports this state reads the same number the poller
+ * enforces. A feed we gave up on renders identically to one the agency paused on purpose
+ * unless somebody can tell them apart, and a second copy of "10" in the dashboard is the
+ * `QUEUE_ORDER` failure in miniature — two definitions, drifting, with nobody able to see
+ * both at once.
+ */
+export const MAX_CONSECUTIVE_ERRORS = 10;
 
 export interface FeedPollResult {
   feedId: string;
@@ -200,6 +207,9 @@ export async function pollFeed(
         minBodyChars: MIN_ITEM_CHARS,
         // The safety default: hold for a human unless this feed has earned trust.
         forceReview: !feed.autoPublish,
+        // So one publisher's backlog can be approved (or rejected) as a group without
+        // touching another's.
+        feedId: feed.id,
       }
     );
 

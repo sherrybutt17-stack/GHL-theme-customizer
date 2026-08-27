@@ -1,0 +1,136 @@
+# Make tickets chase themselves.
+#
+# Unclaimed escalations, missed response targets, idle conversations and expired snoozes.
+# Every clock these read already lived on Conversation - `queuedAt`, `firstAgentReplyAt`,
+# `lastMessageAt` - and until this workflow existed NOTHING read them on a schedule. The
+# desk coloured a row red after an hour and that was the whole of it: cosmetic, computed
+# at render time, and invisible to anyone not looking at the tab.
+#
+# Same hosting reasoning as poll-feeds: the free Render web service sleeps after ~15
+# minutes so an in-process timer stops, Render cron is a paid feature, and GitHub Actions
+# is free. It needs exactly ONE secret, DATABASE_URL, because `validateEnv()` is a
+# function rather than an import-time check.
+# It ALSO keeps the web service awake, and that is a budget decision rather than tidiness -
+# see the step comment. Renaming the workflow would be honest and would also break the
+# schedule's history, so the name stays and the reason is written where the work is.
+name: Ticket automations
+
+on:
+  schedule:
+    # Every 10 minutes, off the decade. Same reason poll-feeds sits at :17 - the top of
+    # the hour (and of each ten) is when every scheduler on the platform fires, and
+    # GitHub delays queued cron runs under that load.
+    #
+    # TEN MINUTES IS THE RESOLUTION, NOT THE PRECISION. Actions delays scheduled runs
+    # under load, sometimes by many minutes, so every threshold this enforces is worded
+    # "at least N minutes" and none of them claim an exact breach time. An SLA that
+    # promises a precision the scheduler cannot deliver is worse than one that admits
+    # its granularity.
+    - cron: "3,13,23,33,43,53 * * * *"
+  # So a threshold change can be exercised immediately instead of waiting for the tick.
+  workflow_dispatch:
+
+# One run at a time. Concurrent runs are actually SAFE here - every pass claims its right
+# to act with a conditional updateMany, so the loser matches zero rows - but doing the
+# same work twice is waste even when it cannot corrupt anything. Queued runs are dropped
+# rather than stacked, because the next tick does the identical work ten minutes later.
+concurrency:
+  group: ticket-automations
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # Every pass is a handful of indexed queries capped at 200 rows. Anything near this
+    # is a hang, not slow work.
+    timeout-minutes: 10
+    steps:
+      # ---- Keep the web service awake ------------------------------------------------
+      # FIRST, before checkout, because it needs nothing but curl and a cold Render
+      # instance takes ~50s to wake: starting that now means it is up long before this
+      # job finishes.
+      #
+      # WHY IT IS HERE AND NOT IN A WORKFLOW OF ITS OWN. Actions bills private repos by
+      # the minute and rounds every job UP to a whole one, so cadence alone sets a floor
+      # no amount of making the job fast can get under:
+      #
+      #   ticket-automations  6/hour -> 4,320 runs/month
+      #   poll-feeds          1/hour ->   720
+      #   floor                          5,040 min/month against a 2,000-min free
+      #                                  allowance - already 2.5x over before a single
+      #                                  second of real work, and each job also runs
+      #                                  `npm ci` over 336 packages plus prisma generate.
+      #
+      # A separate 10-minute keep-warm workflow would add another 4,320. Folded in here it
+      # costs NOTHING extra, and ten minutes is already the cadence it needs, because the
+      # free instance sleeps after about fifteen.
+      #
+      # BEST EFFORT, AND THE WORKFLOW SAYS SO. Actions delays scheduled runs under load -
+      # the same caveat that makes every SLA threshold here read "at least N minutes" - so
+      # a ten-minute cron can arrive twenty minutes late and the instance sleeps anyway.
+      # This reduces cold starts; it does not abolish them. A paid plan does.
+      #
+      # WHY IT MATTERS MORE THAN A SLOW ADMIN PAGE: theming is delivered by a
+      # render-blocking @import, so a cold start stalls the client's ENTIRE GHL UI rather
+      # than just the branding. That is the most likely thing to be reported as "GHL is
+      # slow", and it is not a Mosaic screen at all.
+      - name: Keep the web service warm
+        env:
+          # Not a secret - it is in the @import line every agency pastes. Read from either
+          # place, because a repo that keeps everything in Secrets is the common case.
+          BASE: ${{ vars.APP_PUBLIC_URL || secrets.APP_PUBLIC_URL }}
+        run: |
+          if [ -z "$BASE" ]; then
+            echo "::notice::APP_PUBLIC_URL is not set — skipping the keep-warm ping. Add it as a repository VARIABLE (Settings → Secrets and variables → Actions → Variables) pointing at the deployed server, e.g. https://mosaic-server-hiae.onrender.com"
+            exit 0
+          fi
+          URL="${BASE%/}/health"
+          start=$(date +%s)
+          # -m 90 because waking a sleeping free instance takes ~50s and the default
+          # timeout would abandon exactly the request this step exists to make.
+          code=$(curl -sS -o /tmp/health.json -w '%{http_code}' -m 90 --retry 2 --retry-delay 5 "$URL" || echo 000)
+          elapsed=$(( $(date +%s) - start ))
+          echo "GET $URL -> $code in ${elapsed}s"
+          cat /tmp/health.json 2>/dev/null || true
+          echo
+          # Deliberately never fails the job. If the database is genuinely unreachable the
+          # automations step below THROWS and fails it properly, which is the honest
+          # signal; a ping that red-Xes the schedule on a transient runner hiccup teaches
+          # people to ignore this repo's CI, and the next failure it hides is a real one.
+          if [ "$code" = "200" ]; then
+            if [ "$elapsed" -ge 20 ]; then
+              echo "::warning::Woke a sleeping instance — ${elapsed}s. That is the stall a client's whole GHL UI takes on a cold start, because theming is a render-blocking @import."
+            fi
+          else
+            echo "::warning::/health answered $code in ${elapsed}s. 503 means the server is up and its datastore is not — the shape of the August 2026 outage."
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate --schema apps/server/prisma/schema.prisma
+
+      - name: Run ticket automations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          # Exit 0, not 1, when the secret is absent - the same call poll-feeds makes. A
+          # scheduled workflow that fails every ten minutes until somebody configures it
+          # trains people to ignore a red X on this repo, and the failure it would then
+          # hide is a real one. Running no automations is a SUPPORTED state: the queue is
+          # still the source of truth and every ticket is still visible in the desk.
+          #
+          # A pass that THROWS is different and does fail the job, because that means the
+          # automations are broken rather than absent.
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::notice::DATABASE_URL secret is not set — skipping. Add it in Settings → Secrets → Actions to start running ticket automations."
+            exit 0
+          fi
+          npm run ticket-automations --workspace @ghl-theme-builder/server

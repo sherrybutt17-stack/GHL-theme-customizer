@@ -1,0 +1,77 @@
+# Keep the knowledge base current.
+#
+# `poll-feeds` is a SCRIPT ON A SCHEDULE rather than a setInterval in the server, and the
+# two reasons are about the hosting this actually runs on: the free Render web service
+# sleeps after ~15 minutes so an in-process timer simply stops, and if the service ever
+# runs more than one instance, every instance would poll every feed and race the same
+# upserts. Render's own cron is a paid feature — GitHub Actions is not, which is the whole
+# reason this file exists instead of the commented-out block in render.yaml.
+#
+# It needs exactly ONE secret: DATABASE_URL. `validateEnv()` is a function rather than an
+# import-time check, so the poller boots with nothing else set (verified by running it with
+# an empty environment). Either the pooled or the direct Neon endpoint works here — the
+# PgBouncer caveat in CLAUDE.md is about `prisma migrate deploy`, and this job runs no
+# migrations.
+name: Poll knowledge base feeds
+
+on:
+  schedule:
+    # Hourly at :17. Off the hour deliberately: the top of the hour is when every scheduler
+    # on the platform fires, and GitHub delays queued cron runs under that load.
+    - cron: "17 * * * *"
+  # So a feed can be polled on demand right after adding one, without waiting an hour.
+  workflow_dispatch:
+
+# One poll at a time. This is the same concern that keeps the poller out of the server
+# process: two overlapping runs re-fetch every feed and race the same upserts. A queued run
+# is cancelled rather than stacked, because the next hourly run does the identical work.
+concurrency:
+  group: poll-feeds
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    # A feed fetch is network-bound and capped at 5MB per feed, so anything approaching
+    # this is a hang, not slow work.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate --schema apps/server/prisma/schema.prisma
+
+      - name: Poll feeds
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          # Exit 0, not 1, when the secret is absent. A scheduled workflow that fails every
+          # hour until somebody configures it trains people to ignore a red X on this repo,
+          # and the failure it would then hide is a real one. Not scheduling feed polling
+          # is a SUPPORTED state — the corpus simply stops updating.
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::notice::DATABASE_URL secret is not set — skipping. Add it in Settings → Secrets → Actions to start polling."
+            exit 0
+          fi
+          npm run poll-feeds --workspace @ghl-theme-builder/server
+
+      - name: Readiness report
+        # Informational and never fails the job: this step reports on the DEPLOYMENT, not
+        # on whether the poll worked, and conflating them would make a review backlog look
+        # like a broken poller. It is here because readiness is otherwise only logged at
+        # boot — an hourly run is the only regular chance anybody has to read it, and
+        # `feed-review-backlog` is precisely the line that says items are waiting.
+        if: always()
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then exit 0; fi
+          npm run readiness --workspace @ghl-theme-builder/server || true

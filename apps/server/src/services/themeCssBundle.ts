@@ -1,6 +1,7 @@
 import { prisma } from "./prisma";
 import { featureSelector, isSettingsFeature, isKnownFeatureKey } from "./ghlSidebarFeatures";
 import { cssFilterForColor } from "./iconColorFilter";
+import { contrastingTextColor, resolveContentTheme } from "./contentTheme";
 
 /**
  * GHL sidebar logo, confirmed via live DOM inspection:
@@ -40,36 +41,40 @@ const TOP_BAR_SELECTOR = ".hl_header, .hl_header .container-fluid, .hl_header .t
 const TOP_BAR_TEXT_SELECTOR = ".hl_header .topmenu-nav, .hl_header .topmenu-nav *";
 
 /**
- * WCAG relative luminance of a #rgb / #rrggbb colour, or null if unparseable.
- * Used to decide whether text over that colour should be light or dark.
+ * The page CANVAS — what sits behind GHL's own screens, once the sidebar and the top
+ * bar are accounted for.
+ *
+ * Every other selector in this file is either confirmed against live DOM or a
+ * best-effort guess at a GHL class name. This one is deliberately NEITHER, because
+ * nothing in this repository knows what GHL calls its content container:
+ * `check-live-dom.js` stops at `.hl_header` and the mock harness has no content-area
+ * markup at all. So rather than invent `.hl_wrapper` and ship it in a render-blocking
+ * stylesheet, every entry here is something that CANNOT be a guess:
+ *
+ *   body          - universal.
+ *   #app          - an id, therefore unique on the page. It either exists or it does
+ *                   not; it can never match the wrong element.
+ *   main          - a standard element.
+ *   [role=main]   - the ARIA equivalent, for an app that uses a <div> and labels it.
+ *
+ * What that buys is the failure mode. If GHL paints its content inside a private
+ * container we do not name, these rules are a VISIBLE NO-OP: the agency picks a
+ * colour, nothing changes, and they can clear it. They cannot break the layout (both
+ * declarations are colours, never position/size/display), they cannot repaint the
+ * sidebar or the header, and nobody who has not asked for a content theme pays a byte
+ * — the whole block is gated on the fields being set.
+ *
+ * `check-live-dom.js` closes the gap when somebody next has a real GHL tab open: it
+ * walks up from the content and reports which ancestors actually paint an opaque
+ * background, which turns this constant from a safe default into a measured one.
+ *
+ * TEXT uses the same list and deliberately does NOT descend (`body *`). That is the
+ * top-bar rule again, written down 30 lines above: blanket-repainting every
+ * descendant would recolour the text inside GHL's own coloured pills and badges,
+ * which already carry their own contrast. Body copy INHERITS from these containers
+ * and picks the colour up; anything GHL colours on purpose keeps its colour.
  */
-function relativeLuminance(hex: string): number | null {
-  const m = hex.trim().match(/^#?([0-9a-f]{3}|[0-9a-f]{6})$/i);
-  if (!m) return null;
-  let h = m[1];
-  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
-  const channel = (v: number) => {
-    const s = v / 255;
-    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
-  };
-  const r = channel(parseInt(h.slice(0, 2), 16));
-  const g = channel(parseInt(h.slice(2, 4), 16));
-  const b = channel(parseInt(h.slice(4, 6), 16));
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-
-/**
- * Whichever of white / near-black contrasts better against `bg`, by WCAG contrast
- * ratio. Falls back to null when the colour can't be parsed, so the caller can skip
- * the rule instead of guessing wrong and making text unreadable.
- */
-function contrastingTextColor(bg: string): string | null {
-  const lum = relativeLuminance(bg);
-  if (lum === null) return null;
-  const onWhite = 1.05 / (lum + 0.05);
-  const onBlack = (lum + 0.05) / 0.05;
-  return onWhite >= onBlack ? "#ffffff" : "#1f2937";
-}
+const CONTENT_SELECTOR = "body, #app, main, [role='main']";
 
 /** Visual fields shared by ThemeConfig, AgencyDefaultTheme, and ThemePreset. */
 interface VisualTheme {
@@ -90,6 +95,8 @@ interface VisualTheme {
   buttonShape?: string | null;
   menuOrder?: unknown;
   darkMode?: boolean | null;
+  contentBgColor?: string | null;
+  contentTextColor?: string | null;
   hideUpgrade?: boolean | null;
   alertMessage?: string | null;
   alertColor?: string | null;
@@ -187,13 +194,25 @@ function scoped(scope: Scope, selectorList: string): string {
 }
 
 /**
- * Strip characters that could terminate a CSS value or rule (`; { } < >` and
+ * Strip characters that could terminate a CSS value or rule (`; { } < > *` and
  * newlines). Valid colors never contain these, so this can't affect legitimate
  * input - it just stops a malformed/hostile color field from corrupting the whole
  * stylesheet. Raw power-user CSS still goes through the dedicated customCss path.
+ *
+ * `*` is in that set because of COMMENTS, which the original list missed and which are
+ * the worst thing a colour field can carry. Measured in a real browser: a stored
+ * `red/*` opened a comment that ran on until the next `*\/` anywhere in the file — and
+ * this stylesheet is ONE file for the whole agency, so what it swallowed was the rest of
+ * that sub-account's block and then the NEXT sub-account's. Six rules in, one out. The
+ * neighbour's rules are not deleted, either: CSS error recovery re-parses them as NESTED
+ * rules inside the broken one, so they are still in `cssText`, still name the right
+ * location, and match nothing at all.
+ *
+ * `/` is deliberately NOT stripped — `rgb(0 0 0 / 50%)` is a real colour, and killing the
+ * asterisk already closes both comment delimiters.
  */
 export function cssColor(value: string): string {
-  return value.replace(/[;{}<>\\]/g, "").replace(/[\r\n]+/g, " ").trim();
+  return value.replace(/[;{}<>*\\]/g, "").replace(/[\r\n]+/g, " ").trim();
 }
 
 /**
@@ -207,6 +226,51 @@ function cssUrl(value: string): string {
   return value.replace(/["\\{}<>]/g, "").replace(/[\r\n]+/g, " ").trim();
 }
 
+/**
+ * Escape a value that is going INSIDE a CSS string — `content: "…"`.
+ *
+ * This existed twice, written out by hand at the two call sites (the renamed menu label
+ * and the alert banner), and the two copies disagreed. The label folded `[\r\n]+`; the
+ * alert matched `\s*\n\s*`, which needs an actual LF — so a bare CR survived it, and a
+ * FORM FEED survived both. CSS ends a string at any newline, and its definition of one is
+ * LF, CR, CRLF *and* FF: measured in a browser, an alert message pasted out of a PDF took
+ * the neighbouring sub-account's branding down with it.
+ *
+ * The `QUEUE_ORDER` rule again — one definition of a thing, read by everything that uses
+ * it. Two copies of "the same" escaping is how they end up escaping different sets.
+ */
+function cssString(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/[\r\n\f\v\u0085\u2028\u2029]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * Text going inside a `/* … *\/` comment. The block label is the sub-account's name, which
+ * the AGENCY types into GHL — so a `*\/` in it closes the comment early and the rest of the
+ * name is parsed as CSS, unscoped, in front of every other sub-account's block. Measured:
+ * a name of `Acme *\/ #sidebar-v2:has(…another sub-account…) { background: red } /*`
+ * repainted that other client's sidebar.
+ *
+ * The value is nobody's input to trust and nothing renders it, so the whole delimiter goes
+ * rather than one character of it.
+ */
+function cssComment(value: string): string {
+  return value.replace(/\*\//g, "").replace(/[\r\n]+/g, " ");
+}
+
+/**
+ * A font family, reduced to a charset that cannot break out of either place it is used:
+ * the `font-family` declaration and the Google Fonts `@import` at the top of the file.
+ * ONE definition, because those two had their own and the loose one shipped first — see
+ * `fontImports`.
+ */
+function safeFontFamily(value: string | null | undefined): string {
+  return value ? value.replace(/[^a-zA-Z0-9 _-]/g, "").trim() : "";
+}
+
 function sidebarBackground(primary: string, theme: VisualTheme): string {
   if (theme.gradientEnabled && theme.gradientColor) {
     const angle = typeof theme.gradientAngle === "number" ? theme.gradientAngle : 135;
@@ -216,34 +280,142 @@ function sidebarBackground(primary: string, theme: VisualTheme): string {
 }
 
 /**
- * Prefix each top-level selector in a block of raw CSS so a location's custom
- * rules only apply within that sub-account's wrapper. Deliberately simple: it
- * handles flat rules (the common case for the escape hatch) and passes at-rules
- * (@media/@keyframes) through untouched. Agency-default custom CSS uses an empty
- * prefix and is emitted verbatim, so nested/at-rules work fully there.
+ * Read a quoted string starting at `i`, returning it verbatim. CSS ends a string at a raw
+ * newline, so an unterminated one stops there rather than eating the rest of the sheet.
+ */
+function readString(css: string, i: number): { text: string; next: number } {
+  const quote = css[i];
+  let out = quote;
+  let j = i + 1;
+  while (j < css.length) {
+    const ch = css[j];
+    if (ch === "\\" && j + 1 < css.length) { out += ch + css[j + 1]; j += 2; continue; }
+    out += ch;
+    j++;
+    if (ch === quote) break;
+    if (ch === "\n" || ch === "\r" || ch === "\f") break;
+  }
+  return { text: out, next: j };
+}
+
+/** Read the balanced `{ … }` starting at `i`, returning what is INSIDE it. */
+function readBlock(css: string, i: number): { text: string; next: number } {
+  let depth = 0;
+  let j = i;
+  let start = i + 1;
+  while (j < css.length) {
+    const ch = css[j];
+    if (ch === "/" && css[j + 1] === "*") { const e = css.indexOf("*/", j + 2); j = e < 0 ? css.length : e + 2; continue; }
+    if (ch === '"' || ch === "'") { j = readString(css, j).next; continue; }
+    if (ch === "{") { depth++; j++; continue; }
+    if (ch === "}") { depth--; j++; if (depth === 0) return { text: css.slice(start, j - 1), next: j }; continue; }
+    j++;
+  }
+  // Unbalanced — take the remainder rather than dropping it.
+  return { text: css.slice(start), next: css.length };
+}
+
+/** Split a stylesheet into top-level `prelude { block }` pairs, plus statements. */
+function splitTopLevel(css: string): { prelude: string; block: string | null }[] {
+  const parts: { prelude: string; block: string | null }[] = [];
+  let prelude = "";
+  let i = 0;
+  while (i < css.length) {
+    const ch = css[i];
+    if (ch === "/" && css[i + 1] === "*") { const e = css.indexOf("*/", i + 2); i = e < 0 ? css.length : e + 2; continue; }
+    if (ch === '"' || ch === "'") { const s = readString(css, i); prelude += s.text; i = s.next; continue; }
+    if (ch === ";") { parts.push({ prelude, block: null }); prelude = ""; i++; continue; }
+    if (ch === "{") { const b = readBlock(css, i); parts.push({ prelude, block: b.text }); prelude = ""; i = b.next; continue; }
+    prelude += ch;
+    i++;
+  }
+  if (prelude.trim()) parts.push({ prelude, block: null });
+  return parts;
+}
+
+/** At-rules whose block holds ordinary rules, so the prefix belongs INSIDE them. */
+const NESTING_AT_RULE = /^@(-\w+-)?(media|supports|container|layer|scope)\b/i;
+/**
+ * At-rules whose block does NOT hold selectors. `@keyframes`'s `from`/`to`/`50%` are
+ * keyframe selectors, not element selectors, and prefixing them silently kills the
+ * animation; `@font-face` and `@page` have no selector at all.
+ */
+const VERBATIM_AT_RULE = /^@(-\w+-)?(keyframes|font-face|page|counter-style|font-feature-values|property)\b/i;
+/**
+ * Only legal before any other rule in a stylesheet. A per-location block is emitted after
+ * the agency default and after every earlier sub-account, so the browser would ignore
+ * these wherever we put them — dropping them changes nothing and pretending otherwise
+ * would be the worse answer.
+ */
+const TOP_ONLY_AT_RULE = /^@(import|charset|namespace)\b/i;
+
+/**
+ * Prefix each selector in a block of raw CSS so a location's custom rules only apply
+ * within that sub-account's wrapper. Agency-default custom CSS uses an empty prefix and is
+ * emitted verbatim, so everything works fully there.
+ *
+ * This was a single flat regex — `([^{}]+)\{([^{}]*)\}` — under a comment claiming it
+ * "passes at-rules (@media/@keyframes) through untouched". It did the opposite, and both
+ * failures are silent:
+ *
+ *   @media (max-width: 600px) { .hl_nav { display: none } }
+ *     ->  [class~="LOC"] .hl_nav { display: none }
+ *
+ * The media query is GONE and the rule it guarded now applies at every width. Nothing
+ * errors; the agency's mobile tweak simply also happens on the desktop their client uses
+ * all day. `@keyframes pulse { from { opacity: 0 } … }` came out as
+ * `[class~="LOC"] from { opacity: 0 }` — the animation deleted and two junk element
+ * selectors emitted in its place.
+ *
+ * The regex could not see nesting at all: `[^{}]*` stops at the FIRST brace, so it matched
+ * the inner rule and never the wrapper. It also stopped at a brace inside a STRING, so
+ * `content: "}"` truncated the declaration and left an unterminated string — which in this
+ * one-file-per-agency stylesheet is the next sub-account's problem, not this one's.
+ *
+ * Written down and walked into, in the same breath, for the sixth time in this file.
  */
 function scopeCustomCss(css: string, prefix: string): string {
   if (!prefix.trim()) return css.trim();
-  const flatRule = /([^{}]+)\{([^{}]*)\}/g;
+  return scopeBlocks(css, prefix);
+}
+
+function scopeBlocks(css: string, prefix: string): string {
   const out: string[] = [];
-  let m: RegExpExecArray | null;
-  let matched = false;
-  while ((m = flatRule.exec(css)) !== null) {
-    matched = true;
-    const sel = m[1].trim();
-    const body = m[2].trim();
-    if (!sel || sel.startsWith("@")) {
-      out.push(`${sel} { ${body} }`);
+  const loose: string[] = [];
+  for (const { prelude, block } of splitTopLevel(css)) {
+    /**
+     * A stray `}` can only be somebody closing a block we never opened, and left in the
+     * prelude it would close OURS — putting the rest of this sub-account's custom CSS, and
+     * then the next sub-account's block, outside the scope entirely. The old regex dropped
+     * it as a side effect of `[^{}]+`; here it has to be deliberate.
+     */
+    const head = prelude.replace(/[}]/g, " ").trim();
+    if (block === null) {
+      // No block: either a statement at-rule, or a bare declaration (the escape hatch's
+      // documented fallback — somebody pasting `color: red` rather than a whole rule).
+      if (!head) continue;
+      if (head.startsWith("@")) { if (!TOP_ONLY_AT_RULE.test(head)) out.push(`${head};`); }
+      else loose.push(head);
       continue;
     }
-    const scopedSel = sel
+    if (head.startsWith("@")) {
+      if (NESTING_AT_RULE.test(head)) out.push(`${head} {\n${scopeBlocks(block, prefix)}\n}`);
+      else if (TOP_ONLY_AT_RULE.test(head)) continue;
+      else if (VERBATIM_AT_RULE.test(head)) out.push(`${head} { ${block.trim()} }`);
+      else out.push(`${head} {\n${scopeBlocks(block, prefix)}\n}`);
+      continue;
+    }
+    if (!head) continue;
+    const scopedSel = head
       .split(",")
-      .map((s) => `${prefix} ${s.trim()}`)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => `${prefix} ${s}`)
       .join(", ");
-    out.push(`${scopedSel} { ${body} }`);
+    out.push(`${scopedSel} { ${block.trim()} }`);
   }
-  // Fallback for input that isn't a full rule (bare declarations): wrap it.
-  return matched ? out.join("\n") : `${prefix} { ${css.trim()} }`;
+  if (loose.length) out.push(`${prefix} { ${loose.join("; ")} }`);
+  return out.join("\n");
 }
 
 /** Render the CSS rules for one theme under one scope. */
@@ -327,7 +499,7 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
   // Font family (applies to the whole scoped subtree; for global, to sidebar + body).
   // Sanitize to a safe identifier charset FIRST - an unescaped quote/brace here would
   // otherwise break out of the declaration and inject arbitrary (unscoped) CSS.
-  const fontFamily = theme.fontFamily ? theme.fontFamily.replace(/[^a-zA-Z0-9 _-]/g, "").trim() : "";
+  const fontFamily = safeFontFamily(theme.fontFamily);
   if (fontFamily) {
     const stack = `'${fontFamily}', sans-serif`;
     if (scope.prefix) {
@@ -345,6 +517,35 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
     const text = contrastingTextColor(bar);
     if (text) {
       rules.push(`${scoped(scope, TOP_BAR_TEXT_SELECTOR)} { color: ${text} !important; }`);
+    }
+  }
+
+  // The content area — the page canvas behind GHL's own screens, and the one part of
+  // the product that had columns, a preset field, an editor state default and a PUT
+  // whitelist entry while rendering nothing at all.
+  //
+  // Emitted ONLY when something was asked for. `resolveContentTheme` returns null for
+  // a theme with no content colours and dark mode off, which is every theme that
+  // exists today, so nobody pays for this in a render-blocking stylesheet until they
+  // switch it on.
+  //
+  // `body` is an ANCESTOR of the location wrapper, not a descendant, so the usual
+  // `scoped()` prefix cannot reach it — `[class~="LOC"] body` matches nothing. This
+  // takes the alert banner's route instead and hangs the whole thing off
+  // `html:has(<wrapper>)`, which scopes the page to sub-accounts whose wrapper is
+  // present while keeping the selector an ancestor of body. It also keeps the
+  // specificity ordering the rest of the file relies on: the location form outranks
+  // the agency default on every entry in the list.
+  const content = resolveContentTheme(theme);
+  if (content) {
+    const contentSel = scope.prefix
+      ? `html:has(${scope.prefix}) :is(${CONTENT_SELECTOR})`
+      : CONTENT_SELECTOR;
+    if (content.bg) {
+      rules.push(`${contentSel} { background-color: ${cssColor(content.bg)} !important; }`);
+    }
+    if (content.text) {
+      rules.push(`${contentSel} { color: ${cssColor(content.text)} !important; }`);
     }
   }
 
@@ -445,7 +646,7 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
   for (const [key, label] of Object.entries(labels)) {
     // Same whitelist as feature-hiding: never let an unknown key reach a selector.
     if (!label || !isKnownFeatureKey(key)) continue;
-    const safe = label.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]+/g, " ");
+    const safe = cssString(label);
     const parts = featureLabelSelectorsScoped(key, scope);
     rules.push(`${parts.join(", ")} { font-size: 0 !important; }`);
     rules.push(
@@ -464,7 +665,7 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
     // contain that sub-account's wrapper element.
     const target = scope.prefix ? `html:has(${scope.prefix})` : "body";
     const color = cssColor(theme.alertColor || "#4f46e5");
-    const safe = theme.alertMessage.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\s*\n\s*/g, " ");
+    const safe = cssString(theme.alertMessage);
     rules.push(
       `${target}::before { content: "${safe}" !important; position: fixed !important; bottom: 20px !important; left: 50% !important; transform: translateX(-50%) !important; z-index: 2147483000 !important; background: ${color} !important; color: #fff !important; padding: 12px 24px !important; border-radius: 999px !important; font-weight: 600 !important; font-size: 14px !important; box-shadow: 0 8px 24px rgba(0,0,0,0.25) !important; max-width: 90vw !important; text-align: center !important; pointer-events: none !important; }`
     );
@@ -479,11 +680,27 @@ export function renderRules(scope: Scope, theme: VisualTheme): string[] {
   return rules;
 }
 
-/** Collect distinct Google Font families for the @import block at the top. */
+/**
+ * Collect distinct Google Font families for the @import block at the top.
+ *
+ * Through `safeFontFamily`, and that is a fix rather than tidying. This built its URL with
+ * `encodeURIComponent`, which does not escape `'`, `(` or `)` — so a font family with an
+ * apostrophe in it closed the `url('…')` early. Measured in a real browser: the whole
+ * stylesheet parsed to **ZERO rules**. Not the font, not that sub-account — every rule for
+ * every sub-account of that agency, because `@import` sits at the top of the one file they
+ * all share and the parser never recovers its footing.
+ *
+ * `renderRules` had been sanitising the same value to `[a-zA-Z0-9 _-]` four hundred lines
+ * further down, with a comment saying exactly why. Two definitions of "what is a font
+ * family", and the loose one ran first. They also disagreed in the BENIGN case: the import
+ * asked Google for `Ev'il Sans` while the declaration referenced `'Evil Sans'`, so even
+ * when nothing broke, the font that was fetched was not the font that was used.
+ */
 function fontImports(themes: VisualTheme[]): string {
   const families = new Set<string>();
   for (const t of themes) {
-    if (t.fontFamily) families.add(t.fontFamily);
+    const f = safeFontFamily(t.fontFamily);
+    if (f) families.add(f);
   }
   return [...families]
     .map(
@@ -592,7 +809,7 @@ export async function generateThemeCssBundle(agencyInstallId: string): Promise<s
 
   for (const { loc, theme } of locationThemes) {
     blocks.push(
-      `/* ${loc.locationName ?? loc.ghlLocationId} */\n` +
+      `/* ${cssComment(loc.locationName ?? loc.ghlLocationId)} */\n` +
         renderRules(locationScope(loc.ghlLocationId), theme as VisualTheme).join("\n")
     );
   }

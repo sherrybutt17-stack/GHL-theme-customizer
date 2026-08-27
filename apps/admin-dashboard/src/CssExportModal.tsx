@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchEmbedInfo, type EmbedInfo } from "./api";
 
 interface Props {
@@ -6,14 +6,27 @@ interface Props {
   onClose: () => void;
 }
 
+/** The three things this screen hands over, each with its own button. */
+type Which = "import" | "full" | "js";
+
 export function CssExportModal({ agencyInstallId, onClose }: Props) {
   const [embed, setEmbed] = useState<EmbedInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [copied, setCopied] = useState<"import" | "full" | "js" | null>(null);
+  const [copied, setCopied] = useState<Which | null>(null);
   const [showJs, setShowJs] = useState(false);
-  const [copyFailed, setCopyFailed] = useState(false);
+  const [copyFailed, setCopyFailed] = useState<{ which: Which; selected: boolean } | null>(null);
   const [showFull, setShowFull] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  /**
+   * One ref per snippet, so a failed copy can SELECT the text rather than tell somebody to
+   * drag-select 31KB out of a 260px scroll box — see selectSnippet below.
+   */
+  const failRef = useRef<HTMLParagraphElement>(null);
+  const preRefs: Record<Which, React.RefObject<HTMLPreElement>> = {
+    import: useRef<HTMLPreElement>(null),
+    js: useRef<HTMLPreElement>(null),
+    full: useRef<HTMLPreElement>(null),
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -22,6 +35,10 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  useEffect(() => {
+    if (copyFailed) failRef.current?.scrollIntoView({ block: "nearest" });
+  }, [copyFailed]);
 
   useEffect(() => {
     let cancelled = false;
@@ -79,15 +96,69 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
     }
   }
 
-  async function copy(text: string, which: "import" | "full" | "js") {
-    if (await writeClipboard(text)) {
-      setCopied(which);
-      setTimeout(() => setCopied(null), 2000);
-    } else {
-      setCopyFailed(true);
-      setTimeout(() => setCopyFailed(false), 4000);
+  /**
+   * The manual fallback has to be performable. "Select the code above" is fine for a
+   * 90-byte @import line and close to useless for the 31KB JavaScript snippet, which sits
+   * in a 260px scroll box — so on a failure we put the caret round it ourselves and the
+   * message drops to one keystroke.
+   */
+  function selectSnippet(which: Which): boolean {
+    const el = preRefs[which].current;
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    if (!el || !sel) return false;
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return true;
+    } catch {
+      return false;
     }
   }
+
+  async function copy(text: string, which: Which) {
+    // Each timer clears only its OWN message. A bare setCopied(null) lets the first
+    // click's timeout wipe the second click's answer, which is how a real failure
+    // disappears two seconds after somebody triggers it.
+    if (await writeClipboard(text)) {
+      setCopyFailed((f) => (f?.which === which ? null : f));
+      setCopied(which);
+      setTimeout(() => setCopied((c) => (c === which ? null : c)), 2000);
+    } else {
+      setCopied((c) => (c === which ? null : c));
+      setCopyFailed({ which, selected: selectSnippet(which) });
+      setTimeout(() => setCopyFailed((f) => (f?.which === which ? null : f)), 4000);
+    }
+  }
+
+  /**
+   * Rendered DIRECTLY BENEATH the button that failed, never once at the top of the body.
+   *
+   * It used to be a single block just under the one-line embed, so a failed "Copy full
+   * CSS" reported itself 891px higher up and — measured at a 1440x780 viewport with both
+   * disclosures open — SCROLLED CLEAN OUT of the modal body. The label does not change on
+   * failure, so there was nothing on screen at all: a dead button. "Copy JavaScript" fared
+   * only slightly better at 450px, where "select the line above" pointed at the @import
+   * line rather than the snippet that had just failed, i.e. the wrong thing to copy.
+   *
+   * Same shape as the login-tab upload errors reported through the branding tab's slot:
+   * the message was correct and nobody was looking at where it appeared. And it is the
+   * mirror of the bug this component was already fixed for — that one LIED about a copy
+   * that never happened; stopping the lie left the failure mute on two of three buttons.
+   */
+  function copyFailure(which: Which, noun: string) {
+    if (copyFailed?.which !== which) return null;
+    return (
+      <p ref={failRef} style={{ fontSize: 12, color: "#b45309", margin: "8px 0 0" }}>
+        {copyFailed.selected
+          ? `Couldn't copy automatically — the ${noun} above is selected, press \u2318/Ctrl+C.`
+          : `Couldn't copy automatically — select the ${noun} above and press \u2318/Ctrl+C.`}
+      </p>
+    );
+  }
+
+  const placeholder = loadError ? "Couldn't load — use \u201cTry again\u201d above." : "Loading…";
 
   const preStyle: React.CSSProperties = {
     background: "#111",
@@ -129,7 +200,9 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
             </div>
           ) : (
             <>
-              <pre style={preStyle}>{embed?.importSnippet ?? "Loading…"}</pre>
+              <pre ref={preRefs.import} style={preStyle}>
+                {embed?.importSnippet ?? "Loading…"}
+              </pre>
               <button
                 className="btn btn-primary"
                 disabled={!embed}
@@ -137,24 +210,41 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
               >
                 {copied === "import" ? "Copied!" : "Copy one-line embed"}
               </button>
+              {copyFailure("import", "line")}
             </>
-          )}
-          {copyFailed && (
-            <p style={{ fontSize: 12, color: "#b45309", margin: "8px 0 0" }}>
-              Couldn't copy automatically — select the line above and press ⌘/Ctrl+C.
-            </p>
           )}
 
           <div style={{ marginTop: 20, borderTop: "1px solid var(--border)", paddingTop: 16 }}>
+            {/*
+              * The LABEL carries the consequence, and no longer leads with "optional".
+              *
+              * Everything correct about this section was one click away: expanded, it already
+              * explains that the snippet is never re-pasted and that the bubble appears months
+              * later when support is switched on. Collapsed — which is how everyone meets it —
+              * it read "Show optional JavaScript", a word that argues against the click, with
+              * nothing about what skipping it costs.
+              *
+              * That is the same trap as the onboarding page, on the screen an agency returns to
+              * when they DO come back. "Optional" is also not quite true: it is optional for
+              * theming and required for the tab title, the favicon and support, which is a
+              * different sentence and the one worth saying.
+              */}
             <button className="btn btn-ghost" onClick={() => setShowJs((v) => !v)}>
-              {showJs ? "Hide" : "Show"} optional JavaScript (tab title + client support)
+              {showJs ? "Hide" : "Show"} the JavaScript snippet (tab title, favicon, client support)
             </button>
+            {!showJs && (
+              <p style={{ fontSize: 12, color: "#92610a", margin: "6px 0 0" }}>
+                Paste it even if support is off today — it stays inactive until you switch support
+                on, and skipping it is the one thing that brings you back here later.
+              </p>
+            )}
             {showJs && (
               <>
                 <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "8px 0" }}>
-                  Optional, and needed for two things CSS can't do: the browser-tab title and
-                  favicon, and the client support bubble. Paste this <strong>once</strong> into
-                  GHL's <strong>Settings &rarr; Company &rarr; Custom JavaScript</strong>.
+                  Not needed for theming — needed for the three things CSS cannot do: the
+                  browser-tab title, the favicon, and the client support bubble. Paste this{" "}
+                  <strong>once</strong> into GHL's{" "}
+                  <strong>Settings &rarr; Company &rarr; Custom JavaScript</strong>.
                 </p>
                 {/*
                   Stated explicitly because the alternative is an agency turning support on
@@ -166,7 +256,9 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
                   bubble appears or disappears as you switch support on and off — including if you
                   turn support on for the first time months from now.
                 </p>
-                <pre style={preStyle}>{embed?.jsSnippet ?? "Loading…"}</pre>
+                <pre ref={preRefs.js} style={preStyle}>
+                  {embed?.jsSnippet ?? placeholder}
+                </pre>
                 <button
                   className="btn"
                   disabled={!embed}
@@ -174,6 +266,7 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
                 >
                   {copied === "js" ? "Copied!" : "Copy JavaScript"}
                 </button>
+                {copyFailure("js", "code")}
               </>
             )}
           </div>
@@ -188,7 +281,9 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
                   If the one-liner doesn't take effect, paste this full version instead. Note: you'll
                   need to re-copy it here whenever you change a theme.
                 </p>
-                <pre style={preStyle}>{embed?.fullCss ?? "Loading…"}</pre>
+                <pre ref={preRefs.full} style={preStyle}>
+                  {embed?.fullCss ?? placeholder}
+                </pre>
                 <button
                   className="btn"
                   disabled={!embed}
@@ -196,6 +291,7 @@ export function CssExportModal({ agencyInstallId, onClose }: Props) {
                 >
                   {copied === "full" ? "Copied!" : "Copy full CSS"}
                 </button>
+                {copyFailure("full", "code")}
               </>
             )}
           </div>

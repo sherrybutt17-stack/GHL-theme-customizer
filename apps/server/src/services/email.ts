@@ -1,4 +1,5 @@
 import { describeError } from "./security";
+import { visibleOutsideMosaic } from "./transcriptVisibility";
 
 /**
  * Outbound email, over Resend's REST API with plain `fetch`.
@@ -81,13 +82,26 @@ export async function sendEmail(input: {
   }
 }
 
-/** Trim a transcript into something readable in an email client. */
+/**
+ * Trim a transcript into something readable in an email client.
+ *
+ * FILTERED, and filtered here rather than at the call site. `system` rows are Mosaic's
+ * own workflow — transfers, tier raises, "held by Ada for at least 90 minutes with no
+ * reply to the client", "Ada's account was disabled" — sharing one table with the
+ * conversation. They were going out under the label "Note:", which reads as something we
+ * wrote for the agency deliberately.
+ *
+ * The route hands over `conversation.messages` whole, and so would the next caller. The
+ * allowlist is the guarantee, so it lives where it cannot be forgotten — the same reason
+ * `searchKb` keeps its `status = 'ready'` filter in the SQL rather than in its callers.
+ */
 function renderTranscript(messages: { role: string; body: string }[], limit = 20): string {
-  const label: Record<string, string> = { user: "Client", bot: "Assistant", agent: "Mosaic", system: "Note" };
-  return messages
-    .slice(-limit)
-    .map((m) => `${label[m.role] ?? m.role}: ${m.body}`)
-    .join("\n\n");
+  const label: Record<string, string> = { user: "Client", bot: "Assistant", agent: "Mosaic" };
+  const visible = visibleOutsideMosaic(messages).slice(-limit);
+  // A heading with nothing under it reads as a truncated email, which on this one is the
+  // difference between "they said nothing" and "we sent you nothing".
+  if (visible.length === 0) return "(nothing the client wrote or was told is on this conversation yet.)";
+  return visible.map((m) => `${label[m.role] ?? m.role}: ${m.body}`).join("\n\n");
 }
 
 /**
@@ -95,8 +109,12 @@ function renderTranscript(messages: { role: string; body: string }[], limit = 20
  *
  * Written for a reader who already knows the platform is GoHighLevel — they're a GHL
  * agency. So no brand substitution and no gating here; that machinery exists for text
- * that reaches a CLIENT. What this must never contain is a Mosaic-internal source URL,
- * so the transcript is passed in already stripped of citations.
+ * that reaches a CLIENT.
+ *
+ * What it must never contain is Mosaic's own workings. Two of those, and only one had
+ * ever been thought about: source URLs (the caller strips citations) and `system`
+ * messages, which are filtered by `renderTranscript` below. `note` is the deliberate
+ * channel for anything our team wants this reader to know — the transcript is not.
  */
 export async function notifyAgencyOfHandoff(input: {
   to: string[];

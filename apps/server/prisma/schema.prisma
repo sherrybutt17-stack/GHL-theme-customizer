@@ -63,6 +63,19 @@ enum ConversationStatus {
   abandoned
 }
 
+// How this conversation came to exist.
+//
+// Load-bearing for METRICS, not for display. `supportStats` measures deflection over
+// settled conversations, and a ticket a Mosaic agent typed in after a phone call was
+// never offered to the bot at all - counting it as "the bot failed to deflect this"
+// would make the bot look worse every single time somebody logged one.
+enum ConversationOrigin {
+  // The client opened the support widget. Everything before 2026-08 is this.
+  widget
+  // Mosaic staff raised it in the desk on a client's behalf.
+  desk
+}
+
 enum MessageRole {
   user
   bot
@@ -348,7 +361,8 @@ model DeskUser {
   updatedAt     DateTime  @updatedAt
 
   sessions      DeskSession[]
-  assigned      Conversation[]
+  assigned      Conversation[] @relation("ConversationAssignee")
+  raised        Conversation[] @relation("ConversationCreator")
   cannedReplies CannedReply[]
 
   @@index([status])
@@ -392,6 +406,17 @@ model KbArticle {
   // no links at all. Unique so a recrawl upserts instead of duplicating. Postgres
   // treats NULLs as distinct, which is what lets authored agency articles omit it.
   sourceUrl         String?   @unique
+  // Which feed brought this in, when one did. NULL for hand-written and crawled content.
+  //
+  // Without it there is no way to act on one publisher's items as a group, and the CLI's
+  // `--approve-all --feed <id>` silently operated on EVERY pending shared article — a flag
+  // that names a scope and does not apply it, which with two shared feeds means trusting
+  // one publisher publishes the other's backlog too.
+  //
+  // SetNull, never Cascade: removing a feed must not delete articles already read and
+  // approved. They are part of the corpus at that point, not the feed's property.
+  feedId            String?
+  feed              KbFeed?   @relation(fields: [feedId], references: [id], onDelete: SetNull)
   titleNormalized   String
   bodyNormalized    String
   // Hash of the RAW source text, so a recrawl can tell "changed" from "unchanged"
@@ -416,6 +441,7 @@ model KbArticle {
   @@index([agencyInstallId])
   @@index([status])
   @@index([source])
+  @@index([feedId])
 }
 
 // A syndication feed polled for new knowledge base articles.
@@ -466,6 +492,8 @@ model KbFeed {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
+  articles          KbArticle[]
+
   @@index([agencyInstallId])
   @@index([enabled])
 }
@@ -509,6 +537,17 @@ model SupportConfig {
   userNoun            String?
   planTiers           Json?
 
+  // How long a client may wait for their FIRST human reply, per priority, in minutes:
+  // { "low": 480, "normal": 240, "high": 60, "urgent": 15 }. Null falls back to exactly
+  // those values in code (services/ticketSla.ts), so an agency that has never opened
+  // the setting still gets a working SLA rather than none.
+  //
+  // Counted in the agency's OWN OPEN HOURS, never wall clock - see businessHours.ts.
+  // Against the wall, a ticket raised at 9pm breaches overnight and the automation
+  // burns through all three tiers before anybody is awake, so every morning would start
+  // with a tier-3 backlog manufactured entirely by the clock.
+  slaFirstResponseMins Json?
+
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 }
@@ -525,9 +564,18 @@ model Conversation {
   // The widget is unauthenticated - it runs on a GHL page with no login of its own -
   // so a per-conversation bearer is what stops one client reading another's chat.
   // Only the SHA-256 hash is stored, like DeskSession.
-  accessTokenHash   String    @unique
+  //
+  // NULLABLE because a desk-raised ticket has no widget session. The alternative -
+  // minting a token nobody is ever handed - would create a live credential we cannot
+  // reason about, and would make "has a token" stop meaning "a client can reach this".
+  // NULL states the fact. Postgres treats NULLs as distinct in a unique index, so the
+  // constraint still holds for real sessions, and `requireConversation` looks up by
+  // hashToken(header) - which can never produce NULL - so a desk ticket is unreachable
+  // from the widget by construction rather than by a check somebody must remember.
+  accessTokenHash   String?   @unique
 
   status            ConversationStatus @default(open)
+  origin            ConversationOrigin @default(widget)
   // True when the bot resolved it with no human involved. This is the metric that
   // decides support headcount, so it is recorded from day one.
   deflected         Boolean   @default(false)
@@ -541,9 +589,28 @@ model Conversation {
   // Message has role=user.
   subject           String?
   priority          TicketPriority @default(normal)
+  // What kind of problem this is, from a fixed list (services/ticketTypes.ts) rather
+  // than free text - forty spellings of "billing" answer no question at all. This is
+  // the only thing that can say what clients contact us ABOUT: the topic breakdown in
+  // supportStats comes from the featureTags of CITED articles, so it can only ever
+  // describe questions the knowledge base already answered.
+  ticketType        String?
   assignedToId      String?
-  assignedTo        DeskUser? @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
+  assignedTo        DeskUser? @relation("ConversationAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
   assignedAt        DateTime?
+  // Who raised it, when a human did. NULL for every widget conversation - the client
+  // raised those. SetNull for the same reason as the assignee: offboarding somebody
+  // must never delete a client's ticket.
+  createdByDeskUserId String?
+  createdBy         DeskUser? @relation("ConversationCreator", fields: [createdByDeskUserId], references: [id], onDelete: SetNull)
+  // Parked until a stated time, then it comes back on its own (the unsnooze pass in
+  // scripts/runTicketAutomations.ts). The one ticket state that genuinely cannot be
+  // derived from anything else, because it is a decision about the FUTURE.
+  //
+  // Deliberately not a `status` value: "in progress" is assignedToId being set, and
+  // "waiting for the customer" is the newest message's role. Encoding all three as
+  // statuses is how a status column stops being answerable.
+  snoozedUntil      DateTime?
   // When this entered the HUMAN queue - i.e. when it was escalated, not when the
   // client opened the widget. Measuring the wait from `startedAt` counts every minute
   // the client spent happily talking to the bot as time they were kept waiting, which
@@ -561,6 +628,36 @@ model Conversation {
   // Set when we hand off to the AGENCY (their billing, contracts, custom work): the
   // tier-3 hop that exists because Mosaic's staff answer on the agency's behalf.
   handedToAgencyAt  DateTime?
+  // Stop the bot answering over the top of a human.
+  //
+  // Set when an agent claims or replies, and by both desk ticket-creation paths. The
+  // bug it fixes: the widget's message route called answerQuestion unconditionally, so
+  // an agent could claim a ticket, reply, and have the BOT answer the client's next
+  // message on top of them - contradicting the agent, or re-offering a hand-off for a
+  // ticket already being handled.
+  //
+  // A column rather than a tag: the tag version of this is one typo away from silently
+  // re-enabling the bot in the middle of a live conversation, and nothing would say so.
+  // Cleared when the conversation resolves, or a client returning weeks later to a
+  // reopened thread gets silence from a bot an absent agent paused.
+  botPaused         Boolean   @default(false)
+
+  // --- Automation claim columns (scripts/runTicketAutomations.ts) ---
+  // These are CLAIMS, not logs. Each is written in the same conditional updateMany that
+  // decides to act, so two overlapping runs cannot both notify: the loser matches zero
+  // rows. Writing them after sending instead would mean a crash mid-send duplicates the
+  // alert on the next pass.
+  lastReminderAt    DateTime?
+  slaBreachedAt     DateTime?
+  // The client is warned before an idle conversation is closed, so this records that
+  // the warning went out and stops it repeating every ten minutes.
+  idleWarnedAt      DateTime?
+
+  // The client's own contact details, when we have them. Every widget conversation
+  // starts with none - the widget has no login and asks for nothing.
+  contactEmail      String?
+  contactName       String?
+
   // Gate telemetry. A rising leak rate is a regression signal, per agency.
   brandLeakHits     Int       @default(0)
   overlapRejects    Int       @default(0)
@@ -582,6 +679,13 @@ model Conversation {
   // The queue pop: unclaimed escalations within an agent's tier, best-first. Both the
   // desk's "take next" and the client's "you are 3rd" read through this one order.
   @@index([status, assignedToId, tier, priority, queuedAt])
+  // The SLA sweep: "still waiting on a first human reply". Runs every ten minutes over
+  // the whole table, so it must not be a scan.
+  @@index([status, firstAgentReplyAt])
+  // The unsnooze sweep. Postgres skips NULLs in a b-tree scan for `not null` ranges,
+  // so this stays small however many conversations exist.
+  @@index([snoozedUntil])
+  @@index([createdByDeskUserId])
 }
 
 enum TicketPriority {

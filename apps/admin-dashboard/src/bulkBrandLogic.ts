@@ -68,14 +68,31 @@ function parseRows(text: string, locations: LocationRow[]): RowState[] {
     });
 }
 
-export /** A complete theme payload: everything the sub-account already has, plus what we found. */
-function mergedTheme(existing: ThemeConfig | null, patch: Partial<ThemeInput>): ThemeInput {
+/**
+ * A complete theme payload: everything the sub-account already has, plus what we found.
+ *
+ * COMPLETE because it has to be — `visualFields` on the server unconditionally resets any
+ * column the payload omits, so a partial PUT would clear the font, corner radius, top bar
+ * and alert banner on every sub-account this touches.
+ *
+ * "Everything they already have" must therefore include **not having chosen a colour**.
+ * These fields used to fall back to hex literals, and `accentColor` fell back to the same
+ * `#f59e0b` that `lookFrom` was fixed for on 2026-08-23 — a THIRD hardcoded idea of what a
+ * theme looks like, in the one tool that writes forty-one sub-accounts at a time. A scan
+ * that finds a brand colour and no usable logo palette sets `primary` and leaves `accent`
+ * undefined (brandScan's own doc: a result "may have only themeColor, only an image"), so
+ * the amber went in unasked, and `renderRules` paints the active menu item from it.
+ *
+ * An unset colour is `""` — the same thing the editor stores for a cleared field, and what
+ * `renderRules` reads as "fall through to the primary". Do not put a hex literal here.
+ */
+export function mergedTheme(existing: ThemeConfig | null, patch: Partial<ThemeInput>): ThemeInput {
   return {
     logoUrl: existing?.logoUrl ?? "",
     faviconUrl: existing?.faviconUrl ?? null,
-    primaryColor: existing?.primaryColor ?? "#4f46e5",
-    secondaryColor: existing?.secondaryColor ?? existing?.primaryColor ?? "#4f46e5",
-    accentColor: existing?.accentColor ?? "#f59e0b",
+    primaryColor: existing?.primaryColor ?? "",
+    secondaryColor: existing?.secondaryColor ?? existing?.primaryColor ?? "",
+    accentColor: existing?.accentColor ?? "",
     fontFamily: existing?.fontFamily ?? "",
     gradientEnabled: existing?.gradientEnabled ?? false,
     gradientColor: existing?.gradientColor ?? "#1e293b",
@@ -89,6 +106,8 @@ function mergedTheme(existing: ThemeConfig | null, patch: Partial<ThemeInput>): 
     sidebarIconColor: existing?.sidebarIconColor ?? "",
     buttonShape: existing?.buttonShape ?? "",
     darkMode: existing?.darkMode ?? false,
+    contentBgColor: existing?.contentBgColor ?? "",
+    contentTextColor: existing?.contentTextColor ?? "",
     hideUpgrade: existing?.hideUpgrade ?? false,
     alertMessage: existing?.alertMessage ?? "",
     alertColor: existing?.alertColor ?? "",
@@ -98,4 +117,32 @@ function mergedTheme(existing: ThemeConfig | null, patch: Partial<ThemeInput>): 
     menuOrder: (existing?.menuOrder as string[] | null) ?? [],
     ...patch,
   };
+}
+
+/**
+ * Would closing this modal throw work away?
+ *
+ * Extracted for the same reason as `summariseBulk` and `slaTone`: it is a judgement a
+ * person acts on, and inline in a component it can only be checked by clicking — which is
+ * exactly how it went unnoticed that the modal had no guard at all. The Escape handler
+ * even carried the comment "Never lose a long pasted list to a stray Escape" while
+ * guarding only on `busy`, so a stray Escape lost the list, and a completed scan with it.
+ *
+ * Two distinct losses, and the prompt has to name the right one or people learn to click
+ * through it:
+ *  - `ready` rows are sites already READ and not yet applied. This is the expensive half:
+ *    the scan is deliberately sequential (41 simultaneous fetches at other people's
+ *    websites is how an IP gets blocked), so redoing it is another pass over every site.
+ *  - a pasted list nothing has come of yet is just typing, but it is still typing nobody
+ *    wants to redo for 41 clients.
+ *
+ * A run that has SAVED something is not dirty on account of the list: those rows are in
+ * the database and closing costs nothing. Unapplied scans still count, because they are
+ * not.
+ */
+export function bulkBrandDirty(rows: RowState[] | null, text: string): "scans" | "list" | null {
+  const ready = (rows ?? []).filter((r) => r.status === "ready").length;
+  if (ready > 0) return "scans";
+  const anySaved = (rows ?? []).some((r) => r.status === "saved");
+  return text.trim() !== "" && !anySaved ? "list" : null;
 }

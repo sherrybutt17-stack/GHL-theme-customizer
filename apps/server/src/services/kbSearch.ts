@@ -82,8 +82,70 @@ const MAX_QUERY_CHARS = 500;
  * zero rows. Worth re-running whenever the corpus grows substantially — more articles
  * means more chances for an off-topic question to find two matching terms, and if that
  * fail-safe erodes, genuinely unanswerable questions stop reaching a human.
+ *
+ * RAISED 0.1 -> 0.25 at 412 articles (2026-08-17), when crawled vendor documentation was
+ * added. That prediction came true almost immediately: 159 crawled articles — SIX PER CENT
+ * of the full help centre — took the off-topic controls from 1/6 leaking to **5/6**.
+ * "capital city of portugal" returned a voice-permissions article; "best way to cook a
+ * medium rare steak" returned five hits. Measured with `scratchpad/probe-crawl-impact.ts`,
+ * which A/Bs the identical probe by toggling the crawled rows' status rather than trusting
+ * a reading taken before and after (the first attempt did that and measured neither state,
+ * because a crawl was still running).
+ *
+ * Swept, rather than guessed:
+ *
+ *   minRank | off-topic leaks | answerable questions still retrieving
+ *   --------+-----------------+--------------------------------------
+ *     0.10  |      5/6        |   10/10     <- shipped, fail-safe broken
+ *     0.20  |      0/6        |    9/10
+ *     0.25  |      0/6        |    9/10     <- chosen: middle of the safe window
+ *     0.30  |      0/6        |    9/10
+ *     0.50  |      0/6        |    4/10     <- suppresses real matches
+ *
+ * 0.25 rather than 0.20 because 0.20–0.30 behave identically, so the middle is the robust
+ * choice and an edge is not. The one question that stops retrieving returns NOTHING and is
+ * therefore handed to a human — the safe direction, and exactly what this floor is for.
+ *
+ * ---------------------------------------------------------------------------------------
+ * THE TABLE ABOVE WAS MEASURED AT 412 ARTICLES AND HAS DRIFTED. Re-measured 2026-08-20 at
+ * 1,443 (`scratchpad/probe-floor-sweep.ts`), against the THIRTY questions in
+ * `verify-kb-coverage` rather than the ten this table used:
+ *
+ *   minRank | off-topic leaks | answerable questions retrieving NOTHING
+ *   --------+-----------------+----------------------------------------
+ *     0.20  |      2/6        |    0/30      <- table above says 0/6. It is now 2/6.
+ *     0.25  |      0/6        |    4/30      <- shipped
+ *
+ * The two windows NO LONGER OVERLAP. Zero leaks needs >= 0.25; zero silenced needs <= 0.20.
+ * At 0.25 four ordinary questions retrieve nothing while the article answering each sits in
+ * the corpus, `ready` — coupons-and-discounts, the-chat-widget-on-your-website,
+ * custom-fields, products-and-prices — so `supportBot` reads thin retrieval and files a
+ * ticket. That is the failure two-pass retrieval was built to remove, returning by a
+ * different door as the corpus grows.
+ *
+ * The floor is not the lever, and four candidates were measured and rejected: ts_rank
+ * length normalisation narrows the overlap but never inverts it; MIN_LOOSE_TERM_HITS trades
+ * one axis for the other; the 424 HTML-fallback articles are not the leak source (removing
+ * their chrome changed the table by nothing at all); and raising the provenance multiplier
+ * does nothing on its own. The leaks are ordinary English — "when", "second", "world",
+ * "best" — which a large corpus of verbose vendor documentation supplies in quantity.
+ *
+ * WHAT DID WORK was not a tuning at all: the floor below was comparing the RAW ts_rank
+ * while the SELECT ordered by the BOOSTED one. Making them the same expression, with the
+ * VALUE 0.25 unchanged:
+ *
+ *   off-topic leaks                       0/6 -> 0/6    (unchanged — the fail-safe holds)
+ *   answerable questions retrieving none  4/30 -> 1/30
+ *   wanted article first                 11/30 -> 13/30
+ *   wanted article in the top 5          14/30 -> 20/30
+ *
+ * One question is still silenced at 0.25 and the windows still do not fully overlap, so the
+ * VALUE remains a judgement — leaking answers an unanswerable question wrongly, silencing
+ * files a ticket for one we can answer. Run `scratchpad/probe-floor-sweep.ts` before
+ * changing it; it self-checks its reproduction against this function first.
+ * ---------------------------------------------------------------------------------------
  */
-const DEFAULT_MIN_RANK = 0.1;
+const DEFAULT_MIN_RANK = 0.25;
 
 /**
  * Recast a question as an OR of its terms.
@@ -171,8 +233,20 @@ export async function searchKb(opts: SearchOptions): Promise<SearchHit[]> {
   //    the client cannot see.
   //  - The agency filter keeps shared GHL rows (agencyInstallId IS NULL) plus this
   //    agency's own, and never another tenant's.
-  //  - Agency-authored content gets a rank bonus: it is unambiguously theirs, answers
-  //    "how do I use YOUR process", and needs no substitution.
+  //  - THREE provenance tiers, not two. Agency-authored content is unambiguously theirs,
+  //    answers "how do I use YOUR process", and needs no substitution — 1.5.
+  //
+  //    Below it, hand-written content outranks CRAWLED vendor documentation. Both carry
+  //    source='ghl', so before this they competed as exact peers, and the 253 articles
+  //    written for this product — symptom-titled precisely because retrieval is full-text,
+  //    brand-neutral by construction — had no edge over scraped pages. Measured: after
+  //    crawling 159 articles, "i need a client to sign an agreement electronically"
+  //    stopped returning the contracts article and started returning HIPAA Compliance.
+  //    That is worse than the off-topic leak, because it is a real question getting a
+  //    confidently wrong answer instead of no answer.
+  //
+  //    `mosaic:kb/` is the discriminator: seeded articles use that synthetic sourceUrl as
+  //    their primary key, and a crawled URL cannot collide with the scheme.
   const run = (text: string, floor: number, terms: string[], take: number) =>
     prisma.$queryRaw<Array<SearchHit & { rank: number }>>`
       SELECT
@@ -184,13 +258,39 @@ export async function searchKb(opts: SearchOptions): Promise<SearchHit[]> {
         "sourceUrl",
         (
           ts_rank("searchVector", websearch_to_tsquery('english', ${text}))
-          * CASE WHEN "source" = 'agency' THEN 1.5 ELSE 1.0 END
+          * CASE
+              WHEN "source" = 'agency' THEN 1.5
+              WHEN "sourceUrl" LIKE 'mosaic:kb/%' THEN 1.25
+              ELSE 1.0
+            END
         )::float8 AS "rank"
       FROM "KbArticle"
       WHERE
         "status" = 'ready'
         AND "searchVector" @@ websearch_to_tsquery('english', ${text})
-        AND ts_rank("searchVector", websearch_to_tsquery('english', ${text})) >= ${floor}
+        -- THE SAME RANK THE ORDER BY USES, provenance multiplier included.
+        --
+        -- This compared the RAW ts_rank while the SELECT above ordered by the boosted one:
+        -- two definitions of relevance, and the floor won, so the provenance decision
+        -- documented at length above applied only to articles that had already survived a
+        -- bar set as if it did not exist. An agency's own article and a scraped vendor page
+        -- were held to the identical absolute threshold; the boost could reorder what got
+        -- through and never save anything from being cut.
+        --
+        -- Measured at 1,443 articles, floor 0.25, off-topic leaks UNCHANGED at 0/6:
+        --   answerable questions retrieving nothing   4/30 -> 1/30
+        --   wanted article first                     11/30 -> 13/30
+        --   wanted article in the top 5              14/30 -> 20/30
+        -- and the multiplier's magnitude makes no difference across 1.25–3.0, which is what
+        -- says the defect was the inconsistency rather than the number.
+        AND (
+          ts_rank("searchVector", websearch_to_tsquery('english', ${text}))
+          * CASE
+              WHEN "source" = 'agency' THEN 1.5
+              WHEN "sourceUrl" LIKE 'mosaic:kb/%' THEN 1.25
+              ELSE 1.0
+            END
+        ) >= ${floor}
         -- Distinct-term coverage. Empty array (the strict pass, where every term
         -- matches by definition) short-circuits on the cardinality check.
         AND (

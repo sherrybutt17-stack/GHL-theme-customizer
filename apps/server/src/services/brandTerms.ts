@@ -48,8 +48,37 @@ export interface BrandMap {
   ghlLocationId: string;
   /** What THIS client calls the platform. Substituted for {{PLATFORM}}. */
   brandName: string;
-  /** Feature key → the label this client sees. Substituted for {{FEATURE:key}}. */
+  /**
+   * Feature key → the label this client sees. Substituted for {{FEATURE:key}}.
+   *
+   * COMPLETE, and it has to be: every {{FEATURE:key}} placeholder must resolve whether
+   * or not the agency renamed that item. Do not narrow this to the renames — use
+   * `renamedLabels` for that, which exists precisely so nobody is tempted to.
+   */
   featureLabels: Record<string, string>;
+  /**
+   * ONLY what differs from the platform's own label, as the PAIR it actually is.
+   *
+   * Two surfaces exist to answer "what does this client call things", and both were
+   * handed `featureLabels` instead: the desk's brand banner above the compose box, and
+   * the dry run's verdict. Both then reported all 51 labels as the agency's renames - so
+   * a sub-account that had renamed NOTHING was described as having renamed everything,
+   * and one that had renamed exactly one item buried it among fifty that are exactly
+   * what they look like. The banner shows six and "+45", so the single word an agent
+   * needs can be the one it omits, which is the cross-brand slip that banner prevents.
+   *
+   * Compared BY VALUE, not by key presence: an agency who typed "Contacts" into the
+   * Contacts box has renamed nothing, and an override map can carry such an entry. A key
+   * with no platform default is a rename by definition - there is nothing for it to
+   * match, so `from` falls back to the key.
+   *
+   * A pair rather than key → label, because `to` alone is only half the fact. An agent
+   * reading "Deals" still has to guess what it replaced, and the whole job of the banner
+   * is that they can move between the client's words and the platform's. It was written
+   * label-only when the list was 51 entries long and a pair would not have fitted; at
+   * nought to three it does.
+   */
+  renamedLabels: Array<{ key: string; from: string; to: string }>;
   /** Feature keys invisible to this client. Matching articles are dropped. */
   hiddenFeatures: string[];
   /** Where brandName came from, for debugging "why is it calling itself that?". */
@@ -156,6 +185,13 @@ export async function loadBrandMap(ghlLocationId: string): Promise<BrandMap | nu
     ...asStringMap(theme?.menuLabelOverrides),
   };
 
+  // What the agency actually CHANGED. Computed here rather than at each call site so the
+  // desk banner and the dry run cannot arrive at two different answers - the same reason
+  // QUEUE_ORDER and slaStatus have one definition apiece.
+  const renamedLabels = Object.entries(featureLabels)
+    .filter(([key, label]) => label !== DEFAULT_LABELS[key])
+    .map(([key, label]) => ({ key, from: DEFAULT_LABELS[key] ?? key, to: label }));
+
   // Hidden: union, per the scoping note at the top of this file.
   const hiddenFeatures = [
     ...new Set([...asKeyList(agencyDefault?.hiddenFeatures), ...asKeyList(theme?.hiddenFeatures)]),
@@ -177,6 +213,7 @@ export async function loadBrandMap(ghlLocationId: string): Promise<BrandMap | nu
     ghlLocationId: location.ghlLocationId,
     brandName,
     featureLabels,
+    renamedLabels,
     hiddenFeatures,
     brandNameSource,
     planName,

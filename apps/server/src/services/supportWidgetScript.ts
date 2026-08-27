@@ -63,13 +63,26 @@ export function generateSupportWidgetScript(agencyInstallId: string, apiBase: st
       headers: headers,
       body: opts.body ? JSON.stringify(opts.body) : undefined
     }).then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status);
+      if (!r.ok) {
+        // The STATUS travels with the error. "The server says this conversation is gone"
+        // and "we could not get an answer" call for opposite responses, and an Error whose
+        // only content is a sentence forces every caller to guess (see restoreThread).
+        var err = new Error("HTTP " + r.status);
+        err.status = r.status;
+        throw err;
+      }
       return r.json();
     });
   }
 
   // lastMessageId is the read cursor: everything after it is new to this client.
-  var state = { locationId: null, config: null, token: null, conversationId: null, lastMessageId: null, open: false, busy: false, root: null, els: {} };
+  // polling/pollTimer/pollDelay/idlePolls belong to the ONE poller (see watchUpdates);
+  // queueLine/queueWrap are the queue-position row it writes into, when there is one.
+  var state = {
+    locationId: null, config: null, token: null, conversationId: null, lastMessageId: null,
+    open: false, busy: false, root: null, els: {},
+    polling: false, pollTimer: null, pollDelay: 15000, idlePolls: 0, queueLine: null, queueWrap: null
+  };
 
   var CSS = [
     ":host{all:initial}",
@@ -167,7 +180,11 @@ export function generateSupportWidgetScript(agencyInstallId: string, apiBase: st
     wrap.appendChild(line);
     state.els.body.appendChild(wrap);
     scrollDown();
-    watchUpdates(line, wrap);
+    // The poller is probably already running (it starts with the conversation). Hand it
+    // the queue row to write into rather than starting a second one.
+    state.queueLine = line;
+    state.queueWrap = wrap;
+    startPolling();
   }
 
   function addHandedOffNote() {
@@ -188,69 +205,141 @@ export function generateSupportWidgetScript(agencyInstallId: string, apiBase: st
    * waiting for no new information. GHL is a business CRM, so several staff of one
    * client routinely sit behind a single office NAT.
    *
-   * Four things are deliberate:
+   * Six things are deliberate:
+   *   - IT RUNS FOR THE WHOLE LIFE OF THE CONVERSATION, not from the hand-off. It used to
+   *     start only inside addQueueWatcher, i.e. only once the CLIENT escalated - but the
+   *     desk lists conversations by status and counts "open" as its own tab, so an agent
+   *     can open a chat nobody escalated and reply to it. That reply was stored, set
+   *     firstAgentReplyAt and counted toward the response time the agency is shown, and
+   *     the widget never polled, so it never reached the screen. That is the write-only
+   *     failure this endpoint exists to end, surviving in the one case where the DESK
+   *     starts the conversation instead of the client asking for a person - and it is
+   *     worse than the original, because the metric records that we answered.
    *   - it keeps polling AFTER the ticket leaves the queue. Being claimed is precisely
-   *     when a reply is about to arrive; stopping there was the whole bug.
+   *     when a reply is about to arrive; stopping there was the original bug.
    *   - it stops for good on a resolved or abandoned conversation.
-   *   - the interval WIDENS (15s -> 60s) so steady state is 1/min, not 3/min.
+   *   - the interval WIDENS (15s -> 60s) so steady state is 1/min, not 3/min, and RESETS
+   *     to 15s whenever anything actually happens. A conversation with a person in it
+   *     feels live; one that has been quiet for ten minutes costs one request a minute.
+   *   - a HIDDEN TAB makes no requests at all. Polling every open-but-unwatched CRM tab
+   *     is what would make "poll from the start" expensive, and nobody is reading a reply
+   *     they cannot see. Coming back to the tab polls immediately, which is also the
+   *     moment a waiting client most wants an answer.
    *   - a missing estimate prints no estimate. The server returns null when it has too
    *     few samples or nobody is on the desk, and inventing "about 5 minutes" there is
    *     exactly the promise that gets remembered.
    */
-  function watchUpdates(line, wrap) {
-    var polls = 0;
-    var MAX_POLLS = 60;
-    var delay = 15000;
-    var MAX_DELAY = 60000;
+  var POLL_MIN = 15000;
+  var POLL_MAX = 60000;
+  var POLL_NUDGE = 2000;
+  var MAX_IDLE_POLLS = 60;
 
-    function tick() {
-      if (!state.conversationId || polls++ > MAX_POLLS) return;
-      var url = base() + "/conversation/" + state.conversationId + "/updates";
-      if (state.lastMessageId) url += "?after=" + encodeURIComponent(state.lastMessageId);
+  /**
+   * Start the one poller. Guarded, because there are now three callers (a new
+   * conversation, a restored one, and a hand-off) and two pollers would double every
+   * waiting client's share of a 60/min budget shared with SENDING messages.
+   */
+  function startPolling() {
+    if (state.polling || !state.conversationId) return;
+    state.polling = true;
+    state.pollDelay = POLL_MIN;
+    state.idlePolls = 0;
+    schedulePoll(2000);
+  }
 
-      api(url)
-        .then(function (u) {
-          if (!u) return;
+  function stopPolling() {
+    state.polling = false;
+    if (state.pollTimer) { clearTimeout(state.pollTimer); state.pollTimer = null; }
+  }
 
-          if (u.messages && u.messages.length) {
-            for (var i = 0; i < u.messages.length; i++) {
-              var m = u.messages[i];
-              // The client sent it themselves and it is already on screen.
-              if (m.role === "user") { state.lastMessageId = m.id; continue; }
-              addMessage(m.role === "agent" ? "agent" : "bot", m.body);
-              state.lastMessageId = m.id;
-            }
-            // A person is here, so the queue line has done its job.
-            if (wrap && wrap.parentNode) wrap.remove();
+  function schedulePoll(ms) {
+    if (state.pollTimer) clearTimeout(state.pollTimer);
+    state.pollTimer = setTimeout(pollOnce, ms);
+  }
+
+  /**
+   * Something happened - check again SOON, and reset the widening.
+   *
+   * It must schedule the nudge, not POLL_MIN. Rescheduling at 15s when the first poll was
+   * already due in 2s DELAYS the very check it exists to hurry, which is what the widget
+   * harness caught: a client's opening question pushed their first update from 2s to 15s.
+   */
+  function quicken() {
+    state.pollDelay = POLL_MIN;
+    state.idlePolls = 0;
+    if (state.polling) schedulePoll(POLL_NUDGE);
+  }
+
+  function pollOnce() {
+    if (!state.polling || !state.conversationId) return;
+
+    // Re-check soon rather than requesting: a background tab has nobody reading it.
+    if (document.hidden) { schedulePoll(5000); return; }
+
+    if (state.idlePolls++ > MAX_IDLE_POLLS) { stopPolling(); return; }
+
+    var url = base() + "/conversation/" + state.conversationId + "/updates";
+    if (state.lastMessageId) url += "?after=" + encodeURIComponent(state.lastMessageId);
+
+    api(url)
+      .then(function (u) {
+        if (!u) { backOff(); return; }
+
+        if (u.messages && u.messages.length) {
+          for (var i = 0; i < u.messages.length; i++) {
+            var m = u.messages[i];
+            // The client sent it themselves and it is already on screen.
+            if (m.role === "user") { state.lastMessageId = m.id; continue; }
+            addMessage(m.role === "agent" ? "agent" : "bot", m.body);
+            state.lastMessageId = m.id;
           }
-          // Always advance the cursor, even with nothing new: on the FIRST poll this is
-          // how the widget syncs to "everything so far is already on screen" instead of
-          // being handed the transcript to replay.
-          if (u.cursor) { state.lastMessageId = u.cursor; saveThread(); }
+          // A person is here, so the queue line has done its job.
+          if (state.queueWrap && state.queueWrap.parentNode) state.queueWrap.remove();
+          state.queueLine = null;
+          state.queueWrap = null;
+          // A reply usually means a conversation, not a single message.
+          state.pollDelay = POLL_MIN;
+          state.idlePolls = 0;
+        }
+        // Always advance the cursor, even with nothing new: on the FIRST poll this is
+        // how the widget syncs to "everything so far is already on screen" instead of
+        // being handed the transcript to replay.
+        if (u.cursor) { state.lastMessageId = u.cursor; saveThread(); }
 
-          if (u.status === "resolved" || u.status === "abandoned") return;
+        if (u.status === "resolved" || u.status === "abandoned") { stopPolling(); return; }
 
-          if (u.waiting && line && line.parentNode) {
-            var text = "You're number " + u.position + " in line.";
-            if (u.estimatedWaitSeconds) {
-              var mins = Math.round(u.estimatedWaitSeconds / 60);
-              text += mins < 1 ? " Usually under a minute." : " Usually about " + mins + " min.";
-            }
-            line.textContent = text;
-          } else if (line && line.parentNode && !line.textContent) {
-            // Nothing to say and nothing said yet - do not leave a blank row.
-            if (wrap && wrap.parentNode) wrap.remove();
+        var line = state.queueLine;
+        if (u.waiting && line && line.parentNode) {
+          var text = "You're number " + u.position + " in line.";
+          if (u.estimatedWaitText) {
+            // The sentence is built server-side (waitSentence), like connectHint beside
+            // it. Doing the arithmetic here made a second wording of one number, and the
+            // desk's "what the client is told" line then showed a third.
+            text += " " + u.estimatedWaitText;
+          } else if (u.connectHint) {
+            // No measured estimate. The server sends a FACT instead of a prediction -
+            // when the desk reopens, or that somebody is on it - because "number 1 in
+            // line" alone never told anyone whether that meant minutes or Monday.
+            text += " " + u.connectHint;
           }
+          line.textContent = text;
+        } else if (line && line.parentNode && !line.textContent) {
+          // Nothing to say and nothing said yet - do not leave a blank row.
+          if (state.queueWrap && state.queueWrap.parentNode) state.queueWrap.remove();
+          state.queueLine = null;
+          state.queueWrap = null;
+        }
 
-          delay = Math.min(Math.round(delay * 1.5), MAX_DELAY);
-          setTimeout(tick, delay);
-        })
-        .catch(function () { /* leave whatever is on screen; try again next tick */
-          delay = Math.min(Math.round(delay * 1.5), MAX_DELAY);
-          setTimeout(tick, delay);
-        });
-    }
-    setTimeout(tick, 2000);
+        backOff();
+      })
+      .catch(function () { /* leave whatever is on screen; try again next tick */
+        backOff();
+      });
+  }
+
+  function backOff() {
+    state.pollDelay = Math.min(Math.round(state.pollDelay * 1.5), POLL_MAX);
+    schedulePoll(state.pollDelay);
   }
 
   function addFeedback() {
@@ -340,6 +429,10 @@ export function generateSupportWidgetScript(agencyInstallId: string, apiBase: st
     state.conversationId = t.conversationId;
     state.token = t.token;
     state.lastMessageId = t.lastMessageId || null;
+    state.replayPending = false;
+    // The panel has to exist before anything can be drawn into it. This runs at boot,
+    // long before the client clicks the bubble.
+    ensurePanel();
 
     api(base() + "/conversation/" + state.conversationId + "/updates?replay=1")
       .then(function (u) {
@@ -349,19 +442,60 @@ export function generateSupportWidgetScript(agencyInstallId: string, apiBase: st
           clearThread();
           return;
         }
+        /**
+         * Clear only once there is a transcript to put in its place. Doing it before the
+         * fetch wipes the greeting and then, on a conversation that turns out to be gone,
+         * leaves the client looking at an empty panel with nothing to explain it.
+         *
+         * Node by node rather than innerHTML: the unit test forbids a second innerHTML in
+         * this file on purpose, because the one thing that must never go through it is
+         * message text, and a blunt guard is worth more than a clever one.
+         */
+        var drawn = state.els.body ? state.els.body.querySelectorAll(".msg") : [];
+        for (var k = 0; k < drawn.length; k++) drawn[k].parentNode.removeChild(drawn[k]);
         for (var i = 0; i < (u.messages || []).length; i++) {
           var m = u.messages[i];
           addMessage(m.role === "user" ? "user" : (m.role === "agent" ? "agent" : "bot"), m.body);
         }
         if (u.cursor) { state.lastMessageId = u.cursor; saveThread(); }
-        // Still with a person: keep watching, or the reply that arrives next is lost
-        // for the same reason as before.
+        // Watch again whatever state it is in. Gating this on waiting/escalated was the
+        // same bug as gating the start: a client who reloads a chat an agent is about to
+        // answer would sit on a restored transcript that never updates again.
         if (u.waiting || u.status === "escalated") addQueueWatcher("");
+        else startPolling();
       })
-      .catch(function () {
-        // Could not restore - fall back to a fresh conversation rather than a dead one.
-        state.conversationId = null; state.token = null; state.lastMessageId = null;
-        clearThread();
+      .catch(function (e) {
+        /**
+         * GONE and UNREACHABLE are different answers, and the whole of this branch is the
+         * difference between them.
+         *
+         * It used to clear the thread on ANY failure - "fall back to a fresh conversation
+         * rather than a dead one" - which reads sensibly and is wrong for the common case:
+         * every /support/api route shares 60 requests a minute per IP, several of a
+         * client's colleagues sit behind one office NAT, and a sleeping instance takes
+         * about fifty seconds to wake. Discarding the id and the bearer there makes that
+         * browser open a NEW conversation while the agent goes on replying into the old
+         * one, which is the write-only failure this mechanism exists to prevent.
+         *
+         * Keeping it on EVERY failure is the same mistake pointing the other way, and it
+         * is worse: a 401 or a 404 means this conversation genuinely is not ours any more,
+         * and holding the id makes ensureConversation() skip creation, so every later
+         * message is posted to something that no longer exists and the client is told
+         * "something went wrong on my end" for the rest of the session.
+         *
+         * So: only a definite refusal retires it. Anything else means try again - the same
+         * rule the crawler learned when a temporary rate limit permanently archived 584
+         * perfectly good articles.
+         */
+        var gone = e && (e.status === 401 || e.status === 403 || e.status === 404 || e.status === 410);
+        if (gone) {
+          state.conversationId = null; state.token = null; state.lastMessageId = null;
+          state.replayPending = false;
+          clearThread();
+          return;
+        }
+        state.replayPending = true;
+        stopPolling();
       });
   }
 
@@ -374,6 +508,9 @@ export function generateSupportWidgetScript(agencyInstallId: string, apiBase: st
       state.conversationId = r.conversationId;
       state.token = r.token;
       saveThread();
+      // From the FIRST message, not from the hand-off. An agent can open any conversation
+      // in the desk and reply to it, and until this line that reply had nowhere to land.
+      startPolling();
     });
   }
 
@@ -408,7 +545,11 @@ export function generateSupportWidgetScript(agencyInstallId: string, apiBase: st
       })
       .then(function (r) {
         typing.remove();
-        addMessage("bot", r.reply);
+        // A null reply means a person has this conversation and the assistant stood
+        // down, so there is nothing to print. Rendering it anyway would put an empty
+        // bubble on screen, which reads as the assistant having failed rather than
+        // having deliberately kept quiet. The poller delivers the human's answer.
+        if (r.reply) addMessage("bot", r.reply);
         if (r.handedToHuman) addHandedOffNote();
         else if (r.canEscalate) addEscalateButton();
         else addFeedback();
@@ -422,6 +563,9 @@ export function generateSupportWidgetScript(agencyInstallId: string, apiBase: st
         state.busy = false;
         state.els.send.disabled = false;
         state.els.input.focus();
+        // They just said something. If a person is reading, the answer is imminent - go
+        // back to the fast interval rather than leaving them on a 60s poll.
+        quicken();
       });
   }
 
@@ -469,15 +613,33 @@ export function generateSupportWidgetScript(agencyInstallId: string, apiBase: st
     return panel;
   }
 
+  /**
+   * Build the panel if it does not exist yet, WITHOUT showing it.
+   *
+   * It used to be built only inside toggle(), i.e. the first time the client clicked the
+   * bubble - so at boot state.els.body was undefined. restoreThread() runs at boot and
+   * calls addMessage(), which appends to that body, so a restored conversation threw a
+   * TypeError straight into the catch below and the client's thread was DELETED. See the
+   * note on restoreThread.
+   */
+  function ensurePanel() {
+    if (!state.els.panel) {
+      state.els.panel = buildPanel();
+      state.root.appendChild(state.els.panel);
+      state.els.panel.style.display = "none";
+    }
+    return state.els.panel;
+  }
+
   function toggle() {
     state.open = !state.open;
     if (state.open) {
-      if (!state.els.panel) {
-        state.els.panel = buildPanel();
-        state.root.appendChild(state.els.panel);
-      }
+      ensurePanel();
       state.els.panel.style.display = "flex";
       state.els.input.focus();
+      // A restore that could not reach the server left the thread on disk and the panel
+      // empty. Opening it is the moment the client expects to see their chat, so try again.
+      if (state.replayPending) restoreThread();
     } else if (state.els.panel) {
       state.els.panel.style.display = "none";
     }
@@ -517,6 +679,10 @@ export function generateSupportWidgetScript(agencyInstallId: string, apiBase: st
         state.config = cfg;
         state.accent = "#2b6ef6";
         if (state.els.host) { state.els.host.remove(); state.els = {}; state.open = false; }
+        // Moving to another sub-account: kill the old poller. Without this the flag stays
+        // true, so the NEW conversation can never start one - and the widget would be
+        // write-only again, in the one navigation a CRM user does constantly.
+        stopPolling();
         state.conversationId = null;
         state.token = null;
         state.lastMessageId = null;
@@ -543,6 +709,17 @@ export function generateSupportWidgetScript(agencyInstallId: string, apiBase: st
     if (window.AppUtils && window.AppUtils.RouteHelper && window.AppUtils.RouteHelper.onRouteChange) {
       window.AppUtils.RouteHelper.onRouteChange(safeBoot);
     }
+  } catch (e) {}
+  /**
+   * Coming back to the tab is the moment a waiting client most wants an answer, and the
+   * poller has been deliberately silent while they were away - so ask immediately rather
+   * than up to a minute later. This is what makes "poll from the start" affordable: an
+   * unwatched CRM tab costs nothing at all.
+   */
+  try {
+    document.addEventListener("visibilitychange", function () {
+      if (!document.hidden && state.polling) { state.pollDelay = POLL_MIN; state.idlePolls = 0; schedulePoll(0); }
+    });
   } catch (e) {}
   setInterval(safeBoot, 2000);
 })();`;

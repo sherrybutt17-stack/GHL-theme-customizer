@@ -11,7 +11,7 @@ import {
   setSessionCookie,
   verifyPassword,
 } from "../services/deskAuth";
-import { releaseTicketsFrom } from "../services/deskQueue";
+import { releaseTicketsFrom, heldCountsFor } from "../services/deskQueue";
 import { describeError } from "../services/security";
 
 /**
@@ -104,7 +104,21 @@ deskRouter.get(
         maxConcurrent: true,
       },
     });
-    res.json(users);
+    /**
+     * How many live tickets each person is holding.
+     *
+     * Disabling somebody returns every one of these to the queue, and until this was
+     * here the admin had no way to know whether that was nought or five — the number is
+     * only in our database, and "two clients are mid-conversation" is exactly the fact
+     * that decides whether you do it now or at the end of their shift. Same reasoning as
+     * the dashboard's bulk disable naming how many sub-accounts are on another page: the
+     * blast radius has to be readable BEFORE the click, not reported after it.
+     *
+     * Counted through `heldCountsFor`, which shares its definition of "held" with
+     * `releaseTicketsFrom` — so the number shown is the number released.
+     */
+    const held = await heldCountsFor(users.map((u) => u.id));
+    res.json(users.map((u) => ({ ...u, heldTickets: held[u.id] ?? 0 })));
   }
 );
 

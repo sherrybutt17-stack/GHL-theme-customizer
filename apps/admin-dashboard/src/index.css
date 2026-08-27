@@ -336,7 +336,27 @@ body {
 
 /* ---- Logo upload ---- */
 .logo-upload-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
-.logo-upload-btn { cursor: pointer; }
+/* THE ONLY WAY TO UPLOAD AN IMAGE, and it was styled as a section heading.
+   A file input needs a <label> to be clickable, so this control is a LABEL carrying
+   `.btn` - and `.field label` (0,1,1) beats `.btn` (0,1,0), exactly as it beat
+   `.sla-row` above. Measured: uppercase / 700 / muted grey / 0.36px tracking, i.e.
+   byte for byte the treatment of the "BACKGROUND IMAGE" heading directly above it,
+   while every real button beside it was none / 600 / accent.
+   Not cosmetic: an agency scanning for a button saw two headings and a URL box, and
+   reasonably concluded that pasting a link was the only option. Third instance of this
+   specificity trap, and no static check of class names can see any of them. */
+/* TWO classes, not one: `label.btn` is (0,1,1) and so is `.field label` — a TIE, decided
+   by source order, and `.field label` is 130 lines further down. The first attempt at this
+   fix was written that way and changed nothing, measured. `label.btn.logo-upload-btn` is
+   (0,2,1) and wins wherever it sits, which is the property worth having. Same tie-break
+   that makes the menu-order catch-all work by source order alone — relying on it here
+   would break the moment somebody reorders the stylesheet. */
+label.btn.logo-upload-btn {
+  cursor: pointer;
+  display: inline-block;
+  font-size: 13px; font-weight: 600; color: var(--text);
+  text-transform: none; letter-spacing: normal; margin-bottom: 0;
+}
 .logo-uploaded { font-size: 12px; color: #16a34a; font-weight: 600; }
 .field-error { color: var(--danger); font-size: 12px; margin-top: 6px; }
 
@@ -443,6 +463,16 @@ body {
 .lp-field { height: 22px; border-radius: 5px; background: #f1f5f9; border: 1px solid #e2e8f0; }
 .lp-btn { border: none; color: #fff; font-size: 11px; font-weight: 600; padding: 7px 0; border-radius: 6px; margin-top: 2px; cursor: default; }
 .lp-forgot { font-size: 9px; color: #94a3b8; text-align: center; }
+/* An unset part of the login page. Hatched rather than coloured, so "the agency has not
+   chosen this" cannot be mistaken for "the agency chose grey" — which is exactly what a
+   flat placeholder did for two years, in the one panel whose copy says "leave a field
+   blank to skip it". */
+.lp-unset {
+  background-color: #eef1f5 !important;
+  background-image: repeating-linear-gradient(45deg, #dbe2ea 0 6px, #eef1f5 6px 12px) !important;
+  color: #64748b !important;
+}
+.lp-note { font-size: 11px; color: var(--text-muted); margin-top: 8px; line-height: 1.45; }
 @media (max-width: 820px) {
   .modal-body.editor-body { flex-direction: column; }
   .mp-wrap { flex: none; width: 100%; position: static; }
@@ -490,6 +520,17 @@ body {
 .look-color-label { font-size: 13.5px; font-weight: 600; }
 .look-color-hint { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
 .look-hex { font-size: 11px; color: var(--text-muted); font-family: ui-monospace, monospace; }
+/* The login colours are the only ones with a real UNSET state, and `<input type="color">`
+   cannot show one — a blank background rendered as a solid `#0f172a` swatch, identical to
+   somebody having chosen dark slate. Faded behind a dashed border, it reads as a
+   placeholder; the row says "not set" beside it in words. */
+.look-swatch-unset { opacity: .38; border-style: dashed; }
+/* A blast-radius note beside a toolbar action, not a dialog: naming what an "apply preset"
+   also changes is worth one line, and a confirm on the non-destructive direction is how
+   people learn to click through confirms. */
+.pill-note { font-size: 12px; color: var(--text-muted); align-self: center; }
+.login-color-row + .login-color-row,
+.look-toggle-row + .login-color-row { margin-top: 12px; }
 
 .look-toggle-row { display: flex; align-items: center; gap: 12px; padding-top: 4px; }
 .look-gradient-detail {
@@ -569,6 +610,32 @@ body {
 .hours-range select { padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; font-family: inherit; font-size: 12.5px; background: #fff; }
 .hours-closed { font-size: 12.5px; color: var(--text-muted); }
 
+/* Plan name per sub-account. Narrow on purpose — these are "Starter"/"Pro", not sentences. */
+.plan-input {
+  width: 86px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px;
+  font-family: inherit; font-size: 12.5px; text-align: center; background: #fff; color: var(--text);
+}
+.plan-input:focus { outline: none; border-color: var(--primary); }
+.plan-input:disabled { background: #f8fafc; cursor: not-allowed; }
+.plan-input::placeholder { color: var(--text-muted); }
+
+.sla-grid { display: flex; flex-direction: column; gap: 6px; }
+/* `label.sla-row`, not `.sla-row`: each row IS a <label>, and `.field label` above is
+   (0,1,1) against a bare class's (0,1,0) — so it won, forcing display:block plus the
+   uppercase bold styling meant for SECTION headings. The rows rendered as ragged inline
+   text with the input starting wherever the name happened to end, and `.sla-name`'s
+   fixed width was inert. Every class was defined and the audit was green; a class being
+   DEFINED is not the same as its rule TAKING EFFECT. Only rendering shows the difference. */
+label.sla-row {
+  display: flex; align-items: center; gap: 10px; font-size: 13.5px;
+  /* Undo the section-heading treatment inherited from `.field label`. */
+  font-weight: 500; text-transform: none; letter-spacing: normal;
+  margin-bottom: 0; color: var(--text);
+}
+label.sla-row .sla-name { flex: 0 0 76px; color: var(--text-muted); font-size: 12.5px; }
+label.sla-row input { width: 90px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; font-family: inherit; font-size: 13px; }
+.sla-unit { font-size: 12px; color: var(--text-muted); }
+
 /* ---- Misc ---- */
 .empty-state { padding: 60px 20px; text-align: center; color: var(--text-muted); font-size: 14px; }
 /* Standing "you have unsaved work" marker in the editor header. Quiet on purpose — it
@@ -604,6 +671,10 @@ body {
 .topic-row { display: grid; grid-template-columns: 130px 1fr 34px; align-items: center; gap: 10px; font-size: 12.5px; }
 .topic-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topic-bar { height: 8px; background: var(--primary); border-radius: 999px; min-width: 4px; opacity: .55; }
+/* The hand-off breakdown sits under the same bars but reads as cost, not curiosity —
+   these are the conversations that took a person. Amber rather than the brand colour,
+   the same language the desk uses for a wait that is running out. */
+.topic-bar.handoff { background: #d9a441; opacity: .7; }
 .topic-count { text-align: right; color: var(--text-muted); font-size: 11.5px; }
 
 .loc-stats { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
@@ -695,3 +766,12 @@ body {
   border-radius: 10px; background: var(--card); color: var(--text);
 }
 .text-input:focus { outline: 2px solid var(--accent, #6366f1); outline-offset: -1px; }
+
+/* History rows carry the look, not just a number: the versions endpoint already returns
+   every colour and the brand name, and a list of 28 timestamps cannot be navigated. */
+.version-look { display: flex; align-items: center; gap: 5px; margin-top: 5px; }
+.version-swatch {
+  width: 13px; height: 13px; border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.12); flex: none;
+}
+.version-brand { font-size: 11.5px; color: var(--text-muted); margin-left: 3px; }

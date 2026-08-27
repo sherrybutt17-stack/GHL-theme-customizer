@@ -13,6 +13,7 @@ import {
   type VisualTheme,
 } from "./api";
 import { LookFields, type Look } from "./LookFields";
+import { resolveAccentColor, FALLBACK_BRAND } from "./themeDefaults";
 import { MosaicPreview } from "./MosaicPreview";
 import { LoginPreview } from "./LoginPreview";
 import { ConfirmDialog, PromptDialog } from "./Dialog";
@@ -131,10 +132,90 @@ function fileToDownscaledDataUrl(file: File, maxDim = 512): Promise<UploadedImag
   });
 }
 
+/**
+ * A login colour, which unlike every other colour in this editor has a real UNSET state —
+ * `renderLoginRules` emits nothing for a blank field, and the panel's own copy says "leave
+ * a field blank to skip it".
+ *
+ * An `<input type="color">` cannot be empty and cannot show that it is: a blank background
+ * rendered as a `#0f172a` swatch, byte for byte what somebody choosing dark slate sees. So
+ * the row says which it is in words, and Clear is the only way back — picking the same
+ * colour again fires no change event, so an agency could not even undo it by agreeing.
+ */
+function LoginColorRow({
+  label,
+  hint,
+  value,
+  placeholder,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  value: string;
+  placeholder: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="look-color-row login-color-row">
+      <input
+        type="color"
+        className={`look-swatch${value ? "" : " look-swatch-unset"}`}
+        value={value || placeholder}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <div className="look-color-meta">
+        <div className="look-color-label">{label}</div>
+        {hint && <div className="look-color-hint">{hint}</div>}
+      </div>
+      <code className="look-hex">{value || "not set"}</code>
+      {value && (
+        <button type="button" className="btn btn-sm btn-ghost" onClick={() => onChange("")}>
+          Clear
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What a saved version LOOKED like — ONE answer, read by both history lists.
+ *
+ * There were two, seventy lines apart in this file, and they disagreed about the case that
+ * is almost every row. Measured on this database: of the newest per-location versions,
+ * every one carries a brand name and NONE carries a colour.
+ *
+ *   per-location   `[primary, accent, topBar].filter(Boolean)` — nothing when nothing is set
+ *   agency default `primaryColor ?? "#cbd5e1"` — ALWAYS a swatch, grey when nothing is set
+ *
+ * So the list with the largest blast radius in the product — this row styles every
+ * sub-account at once — invented a colour for every version, making them all look alike and
+ * implying somebody had chosen grey. It also used `??`, so a CLEARED field (stored `""`, as
+ * the editor stores one) produced `linear-gradient(135deg, , )`: an invalid value the parser
+ * drops, i.e. a blank box with no explanation.
+ *
+ * Nothing rather than a placeholder is the honest answer, and it is the one the sibling list
+ * already made deliberately.
+ */
+function VersionSwatches({ theme }: { theme: { primaryColor?: string | null; accentColor?: string | null; topBarColor?: string | null } }) {
+  // `filter(Boolean)`, not `??`: an empty string is a CLEARED colour, not a colour.
+  const colours = [theme.primaryColor, theme.accentColor, theme.topBarColor].filter(Boolean) as string[];
+  if (colours.length === 0) return null;
+  return (
+    <>
+      {colours.slice(0, 3).map((c, n) => (
+        <span key={n} className="version-swatch" style={{ background: c }} />
+      ))}
+    </>
+  );
+}
+
 function lookFrom(initial: Props["initial"]): Look {
   return {
-    primaryColor: initial?.primaryColor ?? "#4f46e5",
-    accentColor: initial?.accentColor ?? "#f59e0b",
+    primaryColor: initial?.primaryColor ?? FALLBACK_BRAND,
+    // The SERVER's chain, not a second one — see `themeDefaults.ts`. This used to be
+    // `?? "#f59e0b"`, so a teal sub-account with no accent turned amber the moment anybody
+    // opened the editor and saved.
+    accentColor: resolveAccentColor(initial),
     fontFamily: initial?.fontFamily ?? "",
     gradientEnabled: initial?.gradientEnabled ?? false,
     gradientColor: initial?.gradientColor ?? "#1e293b",
@@ -147,6 +228,13 @@ function lookFrom(initial: Props["initial"]): Look {
     sidebarIconColor: initial?.sidebarIconColor ?? "",
     buttonShape: initial?.buttonShape ?? "",
     darkMode: initial?.darkMode ?? false,
+    // Deliberately NOT materialised the way the colours above are. An unset content
+    // colour has to stay "" so `resolveContentTheme` returns null and the stylesheet
+    // emits nothing — otherwise opening the editor and pressing Save would repaint
+    // every screen of a sub-account nobody asked to repaint, which is the amber-accent
+    // bug this file already records.
+    contentBgColor: initial?.contentBgColor ?? "",
+    contentTextColor: initial?.contentTextColor ?? "",
   };
 }
 
@@ -197,6 +285,28 @@ export function ThemeEditorModal({
   const [scanMsg, setScanMsg] = useState<string | null>(null);
   const [presetPromptOpen, setPresetPromptOpen] = useState(false);
   // Login-page branding (agency default only).
+  /*
+   * Its OWN error and size slots, not the logo's.
+   *
+   * Both login uploaders used to write into `logoErr`, which renders inside the
+   * `tab === "branding"` block - and the login controls live in `tab === "login"`, which
+   * is mutually exclusive with it. So a failed upload here put a correctly-worded message
+   * on a screen the agency was not looking at: the button appeared to do nothing at all,
+   * and switching to Branding later showed a stale error beside the wrong control.
+   *
+   * Not a rare path. `accept="image/*"` admits HEIC on macOS, which Chrome cannot decode,
+   * and a login BACKGROUND is exactly where somebody uploads a photo straight off a phone.
+   */
+  const [loginErr, setLoginErr] = useState<string | null>(null);
+  /*
+   * And the cost, at the moment the decision is made - the same reason the logo reports
+   * its format and KB. This one matters more, not less: it is downscaled to 1600px rather
+   * than 512, it is typically a photograph rather than flat art, and it is base64-inlined
+   * into a stylesheet every in-app page load blocks on. It was the largest thing that can
+   * enter that stylesheet and the only upload with no readout.
+   */
+  const [loginBgDims, setLoginBgDims] = useState<{ w: number; h: number; ow: number; oh: number; format: string; bytes: number } | null>(null);
+  const [loginLogoDims, setLoginLogoDims] = useState<{ w: number; h: number; ow: number; oh: number; format: string; bytes: number } | null>(null);
   const [loginBgColor, setLoginBgColor] = useState(initial?.loginBgColor ?? "");
   const [loginBgImage, setLoginBgImage] = useState(initial?.loginBgImage ?? "");
   const [loginGradientEnabled, setLoginGradientEnabled] = useState(initial?.loginGradientEnabled ?? false);
@@ -337,9 +447,17 @@ export function ThemeEditorModal({
       sidebarIconColor: p.sidebarIconColor ?? look.sidebarIconColor,
       buttonShape: p.buttonShape ?? look.buttonShape,
       darkMode: p.darkMode,
+      contentBgColor: p.contentBgColor ?? look.contentBgColor,
+      contentTextColor: p.contentTextColor ?? look.contentTextColor,
     });
-    // Presets can carry a saved sidebar order; apply it if present.
-    if (Array.isArray(p.menuOrder)) setMenuOrder(p.menuOrder as string[]);
+    /**
+     * A preset carries an order only if somebody saved one into it — the same rule the
+     * bulk-apply route follows, because an agency cannot see both screens at once. An
+     * EMPTY array is not an order: "Save as preset" sends `menuOrder` unconditionally, so
+     * a preset made from a sub-account nobody reordered used to arrive as `[]` and wipe
+     * the target's own sidebar order.
+     */
+    if (Array.isArray(p.menuOrder) && p.menuOrder.length > 0) setMenuOrder(p.menuOrder as string[]);
   }
 
   // Any edit means we're no longer just viewing an old version — drop the banner.
@@ -356,21 +474,25 @@ export function ThemeEditorModal({
 
   async function handleLoginBgFile(file: File | undefined) {
     if (!file) return;
+    setLoginErr(null);
     try {
       const img = await fileToDownscaledDataUrl(file, 1600);
       setLoginBgImage(img.dataUrl);
+      setLoginBgDims({ w: img.width, h: img.height, ow: img.origWidth, oh: img.origHeight, format: img.format, bytes: img.bytes });
     } catch (e) {
-      setLogoErr((e as Error).message);
+      setLoginErr((e as Error).message);
     }
   }
 
   async function handleLoginLogoFile(file: File | undefined) {
     if (!file) return;
+    setLoginErr(null);
     try {
       const img = await fileToDownscaledDataUrl(file, 512);
       setLoginLogoUrl(img.dataUrl);
+      setLoginLogoDims({ w: img.width, h: img.height, ow: img.origWidth, oh: img.origHeight, format: img.format, bytes: img.bytes });
     } catch (e) {
-      setLogoErr((e as Error).message);
+      setLoginErr((e as Error).message);
     }
   }
 
@@ -429,6 +551,16 @@ export function ThemeEditorModal({
     setLook(lookFrom(v));
     setBrandName(v.brandName ?? "");
     setLogoUrl(v.logoUrl ?? "");
+    /**
+     * The favicon was missing here while being in the save payload, so restoring an old
+     * version loaded everything else and kept TODAY's tab icon — then wrote it over the
+     * version being restored. History was the only place a replaced favicon could have come
+     * back from, and it was the one field history could not return.
+     *
+     * These two lists are the same fields forty lines apart; `verify-history-restore.ts`
+     * now reads the payload's keys out of this file and requires each to be loaded here.
+     */
+    setFaviconUrl(v.faviconUrl ?? "");
     setHidden(new Set(v.hiddenFeatures ?? []));
     setLabels((v.menuLabelOverrides as Record<string, string>) ?? {});
     setMenuOrder(Array.isArray(v.menuOrder) ? v.menuOrder : []);
@@ -527,6 +659,8 @@ export function ThemeEditorModal({
         sidebarIconColor: look.sidebarIconColor,
         buttonShape: look.buttonShape,
         darkMode: look.darkMode,
+        contentBgColor: look.contentBgColor,
+        contentTextColor: look.contentTextColor,
         sidebarImageUrl,
         hideUpgrade,
         customCss,
@@ -872,17 +1006,19 @@ export function ThemeEditorModal({
                 there's one login before a sub-account is chosen). Leave a field blank to skip it.
               </p>
 
-              <div className="look-color-row">
-                <input
-                  type="color"
-                  value={loginBgColor || "#0f172a"}
-                  onChange={(e) => setLoginBgColor(e.target.value)}
-                />
-                <div>
-                  <div className="look-color-label">Background color</div>
-                  <div className="look-color-hint">The full-page background behind the login box.</div>
-                </div>
-              </div>
+              <LoginColorRow
+                label="Background color"
+                hint="The full-page background behind the login box."
+                value={loginBgColor}
+                placeholder="#0f172a"
+                onChange={(v) => {
+                  setLoginBgColor(v);
+                  // `renderLoginRules` needs all THREE for a gradient, so a gradient left on
+                  // with no base colour is emitted by nobody — it would paint in the preview
+                  // and deliver no background rule at all.
+                  if (!v) setLoginGradientEnabled(false);
+                }}
+              />
 
               <div className="look-toggle-row" style={{ marginTop: 10 }}>
                 <label className="toggle">
@@ -953,37 +1089,41 @@ export function ThemeEditorModal({
                       <button
                         type="button"
                         className="btn btn-ghost"
-                        onClick={() => setLoginBgImage("")}
+                        onClick={() => {
+                          setLoginBgImage("");
+                          setLoginBgDims(null);
+                        }}
                       >
                         Remove
                       </button>
                     </>
                   )}
                 </div>
+                {/* This image rides the render-blocking stylesheet, so the KB is the
+                    number worth showing - see the note beside `loginBgDims`. */}
+                {loginBgDims && (
+                  <p className="logo-dims">
+                    Uploaded {loginBgDims.ow}×{loginBgDims.oh}px → stored at {loginBgDims.w}×{loginBgDims.h}px as{" "}
+                    {loginBgDims.format.toUpperCase()}, {(loginBgDims.bytes / 1024).toFixed(1)} KB
+                  </p>
+                )}
+                {loginErr && <div className="field-error">{loginErr}</div>}
               </div>
 
-              <div className="look-color-row">
-                <input
-                  type="color"
-                  value={loginButtonColor || "#4f46e5"}
-                  onChange={(e) => setLoginButtonColor(e.target.value)}
-                />
-                <div>
-                  <div className="look-color-label">Sign-in button color</div>
-                </div>
-              </div>
+              <LoginColorRow
+                label="Sign-in button color"
+                value={loginButtonColor}
+                placeholder="#4f46e5"
+                onChange={setLoginButtonColor}
+              />
 
-              <div className="look-color-row">
-                <input
-                  type="color"
-                  value={loginCardColor || "#ffffff"}
-                  onChange={(e) => setLoginCardColor(e.target.value)}
-                />
-                <div>
-                  <div className="look-color-label">Login box color</div>
-                  <div className="look-color-hint">Background of the centered login card.</div>
-                </div>
-              </div>
+              <LoginColorRow
+                label="Login box color"
+                hint="Background of the centered login card."
+                value={loginCardColor}
+                placeholder="#ffffff"
+                onChange={setLoginCardColor}
+              />
 
               <div className="field" style={{ marginTop: 10 }}>
                 <label>Login logo</label>
@@ -1006,6 +1146,12 @@ export function ThemeEditorModal({
                   {loginLogoUrl && <span className="logo-uploaded">Logo set ✓</span>}
                 </div>
                 <p className="logo-hint">Shown above the login form. May need size tuning per theme.</p>
+                {loginLogoDims && (
+                  <p className="logo-dims">
+                    Uploaded {loginLogoDims.ow}×{loginLogoDims.oh}px → stored at {loginLogoDims.w}×{loginLogoDims.h}px as{" "}
+                    {loginLogoDims.format.toUpperCase()}, {(loginLogoDims.bytes / 1024).toFixed(1)} KB
+                  </p>
+                )}
               </div>
             </div>
           )}
@@ -1100,15 +1246,10 @@ export function ThemeEditorModal({
                     <div key={v.id} className="version-row">
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         {/* Show the look, not just a timestamp — "which one was that?" is
-                            the actual question, and a date can't answer it. */}
-                        <span
-                          className="version-swatch"
-                          style={{
-                            background: `linear-gradient(135deg, ${v.primaryColor ?? "#cbd5e1"}, ${
-                              v.accentColor ?? v.primaryColor ?? "#cbd5e1"
-                            })`,
-                          }}
-                        />
+                            the actual question, and a date can't answer it. Through the same
+                            renderer the per-location list uses, so the two cannot go on
+                            disagreeing about what an unset colour looks like. */}
+                        <VersionSwatches theme={v} />
                         <div>
                           <div className="version-title">
                             {v.brandName || "No brand name"}
@@ -1165,6 +1306,20 @@ export function ThemeEditorModal({
                         </div>
                         <div className="version-date">
                           {v.createdAt ? new Date(v.createdAt).toLocaleString() : `v${v.version}`}
+                        </div>
+                        {/*
+                          * What this version LOOKED like. The endpoint already returns the whole
+                          * theme row — every colour, the logo, the brand name — and the list showed
+                          * a number and a timestamp. On a real sub-account that is 28 rows, several
+                          * of them seconds apart, and the only way to tell them apart was to click
+                          * View on each one in turn. The data was there the whole time.
+                          *
+                          * Deliberately just the swatches and the name: a full diff is a different
+                          * feature, and this is the part that makes the list scannable.
+                          */}
+                        <div className="version-look">
+                          <VersionSwatches theme={v} />
+                          {v.brandName && <span className="version-brand">{v.brandName}</span>}
                         </div>
                       </div>
                       <button

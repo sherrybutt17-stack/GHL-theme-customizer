@@ -26,6 +26,22 @@ export default function StaffAdmin({ currentUserId }: { currentUserId: string })
   const [role, setRole] = useState<DeskRole>("mosaic_agent");
   const [busy, setBusy] = useState(false);
 
+  /**
+   * Per-row routing errors, and a per-row revision that forces the limit box to re-read
+   * what the SERVER holds.
+   *
+   * The box is uncontrolled (a controlled one re-renders the table on every keystroke,
+   * and the value only leaves the cell on blur), so a rejected save left the typed value
+   * sitting on screen looking accepted. Measured before this existed: typing 99 into a
+   * limit of 3 got a 400 back and the cell still read 99 — while `maxConcurrent` is the
+   * number that decides "all agents are busy, you're 3rd", who distribute levels onto,
+   * and whether a fourth ticket is refused. Bumping the revision remounts the input, so
+   * the cell always ends up showing the stored value rather than the attempted one.
+   */
+  const [rowError, setRowError] = useState<Record<string, string>>({});
+  const [limitRev, setLimitRev] = useState<Record<string, number>>({});
+  const bumpLimit = (id: string) => setLimitRev((r) => ({ ...r, [id]: (r[id] ?? 0) + 1 }));
+
   async function refresh() {
     try {
       setUsers(await listUsers());
@@ -60,21 +76,66 @@ export default function StaffAdmin({ currentUserId }: { currentUserId: string })
   }
 
   async function setRouting(id: string, patch: { tier?: number; maxConcurrent?: number }) {
+    setRowError((e) => ({ ...e, [id]: "" }));
     try {
       await setUserRouting(id, patch);
       await refresh();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not update routing.");
+      // Beside the control, not in the page banner at the top. Measured: the banner sits
+      // ~390px above the first table row and further above every row under it, so on a
+      // desk with more than a handful of accounts the only thing on screen was the value
+      // the server had just refused.
+      setRowError((e) => ({
+        ...e,
+        [id]: err instanceof ApiError ? err.message : "Could not update routing.",
+      }));
+    } finally {
+      // Either way the box goes back to the stored number: success re-reads it from the
+      // refresh, failure discards what was typed.
+      bumpLimit(id);
     }
+  }
+
+  /**
+   * An emptied box is a mid-edit state, not an instruction — so it is never sent.
+   *
+   * `Number("")` is 0, and 0 is a REAL value here ("route this person nothing"), so the
+   * server genuinely cannot tell the two apart. Measured before this existed: selecting
+   * the limit and tabbing away wrote `maxConcurrent: 0` for a live, available agent — no
+   * error, no confirmation, and a blank cell. They were then invisible to `claimNext`,
+   * skipped by distribute, and counted as zero capacity in the client's wait estimate,
+   * which is the away-versus-disabled failure arriving through a third door: a routing
+   * state nobody chose.
+   */
+  function commitLimit(user: DeskUserAdminView, raw: string) {
+    const trimmed = raw.trim();
+    if (trimmed === "") {
+      setRowError((e) => ({
+        ...e,
+        [user.id]: "A blank limit isn't zero — type 0 if you mean to route them nothing.",
+      }));
+      bumpLimit(user.id);
+      return;
+    }
+    if (Number(trimmed) === user.maxConcurrent) {
+      setRowError((e) => ({ ...e, [user.id]: "" }));
+      return;
+    }
+    void setRouting(user.id, { maxConcurrent: Number(trimmed) });
   }
 
   async function toggle(user: DeskUserAdminView) {
     const disabling = user.status === "active";
+    // Name the blast radius BEFORE the click, not after it. "any ticket they are
+    // holding" is a hedge the reader cannot resolve; "2 clients are mid-conversation"
+    // is what decides whether this happens now or at the end of their shift.
+    const held = user.heldTickets;
+    const heldLine = held
+      ? `${held} client${held === 1 ? " is" : "s are"} mid-conversation with them right now — ${held === 1 ? "that ticket goes" : "those tickets go"} back to the queue for someone else to take.`
+      : `They are holding no tickets, so nothing goes back to the queue.`;
     if (
       disabling &&
-      !confirm(
-        `Disable ${user.email}?\n\nThey are signed out immediately, and any ticket they are holding goes back to the queue for someone else to take.`
-      )
+      !confirm(`Disable ${user.email}?\n\nThey are signed out immediately. ${heldLine}`)
     ) {
       return;
     }
@@ -169,6 +230,9 @@ export default function StaffAdmin({ currentUserId }: { currentUserId: string })
                   here" are the same question asked twice. */}
               <th title="The highest escalation tier this person can be handed">Tier</th>
               <th title="How many live tickets they're routed at once">Limit</th>
+              {/* Held beside the limit it is measured against: "3 of 5" is the fact
+                  distribute levels on, and the number disabling them would re-queue. */}
+              <th title="Live tickets they are holding right now">Holding</th>
               <th>Last sign-in</th>
               <th />
             </tr>
@@ -198,6 +262,11 @@ export default function StaffAdmin({ currentUserId }: { currentUserId: string })
                 <td>
                   <div className="routing-cell">
                     <input
+                      // The key carries the STORED value and a revision, so the box is
+                      // remounted from the server's answer whenever a save settles.
+                      // Without it a refused value stayed on screen looking saved, and
+                      // the revert this component performs could never reach the DOM.
+                      key={`${u.id}:${u.maxConcurrent}:${limitRev[u.id] ?? 0}`}
                       type="number"
                       min={0}
                       max={50}
@@ -205,10 +274,20 @@ export default function StaffAdmin({ currentUserId }: { currentUserId: string })
                       // Committed on blur, not on every keystroke: typing "12" over a
                       // "3" passes through "1", and saving that would quietly park the
                       // queue on one person mid-edit.
-                      onBlur={(e) => void setRouting(u.id, { maxConcurrent: Number(e.target.value) })}
+                      onBlur={(e) => commitLimit(u, e.target.value)}
                     />
                     {u.availability === "away" && <span className="muted">away</span>}
                   </div>
+                  {rowError[u.id] && <div className="row-error">{rowError[u.id]}</div>}
+                </td>
+                <td>
+                  {u.heldTickets > 0 ? (
+                    <span className={u.heldTickets >= u.maxConcurrent ? "pill full" : "pill"}>
+                      {u.heldTickets} of {u.maxConcurrent}
+                    </span>
+                  ) : (
+                    <span className="muted">none</span>
+                  )}
                 </td>
                 <td className="muted">
                   {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString() : "Never"}

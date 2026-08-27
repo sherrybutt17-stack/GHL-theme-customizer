@@ -8,6 +8,8 @@ import {
   enterQueuePatch,
   planDistribution,
   MIN_SAMPLES_FOR_ESTIMATE,
+  formatWait,
+  waitSentence,
 } from "./deskQueue";
 
 /**
@@ -189,5 +191,39 @@ describe("entering the queue", () => {
   test("an open conversation escalating for the first time gets a clock", () => {
     const patch = enterQueuePatch({ status: "open", queuedAt: null });
     assert.ok(patch.queuedAt instanceof Date);
+  });
+});
+
+describe("the wait a client is told about", () => {
+  test("hours above an hour, because 'about 243 min' is a number the reader has to convert", () => {
+    assert.equal(formatWait(30), "under a minute");
+    assert.equal(formatWait(90), "2 min");
+    assert.equal(formatWait(3540), "59 min");
+    assert.equal(formatWait(4000), "1.1 hr");
+  });
+
+  test("the sentence reads naturally in both branches", () => {
+    // "Usually about under a minute" is why this is one function and not a concatenation
+    // at each call site.
+    assert.equal(waitSentence(30), "Usually under a minute.");
+    assert.equal(waitSentence(720), "Usually about 12 min.");
+  });
+
+  test("no estimate stays null - it must never become a promise", () => {
+    // estimateWaitSeconds returns null below five measured responses or with nobody on
+    // the desk. Formatting a null into "under a minute" would invent the exact claim
+    // that rule exists to withhold.
+    assert.equal(waitSentence(null), null);
+  });
+
+  test("the desk and the client cannot be shown different wordings", () => {
+    // The regression this replaces: the widget rounded to minutes forever while the desk
+    // used a compact `1h 7m`, so one estimate produced two sentences and the desk's line
+    // claimed to be quoting the client's.
+    for (const s of [10, 59, 61, 900, 3599, 3601, 7200, 86400]) {
+      assert.equal(waitSentence(s), waitSentence(s));
+      assert.ok(waitSentence(s)!.startsWith("Usually"));
+      assert.ok(!/\d+h \d+m/.test(waitSentence(s)!), "no compact desk format reaches a client");
+    }
   });
 });

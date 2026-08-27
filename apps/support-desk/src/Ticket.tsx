@@ -10,14 +10,18 @@ import {
   fetchTicket,
   handToAgency,
   renderCannedReply,
+  createCannedReply,
   sendReply,
   transferTicket,
   updateTicket,
+  fetchTicketTypes,
   type CannedReply,
   type GateFinding,
   type QueueAgent,
   type Ticket as TicketData,
   type TicketPriority,
+  type TicketStatus,
+  type TicketTypeOption,
 } from "./api";
 
 /**
@@ -50,10 +54,22 @@ const ROLE_LABEL: Record<string, string> = {
 export default function Ticket({
   id,
   onChanged,
+  reloadKey,
 }: {
   id: string;
   /** Tells the inbox to refresh — status, assignment and timings all move here. */
   onChanged: () => void;
+  /**
+   * Bumped when the transcript on screen can no longer be trusted — today, when a dead
+   * session has been signed back into. This component survives the re-login overlay ON
+   * PURPOSE, so that the half-written reply underneath it survives too; the cost is that
+   * everything it fetched while the cookie was dead is still on screen afterwards, and an
+   * agent finishing a reply cannot see what the client said in the meantime.
+   *
+   * Deliberately reloads the TRANSCRIPT only. The draft is the thing this whole design
+   * exists to protect, and it is not touched here.
+   */
+  reloadKey?: number;
 }) {
   const [ticket, setTicket] = useState<TicketData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +79,8 @@ export default function Ticket({
   const [reasons, setReasons] = useState<string[]>([]);
   // The live gate check could not run — distinct from it running and finding nothing.
   const [checkFailed, setCheckFailed] = useState(false);
-  const [busy, setBusy] = useState<null | "send" | "draft" | "hand" | "route">(null);
+  const [busy, setBusy] = useState<null | "send" | "draft" | "hand" | "route" | "template">(null);
+  const [naming, setNaming] = useState(false);
   const [canned, setCanned] = useState<CannedReply[]>([]);
   // Colleagues, for a transfer. Read from the queue board rather than /desk/api/users,
   // which is admin-only — every agent can pass work on, not only managers.
@@ -114,6 +131,13 @@ export default function Ticket({
     // keystroke, and re-running would reload the ticket as you type.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, load]);
+
+  const firstReload = useRef(true);
+  useEffect(() => {
+    // Not on mount — the effect above has just loaded it.
+    if (firstReload.current) { firstReload.current = false; return; }
+    load();
+  }, [reloadKey, load]);
 
   // Debounced live gate check. An internal note is never sent to a client, so it isn't
   // gated — the point of the gate is what reaches the client's screen.
@@ -200,6 +224,53 @@ export default function Ticket({
     }
   }
 
+  /**
+   * Turn the reply you just wrote into a reusable template.
+   *
+   * This is the only way to create one, and until it existed there were zero templates in
+   * the product and no screen that could make one — the create endpoint had no caller, so
+   * the row that shows them (`canned.length > 0`) never rendered and the whole feature was
+   * invisible.
+   *
+   * THE BRAND NAME MUST COME OUT. A template is reused across agencies, so a draft saying
+   * "the Harbour Suite team" would say Harbour Suite inside every other client's chat —
+   * the single most likely cross-brand leak in daily use, because a template is the one
+   * text nobody rereads. The client brand is swapped back to {{PLATFORM}} before saving,
+   * and the server re-runs the same gate with an EMPTY link allowlist and refuses anything
+   * that still names a brand.
+   */
+  async function saveAsTemplate() {
+    const body = draft.trim();
+    if (!body || !ticket) return;
+    const title = window.prompt("Name this template", body.slice(0, 40).replace(/\s+\S*$/, ""));
+    if (title === null) return;
+    if (!title.trim()) { setReasons(["A template needs a name."]); return; }
+
+    // Longest-first, or a brand name that contains another gets chopped up — the same
+    // reasoning as ownBrandNames at KB ingest.
+    let placeheld = body;
+    for (const name of [ticket.context.brandName, ticket.agencyName].filter((n): n is string => !!n).sort((a, b) => b.length - a.length)) {
+      placeheld = placeheld.split(name).join("{{PLATFORM}}");
+    }
+
+    setBusy("template");
+    try {
+      const created = await createCannedReply({ title: title.trim(), body: placeheld });
+      setCanned((c) => [...c, { id: created.id, title: created.title, body: created.body, agencyInstallId: null }]);
+      setReasons([
+        placeheld === body
+          ? `Saved "${created.title}" as a template.`
+          : `Saved "${created.title}". The client's brand name was replaced with {{PLATFORM}} so it reads correctly on every other client's ticket.`,
+      ]);
+    } catch (e) {
+      // A 422 here is the gate refusing it, and its reasons say which term tripped —
+      // worth showing verbatim rather than "couldn't save".
+      setReasons([e instanceof ApiError ? e.message : String(e)]);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function doHandToAgency() {
     if (!ticket) return;
     setBusy("hand");
@@ -267,7 +338,19 @@ export default function Ticket({
   if (!ticket) return <p className="muted pad">Loading…</p>;
 
   const ctx = ticket.context;
-  const renamed = Object.entries(ctx.renamedLabels);
+  const renamed = ctx.renamedLabels ?? [];
+
+  /**
+   * Automation entries, picked out of the transcript rather than stored separately.
+   *
+   * Every pass writes a bracketed `system` line, so the marker is the shape of the body.
+   * Deliberately not a second table: the transcript already IS the record of what
+   * happened to a ticket, and a parallel log would be one more thing to keep in step
+   * with it.
+   */
+  const automationLog = ticket.messages.filter(
+    (m) => m.role === "system" && /^\[(raised to tier|still unanswered|snooze ended|closed automatically|missed the response target|ticket raised by|returned to the queue)/.test(m.body)
+  );
 
   return (
     <section className="ticket">
@@ -293,11 +376,64 @@ export default function Ticket({
             <button onClick={() => void assignTicket(id).then(load).then(onChanged)}>Claim</button>
           )}
           {ticket.tier > 1 && <span className="tier">tier {ticket.tier}</span>}
+
+          {/**
+           * Take over from the assistant.
+           *
+           * Claiming and replying both set this automatically, so the button is for the
+           * case in between — reading a live bot conversation and deciding to step in
+           * before typing anything. Without it the bot keeps answering while the agent
+           * reads, which is how two voices end up in one thread.
+           */}
+          {!ticket.botPaused && ticket.status !== "resolved" && (
+            <button
+              onClick={() => void patch({ botPaused: true })}
+              title="Stop the assistant answering this conversation. It stays stopped until the ticket is resolved."
+            >
+              Take over from the assistant
+            </button>
+          )}
+          {ticket.botPaused && ticket.status !== "resolved" && (
+            <span className="pill" title="The assistant will not answer this client until the ticket is resolved.">
+              you have this
+            </span>
+          )}
+
+          <button onClick={() => setNaming(true)} title="Give this conversation a subject and a type.">
+            {ticket.subject ? "Edit ticket" : "Make it a ticket"}
+          </button>
+
+          {ticket.status !== "resolved" && (
+            <SnoozeControl
+              snoozedUntil={ticket.snoozedUntil}
+              onSnooze={(iso) => void patch({ snoozedUntil: iso })}
+            />
+          )}
+
           {ticket.status !== "resolved" && (
             <button onClick={() => void patch({ status: "resolved" })}>Mark resolved</button>
           )}
         </div>
       </header>
+
+      {naming && (
+        <TicketNaming
+          ticket={ticket}
+          onClose={() => setNaming(false)}
+          onSave={async (fields) => {
+            await patch(fields);
+            setNaming(false);
+          }}
+        />
+      )}
+
+      {ticket.snoozedUntil && new Date(ticket.snoozedUntil) > new Date() && (
+        <div className="snoozed-banner">
+          Snoozed until {new Date(ticket.snoozedUntil).toLocaleString()} — it's out of the
+          queue until then, and comes back on its own.
+          <button className="link" onClick={() => void patch({ snoozedUntil: null })}>Wake it now</button>
+        </div>
+      )}
 
       {/* Routing. Sits in the header rather than beside Send, because passing a ticket
           on is a decision about the ticket, not a way of replying to it. Whatever is in
@@ -342,7 +478,42 @@ export default function Ticket({
           )}
           {ticket.deflected && <span>bot resolved</span>}
           {ticket.handedToAgencyAt && <span className="handed">handed to agency</span>}
+          {ticket.origin === "desk" && (
+            <span>
+              raised by {ticket.createdBy?.name ?? "our team"}
+              {ticket.contextSnapshot.channel ? ` from ${ticket.contextSnapshot.channel}` : ""}
+            </span>
+          )}
+          {ticket.ticketTypeLabel && <span>{ticket.ticketTypeLabel}</span>}
+          {(ticket.contactName || ticket.contactEmail) && (
+            <span>{ticket.contactName ?? ticket.contactEmail}</span>
+          )}
         </div>
+      )}
+
+      {/**
+       * What the automations have done to this ticket.
+       *
+       * Free, rather than new plumbing: every pass already writes a `system` message, so
+       * this is a filtered render of rows we store anyway — and `system` is exactly the
+       * role the client-visible allowlist keeps off the client's screen.
+       *
+       * It matters because automation that acts invisibly is automation nobody can
+       * debug. "Why is this at tier 3?" is the first question asked about an escalated
+       * ticket, and this answers it in the place the question is asked.
+       */}
+      {automationLog.length > 0 && (
+        <details className="automation-history">
+          <summary>What happened automatically ({automationLog.length})</summary>
+          <ul>
+            {automationLog.map((m) => (
+              <li key={m.id}>
+                <span className="when">{timeOf(m.createdAt)}</span>
+                <span>{m.body.replace(/^\[|\]$/g, "")}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
 
       <div className="transcript">
@@ -353,9 +524,19 @@ export default function Ticket({
               <span>{timeOf(m.createdAt)}</span>
             </div>
             <div className="msg-body">{m.body}</div>
-            {m.citations && m.citations.length > 0 && (
+            {/*
+              * Gated on the TITLES, not on the array. The server maps every citation to
+              * `{ title: c?.title ?? null }` — it already anticipates a missing title — so a
+              * row of untitled citations passed `length > 0` and rendered a bare "from:"
+              * with nothing after it. A dangling label reads as a truncated answer, which
+              * on this screen is worse than saying nothing: an agent has to decide whether
+              * the bot cited something they cannot see.
+              */}
+            {(m.citations ?? []).map((c) => c.title).filter(Boolean).length > 0 && (
               // Titles only. A URL visible here is a URL that gets pasted to a client.
-              <div className="msg-cites">from: {m.citations.map((c) => c.title).filter(Boolean).join(", ")}</div>
+              <div className="msg-cites">
+                from: {(m.citations ?? []).map((c) => c.title).filter(Boolean).join(", ")}
+              </div>
             )}
           </article>
         ))}
@@ -375,8 +556,12 @@ export default function Ticket({
           {renamed.length > 0 && (
             <span>
               Renamed:{" "}
-              {renamed.slice(0, 6).map(([key, label]) => (
-                <code key={key}>{label}</code>
+              {/* from → to: "Deals" alone leaves the agent to guess what it replaced,
+                  and moving between the client's word and the platform's is the job. */}
+              {renamed.slice(0, 6).map((r) => (
+                <code key={r.key}>
+                  {r.from} → {r.to}
+                </code>
               ))}
               {renamed.length > 6 && ` +${renamed.length - 6}`}
             </span>
@@ -459,6 +644,13 @@ export default function Ticket({
           <button onClick={() => void askForDraft()} disabled={busy !== null}>
             {busy === "draft" ? "Drafting…" : "Draft for me"}
           </button>
+          <button
+            onClick={() => void saveAsTemplate()}
+            disabled={busy !== null || !draft.trim()}
+            title="Reuse this reply on other tickets — the client's brand name is replaced automatically"
+          >
+            {busy === "template" ? "Saving…" : "Save as template"}
+          </button>
           <button onClick={() => void doHandToAgency()} disabled={busy !== null} title="Their billing, contracts or custom work">
             Hand to agency
           </button>
@@ -473,5 +665,147 @@ export default function Ticket({
         </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * Park a ticket until a stated time.
+ *
+ * Offered as durations rather than a datetime picker because the decision an agent is
+ * actually making is "not before tomorrow", not "09:14 on the 19th". A picker invites
+ * precision nobody has and is three interactions instead of one.
+ *
+ * The ticket leaves the queue entirely while snoozed — `queueWhere` excludes it — so it
+ * stops appearing in "take next", in distribute, in the board's depth and in the client's
+ * queue position. Pass 5 of the automations is the only thing that brings it back, which
+ * is why that pass exists: a snooze that does not reliably return is worse than none,
+ * because the agent has stopped watching on the strength of the promise.
+ */
+function SnoozeControl({
+  snoozedUntil,
+  onSnooze,
+}: {
+  snoozedUntil: string | null;
+  onSnooze: (iso: string) => void;
+}) {
+  const active = snoozedUntil != null && new Date(snoozedUntil) > new Date();
+  if (active) return null;
+
+  const OPTIONS: [string, number][] = [
+    ["1 hour", 60],
+    ["4 hours", 240],
+    ["tomorrow", 60 * 24],
+    ["next week", 60 * 24 * 7],
+  ];
+
+  return (
+    <select
+      value=""
+      onChange={(e) => {
+        const minutes = Number(e.target.value);
+        if (!minutes) return;
+        onSnooze(new Date(Date.now() + minutes * 60_000).toISOString());
+      }}
+      title="Take it out of the queue until later. It comes back on its own."
+    >
+      <option value="">Snooze…</option>
+      {OPTIONS.map(([label, minutes]) => (
+        <option key={label} value={minutes}>
+          {label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/**
+ * Give a conversation a subject and a type — i.e. turn a chat into a ticket.
+ *
+ * There is no new record behind this. A conversation already IS a ticket, so
+ * "converting" one is naming it: the fields it was missing, and a place in the human
+ * queue. That is why this is a PATCH of the conversation rather than a create.
+ */
+function TicketNaming({
+  ticket,
+  onClose,
+  onSave,
+}: {
+  ticket: TicketData;
+  onClose: () => void;
+  onSave: (fields: { subject?: string; ticketType?: string | null; status?: TicketStatus }) => Promise<void>;
+}) {
+  const [subject, setSubject] = useState(ticket.subject ?? "");
+  const [ticketType, setTicketType] = useState(ticket.ticketType ?? "");
+  const [types, setTypes] = useState<TicketTypeOption[]>([]);
+  const [queue, setQueue] = useState(ticket.status !== "escalated");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetchTicketTypes().then((r) => setTypes(r.types)).catch(() => setTypes([]));
+  }, []);
+
+  return (
+    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal narrow" role="dialog" aria-label="Ticket details">
+        <div className="modal-head">
+          <h2>Ticket details</h2>
+          <button type="button" className="icon" onClick={onClose} aria-label="Close">&times;</button>
+        </div>
+        <div className="modal-body">
+          <label>
+            Subject
+            <input
+              type="text"
+              value={subject}
+              maxLength={200}
+              placeholder="Short description of the problem"
+              onChange={(e) => setSubject(e.target.value)}
+            />
+          </label>
+          <label>
+            What kind of problem?
+            <select value={ticketType} onChange={(e) => setTicketType(e.target.value)}>
+              <option value="">Not sure yet</option>
+              {types.map((t) => (
+                <option key={t.key} value={t.key}>{t.label}</option>
+              ))}
+            </select>
+            {ticketType && <span className="hint">{types.find((t) => t.key === ticketType)?.hint}</span>}
+          </label>
+          {ticket.status !== "escalated" && (
+            <label className="check">
+              <input type="checkbox" checked={queue} onChange={(e) => setQueue(e.target.checked)} />
+              Put it in the human queue
+              {/* Naming a chat usually means taking it off the bot. Offered rather than
+                  assumed: an agent may be labelling a conversation the assistant is
+                  handling perfectly well, and forcing it into the queue would manufacture
+                  work — and a wait the client is then shown a position in. */}
+            </label>
+          )}
+        </div>
+        <div className="modal-actions">
+          <button type="button" onClick={onClose}>Cancel</button>
+          <button
+            type="button"
+            className="primary"
+            disabled={saving}
+            onClick={async () => {
+              setSaving(true);
+              try {
+                await onSave({
+                  subject: subject.trim(),
+                  ticketType: ticketType || null,
+                  ...(queue && ticket.status !== "escalated" ? { status: "escalated" as TicketStatus } : {}),
+                });
+              } finally {
+                setSaving(false);
+              }
+            }}
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

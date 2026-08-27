@@ -57,10 +57,15 @@ onboardingRouter.get("/onboarding/:agencyInstallId", async (req: Request, res: R
     button { font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 8px; border: none; background: var(--brand); color: #fff; cursor: pointer; white-space: nowrap; }
     button:hover { filter: brightness(1.08); }
     .hint { font-size: 12px; color: #888; margin: 6px 0 0; }
+    /* A failed copy must LOOK failed and stay that way — see the note in the script. */
+    button.copy-failed { background: #92610a; }
     .done { margin-top: 30px; padding: 16px 18px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px; }
     .done strong { color: #15803d; }
     .optional { margin-top: 24px; border-top: 1px solid #e5e5e5; padding-top: 18px; }
     .optional summary { cursor: pointer; color: var(--brand); font-size: 14px; }
+    /* Amber, not red: this is an instruction, not a fault - the same distinction the
+       dashboard's session banner makes. */
+    .optional summary .warn-inline { color: #92610a; }
   </style>
 </head>
 <body>
@@ -91,7 +96,26 @@ onboardingRouter.get("/onboarding/:agencyInstallId", async (req: Request, res: R
   </div>
 
   <details class="optional">
-    <summary><strong>Recommended:</strong> browser-tab title, favicon and client support</summary>
+    <!--
+      The SUMMARY carries the consequence, not a feature list.
+
+      The paragraph inside already says the decisive thing - "skipping it now is the one
+      thing that would make you come back to this page later" - and it was invisible until
+      somebody opened the disclosure it was arguing for. Worse, it sits BELOW a green
+      "That's it", so the page declares the job finished and then offers what reads as an
+      optional extra. That is the same trap this page's history is about, one layer softer:
+      an agency pastes at the natural moment, never opens this, enables support months later
+      and nothing appears - with nothing on any screen to explain that a re-paste was the
+      missing step. Nobody returns to a page they have already finished.
+
+      Not forced open: the CSS line above genuinely is the required step, and expanding 31KB
+      of code by default would bury it. The reason to open it just has to be readable while
+      it is closed.
+    -->
+    <summary>
+      <strong>Recommended:</strong> browser-tab title, favicon and client support &mdash;
+      <span class="warn-inline">skipping this is the one thing that brings you back here later.</span>
+    </summary>
     <p class="hint" style="margin-top:12px">
       CSS can't change a sub-account's browser-tab title or favicon, and it can't run the
       client support widget. Paste the code below <strong>once</strong> into
@@ -115,9 +139,39 @@ onboardingRouter.get("/onboarding/:agencyInstallId", async (req: Request, res: R
     // may still reject - on the one action this whole page exists for. The dashboard's
     // own copy button had the identical bug; both are fixed, and this is the copy an
     // agency meets FIRST, straight off the OAuth redirect.
-    function done(btn, ok) {
-      btn.textContent = ok ? 'Copied!' : 'Select & copy';
-      setTimeout(function () { btn.textContent = 'Copy'; }, 2500);
+    //
+    // TWO THINGS THE DASHBOARD WAS FIXED FOR AND THIS PAGE WAS NOT, measured 2026-08-27 by
+    // driving both buttons with every clipboard route failing:
+    //
+    //  1. It said 'Select & copy' and SELECTED NOTHING (selection length 0). That is fine
+    //     advice for a 90-byte @import line and close to useless for the 31KB snippet
+    //     below, which the reader would have to drag-select out of a scroll box. The
+    //     failure now puts the caret round the text itself, so it is one keystroke.
+    //  2. The failure REVERTED to 'Copy' after 2.5 seconds. So the only report that the
+    //     copy did not happen was transient: look away, look back, and the button reads
+    //     normal over a clipboard that still holds whatever it held before. A success may
+    //     time out — there is nothing left to do. A failure may not.
+    function selectNode(id) {
+      var el = document.getElementById(id);
+      if (!el || !window.getSelection || !document.createRange) return 0;
+      var range = document.createRange();
+      range.selectNodeContents(el);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      if (el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+      return String(sel.toString()).length;
+    }
+    function done(btn, ok, id) {
+      if (ok) {
+        btn.classList.remove('copy-failed');
+        btn.textContent = 'Copied!';
+        setTimeout(function () { btn.textContent = 'Copy'; }, 2500);
+        return;
+      }
+      selectNode(id);
+      btn.classList.add('copy-failed');
+      btn.textContent = 'Selected \u2014 press \u2318/Ctrl + C';
     }
     function copyText(btn, id) {
       var text = document.getElementById(id).textContent;
@@ -131,13 +185,13 @@ onboardingRouter.get("/onboarding/:agencyInstallId", async (req: Request, res: R
         ok = document.execCommand('copy');
         document.body.removeChild(ta);
       } catch (e) {}
-      if (ok) return done(btn, true);
+      if (ok) return done(btn, true, id);
       // No clipboard API at all is a FAILURE, not a success. It is absent over plain
       // http, which is exactly what local dev and an ngrok tunnel serve.
-      if (!navigator.clipboard || !navigator.clipboard.writeText) return done(btn, false);
+      if (!navigator.clipboard || !navigator.clipboard.writeText) return done(btn, false, id);
       navigator.clipboard.writeText(text).then(
-        function () { done(btn, true); },
-        function () { done(btn, false); }
+        function () { done(btn, true, id); },
+        function () { done(btn, false, id); }
       );
     }
     function copyImport(btn) { copyText(btn, 'import-line'); }

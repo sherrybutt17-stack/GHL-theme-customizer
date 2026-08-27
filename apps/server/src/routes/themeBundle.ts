@@ -2,22 +2,11 @@ import { Router, Request, Response } from "express";
 import { prisma } from "../services/prisma";
 import { generateThemeBundleScript } from "../services/themeBundleScript";
 import { cssColor } from "../services/themeCssBundle";
-import { isKnownFeatureKey } from "../services/ghlSidebarFeatures";
 
 export const themeBundleRouter = Router();
 
 /** Null-safe color sanitize for the public config JSON (concatenated into CSS by the injected script). */
 const color = (v: string | null | undefined) => (v ? cssColor(v) : null);
-
-/** Drop any non-whitelisted keys from a stored menuLabelOverrides map. */
-function safeLabels(overrides: unknown): Record<string, string> {
-  if (!overrides || typeof overrides !== "object") return {};
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(overrides as Record<string, unknown>)) {
-    if (isKnownFeatureKey(k) && typeof v === "string") out[k] = v;
-  }
-  return out;
-}
 
 /**
  * Kept as a plain .js endpoint for reference/future use (e.g. if we later find a
@@ -92,23 +81,40 @@ themeBundleRouter.get(
       // Nothing branded at either level: there is genuinely nothing to apply.
       return res.status(404).json(null);
     }
-    const pick = <K extends "brandName" | "logoUrl" | "faviconUrl" | "primaryColor" | "secondaryColor" | "accentColor">(
+    const pick = <K extends "brandName" | "faviconUrl" | "primaryColor" | "accentColor">(
       key: K
     ): string | null => own?.[key] ?? (agencyDefault as Record<string, any> | null)?.[key] ?? null;
 
-    const rawHidden = own?.hiddenFeatures ?? agencyDefault?.hiddenFeatures;
-    const hidden = Array.isArray(rawHidden) ? (rawHidden as string[]).filter(isKnownFeatureKey) : [];
-    const rawLabels = own?.menuLabelOverrides ?? agencyDefault?.menuLabelOverrides;
-
+    /**
+     * RETURN WHAT THE CLIENT NEEDS, NOT WHAT WE HAPPEN TO HAVE — the rule the support
+     * widget's config endpoint already follows, for the same reason.
+     *
+     * This is unauthenticated by necessity: it is fetched by a script pasted into GHL,
+     * keyed on an `agencyInstallId` that is PUBLIC (it sits in the `@import` line every
+     * agency pastes into their Custom CSS). It used to answer with eight fields. The
+     * pasted script reads TWO — `brandName` and `faviconUrl` — and `primaryColor` /
+     * `accentColor` are kept only because OLDER pasted snippets read them and those are
+     * still sitting in agencies' Custom JavaScript fields, unchangeable from here
+     * (confirmed against the file's own history, not assumed).
+     *
+     * The three that went were never read by ANY version, and two of them should not have
+     * been on the wire at all:
+     *  - `hiddenFeatures` is the agency's commercial packaging. This file's own note says
+     *    it is the proxy for what a client bought — it is why `planName` exists — so
+     *    answering with it tells anyone who asks which features each client did not get.
+     *  - `menuLabelOverrides` is that agency's private renaming scheme for their clients.
+     *  - `logoUrl` is base64-inlined for uploaded logos, so it is the largest thing here
+     *    by far, in aid of nothing. (Measured: the route does 304 on a conditional
+     *    request, so this was never a per-page-load cost — worth saying, because that is
+     *    what it looks like until you check.)
+     *
+     * `secondaryColor` went with them: nothing has ever read it at either end.
+     */
     res.json({
       brandName: pick("brandName"),
-      logoUrl: pick("logoUrl"),
       faviconUrl: pick("faviconUrl"),
       primaryColor: color(pick("primaryColor")),
-      secondaryColor: color(pick("secondaryColor")),
       accentColor: color(pick("accentColor")),
-      menuLabelOverrides: safeLabels(rawLabels),
-      hiddenFeatures: hidden,
     });
   }
 );

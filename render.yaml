@@ -212,8 +212,19 @@ services:
 #    in-process timer simply stops, and if the service ever runs more than one instance
 #    every instance would poll every feed and race the same upserts.
 #
-#    Render cron jobs are a paid feature, so on the free plan use any external scheduler
-#    to run it hourly against the same DATABASE_URL. Once on a paid plan, add:
+#    Render cron jobs are a paid feature — so this is ALREADY SOLVED, off Render, by
+#    `.github/workflows/poll-feeds.yml`. GitHub Actions cron is free, runs one job at a
+#    time (the `concurrency` group covers the racing-instances problem above), and needs
+#    exactly one secret:
+#
+#      Settings -> Secrets and variables -> Actions -> New repository secret
+#        DATABASE_URL = <the same Neon URL this service uses>
+#
+#    Until that secret exists the workflow runs hourly and exits 0 with a notice, on
+#    purpose: a scheduled job that fails red every hour until somebody configures it
+#    teaches people to ignore this repo's CI, and the next failure it hides is a real one.
+#
+#    Once on a paid Render plan you could instead add:
 #
 #      - type: cron
 #        name: mosaic-feed-poll

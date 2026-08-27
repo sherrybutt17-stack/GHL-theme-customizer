@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { suggestGradients, suggestAccents } from "./colorUtils";
+import { DARK_CONTENT_BG } from "./themeDefaults";
 
 /** The visual "look" a theme, agency-default, or preset can carry. */
 export interface Look {
@@ -17,6 +18,8 @@ export interface Look {
   sidebarIconColor: string;
   buttonShape: string;
   darkMode: boolean;
+  contentBgColor: string;
+  contentTextColor: string;
 }
 
 export const GOOGLE_FONTS = [
@@ -73,30 +76,52 @@ function ensureFontLoaded(family: string) {
   document.head.appendChild(link);
 }
 
+/**
+ * One colour control.
+ *
+ * `unsetPlaceholder` makes the row able to say NOTHING IS CHOSEN, which an
+ * `<input type="color">` cannot express on its own — it always renders some swatch, so a
+ * field nobody has set looks byte for byte like one somebody picked. Every row here except
+ * the icons is materialised by `lookFrom`, so only that one can be empty; the option exists
+ * because the next unset field would otherwise borrow a colour too.
+ *
+ * The login tab's `LoginColorRow` in ThemeEditor.tsx is the twin of this, built for the same
+ * reason on 2026-08-25 and kept separate only because those rows carry per-field
+ * placeholders. If a third one appears, make it one component.
+ */
 function ColorRow({
   label,
   hint,
   value,
+  unsetPlaceholder,
   onChange,
 }: {
   label: string;
   hint: string;
   value: string;
+  /** When given, an empty `value` means "not set" rather than "this colour". */
+  unsetPlaceholder?: string;
   onChange: (v: string) => void;
 }) {
+  const unset = unsetPlaceholder !== undefined && !value;
   return (
     <div className="look-color-row">
       <input
         type="color"
-        className="look-swatch"
-        value={value}
+        className={`look-swatch${unset ? " look-swatch-unset" : ""}`}
+        value={value || unsetPlaceholder || "#000000"}
         onChange={(e) => onChange(e.target.value)}
       />
       <div className="look-color-meta">
         <div className="look-color-label">{label}</div>
         <div className="look-color-hint">{hint}</div>
       </div>
-      <code className="look-hex">{value}</code>
+      <code className="look-hex">{unset ? "not set" : value}</code>
+      {unsetPlaceholder !== undefined && value && (
+        <button type="button" className="btn btn-sm btn-ghost" onClick={() => onChange("")}>
+          Clear
+        </button>
+      )}
     </div>
   );
 }
@@ -228,12 +253,68 @@ export function LookFields({ value, onChange }: { value: Look; onChange: (patch:
         onChange={(v) => onChange({ sidebarTextColor: v })}
       />
 
+      {/*
+        This row used to borrow the accent colour for its swatch under a hint promising the
+        icons "default to the accent color". The stylesheet has no such fallback — it emits
+        an icon rule ONLY when this field is set — so the swatch showed a colour the icons
+        were not, the hex under it named that colour, and saving never made it true, because
+        the field stays empty through a save. Both halves said the work was already done.
+      */}
       <ColorRow
         label="Sidebar icons"
-        hint="Color of the menu icons. Defaults to the accent color. Leave default to skip."
-        value={value.sidebarIconColor || value.accentColor || "#f59e0b"}
+        hint="Color of the menu icons. Left unset, they keep the colours they came with."
+        value={value.sidebarIconColor}
+        unsetPlaceholder={value.accentColor || "#f59e0b"}
         onChange={(v) => onChange({ sidebarIconColor: v })}
       />
+
+      {/*
+        THE CONTENT AREA. Three columns carried this since the schema was written and
+        rendered nothing: `contentBgColor` and `contentTextColor` existed nowhere outside
+        `schema.prisma`, and `darkMode` was accepted by the PUT, stored on all three
+        models, carried through presets and threaded into this very `Look` — with no
+        control anywhere and not one line of the stylesheet reading it. `audit-fields.js`
+        reported all three every run.
+
+        The hint says what it paints and what it does not, because this is the one theme
+        field whose selector is not confirmed against live GHL DOM. If GHL wraps its
+        screens in a container we do not name, setting a colour here does nothing — which
+        the agency will see immediately, and can clear.
+      */}
+      <div className="look-toggle-row">
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={value.darkMode}
+            onChange={(e) => onChange({ darkMode: e.target.checked })}
+          />
+          <span className="toggle-track" />
+        </label>
+        <div>
+          <div className="look-color-label">Dark content area</div>
+          <div className="look-color-hint">
+            A dark canvas behind the platform's own screens. Cards and tables keep their
+            own background, so this frames them rather than inverting them.
+          </div>
+        </div>
+      </div>
+
+      <ColorRow
+        label="Content background"
+        hint="The page behind the screens, not the sidebar or top bar. Left unset, it stays as it comes."
+        value={value.contentBgColor}
+        unsetPlaceholder={value.darkMode ? DARK_CONTENT_BG : "#f8fafc"}
+        onChange={(v) => onChange({ contentBgColor: v })}
+      />
+
+      <ColorRow
+        label="Content text"
+        hint="Body copy on the canvas. It also inherits into cards and tables, which keep their own background — so pick one that suits those too."
+        value={value.contentTextColor}
+        unsetPlaceholder="#1f2937"
+        onChange={(v) => onChange({ contentTextColor: v })}
+      />
+
 
 
       <div className="look-angle">

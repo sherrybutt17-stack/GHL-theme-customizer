@@ -16,6 +16,10 @@ import { supportStats } from "../services/supportStats";
 import { ingestArticle } from "../services/kbIngest";
 import { answerQuestion } from "../services/supportBot";
 import { describeError } from "../services/security";
+import { MODEL_REMEDY, isPermanentModelFailure, type ModelFailure } from "../services/modelFailure";
+import { validateSlaPolicy, resolveSlaPolicy } from "../services/ticketSla";
+import { leakTerms } from "../services/brandLexicon";
+import { MAX_CONSECUTIVE_ERRORS } from "../services/feedPoll";
 
 export const adminRouter = Router();
 
@@ -56,6 +60,8 @@ function visualFields(body: any) {
     sidebarIconColor: body?.sidebarIconColor || null,
     buttonShape: body?.buttonShape || null,
     darkMode: !!body?.darkMode,
+    contentBgColor: body?.contentBgColor || null,
+    contentTextColor: body?.contentTextColor || null,
     hideUpgrade: !!body?.hideUpgrade,
     alertMessage: body?.alertMessage || null,
     alertColor: body?.alertColor || null,
@@ -82,8 +88,48 @@ function presetLookFields(body: any) {
     sidebarTextColor: body?.sidebarTextColor || null,
     sidebarIconColor: body?.sidebarIconColor || null,
     buttonShape: body?.buttonShape || null,
-    menuOrder: Array.isArray(body?.menuOrder) ? body.menuOrder : null,
+    /**
+     * An EMPTY array is not an order. The editor sends `{...look, menuOrder}` on every
+     * "Save as preset", so a preset made from a sub-account nobody reordered used to store
+     * `[]` — and both apply paths read "is it an array" as "apply it", which turned the
+     * ordinary preset into an instruction to WIPE the target's own sidebar order. The
+     * `Number("")` trap in an array costume, on a field the client sees.
+     */
+    menuOrder: Array.isArray(body?.menuOrder) && body.menuOrder.length > 0 ? body.menuOrder : null,
     darkMode: !!body?.darkMode,
+    contentBgColor: body?.contentBgColor || null,
+    contentTextColor: body?.contentTextColor || null,
+  };
+}
+
+/** A preset carries an order only if somebody actually saved one into it. */
+function presetMenuOrder(menuOrder: unknown): string[] | null {
+  return Array.isArray(menuOrder) && menuOrder.length > 0 ? (menuOrder as string[]) : null;
+}
+
+/**
+ * What belongs to the CLIENT rather than to the look: their identity, their policy, their
+ * announcement. A preset overlays the look and must carry all of this forward untouched.
+ *
+ * Named, because it was a hand-written list inside one route and `alertMessage`/`alertColor`
+ * were simply not on it — so applying a colour preset to twenty sub-accounts silently
+ * deleted twenty announcement banners, and the route's own comment listed what it kept as
+ * "brand name, logo, hidden/renamed menu items, custom CSS" while believing that complete.
+ * The same shape as `planTiers` and `slaFirstResponseMins`: a column added to the model and
+ * to one path, never to the other.
+ */
+function clientOwnedFields(prev: any) {
+  return {
+    brandName: prev?.brandName ?? null,
+    logoUrl: prev?.logoUrl ?? null,
+    faviconUrl: prev?.faviconUrl ?? null,
+    sidebarImageUrl: prev?.sidebarImageUrl ?? null,
+    hideUpgrade: prev?.hideUpgrade ?? false,
+    menuLabelOverrides: prev?.menuLabelOverrides ?? undefined,
+    hiddenFeatures: prev?.hiddenFeatures ?? undefined,
+    customCssOverride: prev?.customCssOverride ?? null,
+    alertMessage: prev?.alertMessage ?? null,
+    alertColor: prev?.alertColor ?? null,
   };
 }
 
@@ -128,17 +174,42 @@ async function createThemeVersion(locationInstallId: string, data: Record<string
  * default), we fall back to the "menu-link URL carries the tenant" model.
  */
 async function requireAgency(req: Request, res: Response): Promise<string | null> {
-  const agency = await prisma.agencyInstall.findUnique({ where: { id: req.params.agencyInstallId } });
-  if (!agency) {
-    res.status(404).json({ error: "Unknown agency install" });
-    return null;
-  }
+  const agencyInstallId = req.params.agencyInstallId;
+
+  /**
+   * THE TOKEN IS CHECKED BEFORE THE DATABASE IS TOUCHED, and the order is the point.
+   *
+   * This looked the agency up first and 404'd on an unknown id, so an unauthenticated
+   * caller could tell a real `agencyInstallId` from a made-up one — 401 for one, 404 for
+   * the other. That is the `/portal/:slug` oracle again, on the routes it was worst on:
+   * the note on that fix says `/admin-embed` returns a deliberately generic refusal
+   * precisely so it reveals nothing, and this answered the same question for free.
+   *
+   * The id is public (it is in the `@import` line), so the leak is enumeration rather than
+   * disclosure — but the query was not free. Every unauthenticated request reached Postgres
+   * before any credential was examined, on a 512MB single-threaded free instance, which is
+   * the same reasoning that caps `MAX_FEED_BYTES`. The token is
+   * `agencyInstallId.expiry.signature` verified against the id in the PATH, so it needs no
+   * database at all: a caller with no credential now costs us one HMAC and nothing else.
+   *
+   * It also made the post-deploy gate lie. `npm run smoke` probes this with a fabricated
+   * agency id when `--agency` is omitted, and asserts 401/403 — so a correctly protected
+   * deploy answered 404 and the gate reported the single most expensive setting in the
+   * product as BROKEN. Measured before this change, against a server booted with
+   * DASHBOARD_AUTH_ENABLED=true.
+   */
   if (dashboardAuthEnabled()) {
     const token = (req.headers["x-mosaic-token"] as string | undefined) ?? undefined;
-    if (!verifyDashboardToken(token, agency.id)) {
+    if (!verifyDashboardToken(token, agencyInstallId)) {
       res.status(401).json({ error: "Missing or invalid dashboard token" });
       return null;
     }
+  }
+
+  const agency = await prisma.agencyInstall.findUnique({ where: { id: agencyInstallId } });
+  if (!agency) {
+    res.status(404).json({ error: "Unknown agency install" });
+    return null;
   }
   return agency.id;
 }
@@ -221,6 +292,24 @@ adminRouter.get("/admin/api/:agencyInstallId/locations", async (req: Request, re
     orderBy: { locationName: "asc" },
   });
 
+  /**
+   * How much history each sub-account has, because Reset DELETES every version of it and
+   * the dialog has no other way to say how much that is. Measured on the dev database, two
+   * sub-accounts held 30 and 28 versions behind a confirm reading only "its custom theme
+   * will be removed".
+   *
+   * ONE groupBy for the whole list, never a query per row — the `heldCountsFor` rule.
+   */
+  const versionCounts = new Map(
+    (
+      await prisma.themeConfig.groupBy({
+        by: ["locationInstallId"],
+        where: { locationInstallId: { in: locations.map((l) => l.id) } },
+        _count: { _all: true },
+      })
+    ).map((g) => [g.locationInstallId, g._count._all])
+  );
+
   res.json(
     locations.map((loc) => ({
       id: loc.id,
@@ -229,6 +318,7 @@ adminRouter.get("/admin/api/:agencyInstallId/locations", async (req: Request, re
       enabled: loc.enabled,
       supportEnabled: loc.supportEnabled,
       theme: loc.themeConfigs[0] ?? null,
+      themeVersions: versionCounts.get(loc.id) ?? 0,
     }))
   );
 });
@@ -267,6 +357,19 @@ adminRouter.put(
       hiddenFeatures: keep("hiddenFeatures", fields.hiddenFeatures, prev?.hiddenFeatures),
       menuLabelOverrides: keep("menuLabelOverrides", fields.menuLabelOverrides, prev?.menuLabelOverrides),
       menuOrder: keep("menuOrder", fields.menuOrder, prev?.menuOrder),
+      // The banner is client-owned exactly like the logo, and was missing from this list
+      // for the same reason it was missing from the preset-apply route: it is the newest
+      // thing on the model and neither list was rechecked. `clientOwnedFields` names the
+      // full set now — this one carries forward per KEY because the dashboard sends a
+      // complete snapshot and an omitted field here means "not sent", not "cleared".
+      alertMessage: keep("alertMessage", fields.alertMessage, prev?.alertMessage),
+      alertColor: keep("alertColor", fields.alertColor, prev?.alertColor),
+      // The banner is client-owned exactly like the logo, and was missing from this list
+      // for the same reason it was missing from the preset-apply route: it is the newest
+      // thing on the model and neither list was rechecked. `clientOwnedFields` names the
+      // full set now — this one carries forward per KEY because the dashboard sends a
+      // complete snapshot and an omitted field here means "not sent", not "cleared".
+
       customCssOverride: req.body?.customCss === undefined ? (prev?.customCssOverride ?? null) : (req.body.customCss || null),
     });
 
@@ -320,8 +423,18 @@ adminRouter.delete(
       return res.status(403).json({ error: "Location does not belong to this agency install" });
     }
 
-    await prisma.themeConfig.deleteMany({ where: { locationInstallId: location.id } });
-    res.json({ reset: true });
+    /**
+     * This removes EVERY version, not just the current one, so the History tab for this
+     * sub-account is emptied and there is no way back. That asymmetry is worth naming:
+     * `AgencyDefaultThemeVersion` exists precisely because the agency default "had the
+     * smallest safety net, while a single sub-account's theme has a full History tab" — and
+     * the sub-account's own Reset button deletes that net.
+     *
+     * The count is returned so the dashboard can say what actually went, rather than
+     * reporting a success that reads the same whether it dropped one version or thirty.
+     */
+    const { count } = await prisma.themeConfig.deleteMany({ where: { locationInstallId: location.id } });
+    res.json({ reset: true, versionsDeleted: count });
   }
 );
 
@@ -492,6 +605,9 @@ adminRouter.get("/admin/api/:agencyInstallId/default-theme/versions", async (req
         brandName: (s.brandName as string | null) ?? null,
         primaryColor: (s.primaryColor as string | null) ?? null,
         accentColor: (s.accentColor as string | null) ?? null,
+        // The per-location version list shows three swatches and this one showed two,
+        // because the payload only ever carried two. One renderer needs one field set.
+        topBarColor: (s.topBarColor as string | null) ?? null,
         hasLogo: !!s.logoUrl,
       };
     })
@@ -590,17 +706,16 @@ adminRouter.post(
         const prev = loc.themeConfigs[0];
         const theme = await createThemeVersion(loc.id, {
           // Preserve client identity + policy from the prior version.
-          brandName: prev?.brandName ?? null,
-          logoUrl: prev?.logoUrl ?? null,
-          faviconUrl: prev?.faviconUrl ?? null,
-          sidebarImageUrl: prev?.sidebarImageUrl ?? null,
-          hideUpgrade: prev?.hideUpgrade ?? false,
-          menuLabelOverrides: prev?.menuLabelOverrides ?? undefined,
-          hiddenFeatures: prev?.hiddenFeatures ?? undefined,
-          // Menu order is structural, not part of a color preset - keep the
-          // sub-account's existing order instead of wiping it on preset apply.
-          menuOrder: prev?.menuOrder ?? undefined,
-          customCssOverride: prev?.customCssOverride ?? null,
+          ...clientOwnedFields(prev),
+          /**
+           * The preset's order if it genuinely carries one, otherwise the sub-account keeps
+           * its own. This route used to ignore the preset's order outright while
+           * `ThemeEditor.applyPreset` applied it — two implementations of one action, with
+           * comments contradicting each other, and the disagreement invisible because
+           * nobody can see both screens at once. The toolbar is the door an agency uses for
+           * forty-one clients, so it was the wrong half to be quietly different.
+           */
+          menuOrder: presetMenuOrder(preset.menuOrder) ?? prev?.menuOrder ?? undefined,
           // Overlay the preset look.
           primaryColor: preset.primaryColor,
           secondaryColor: preset.secondaryColor,
@@ -617,6 +732,8 @@ adminRouter.post(
           sidebarIconColor: preset.sidebarIconColor,
           buttonShape: preset.buttonShape,
           darkMode: preset.darkMode,
+          contentBgColor: preset.contentBgColor,
+          contentTextColor: preset.contentTextColor,
         });
         await prisma.locationInstall.update({ where: { id: loc.id }, data: { enabled: true } });
         return { locationInstallId: loc.id, theme };
@@ -699,6 +816,73 @@ function normalizeBusinessHours(v: any): { tz: string; days: Record<string, [num
   return { tz: v.tz, days };
 }
 
+/**
+ * The ONE shape this resource has on the wire, read by the GET and the PUT alike.
+ *
+ * They used to differ: the GET normalised (a nullable Json column handed back as `[]`, the
+ * response targets resolved into a complete policy) while the PUT returned `res.json(config)`
+ * — the raw Prisma row. The dashboard stores BOTH into one `SupportConfig`-typed state
+ * variable, so one resource had two shapes and nothing could tell which one was in hand.
+ *
+ * Measured, with the targets column NULL: the GET answered
+ * `{urgent:15,high:60,normal:240,low:480}` and the PUT answered `null`, for the same row,
+ * seconds apart. Nothing was losing data — the Plan cell's read-modify-write happens to
+ * re-send a null that was already null — so it survived on luck rather than design, and
+ * luck is what ran out when a nullable Json column reached `ChipInput` and blanked the
+ * whole dashboard. A declared type is a promise the server makes; making it here once is
+ * the only way both handlers keep it.
+ */
+/**
+ * What an agency who has never opened this form is operating under — the same safe
+ * defaults the bot itself falls back to: boundary how_to_only, no allowed domains (strip
+ * every link), no extra forbidden terms. Named rather than inlined so the GET's two
+ * branches are one shape with two sets of values, instead of two shapes.
+ */
+const EMPTY_SUPPORT_CONFIG = {
+  enabled: false,
+  greeting: null,
+  quickActions: [],
+  businessHours: null,
+  slaFirstResponseMins: null,
+  planTiers: {},
+  escalationEmails: [],
+  supportBoundary: "how_to_only",
+  boundaryNotes: null,
+  forbiddenTerms: [],
+  allowedLinkDomains: [],
+  voiceTone: null,
+  userNoun: null,
+};
+
+function serialiseSupportConfig(config: {
+  quickActions: unknown;
+  slaFirstResponseMins: unknown;
+  planTiers: unknown;
+  [k: string]: unknown;
+}) {
+  return {
+    ...config,
+    quickActions: Array.isArray(config.quickActions) ? config.quickActions : [],
+    // Always a complete policy, never the raw column. The form then has one code path and
+    // shows the values the automation will ACTUALLY enforce, rather than blank boxes
+    // beside a running SLA nobody chose.
+    slaFirstResponseMins: resolveSlaPolicy(config.slaFirstResponseMins as never),
+    /**
+     * RETURNED, because the PUT writes this column unconditionally and defaults it to
+     * `{}`. Omitting it did not merely hide the field — the editor saves by PUTting back
+     * the object the GET handed it, so every save of any support setting (a greeting, one
+     * blocked term, the master switch) wiped every plan name the agency had. Nothing could
+     * put them back, because no screen sets them, and the only visible symptom was the
+     * bot's "isn't included on your Starter plan" quietly reverting to the generic wording
+     * months later, in a client's chat.
+     */
+    planTiers:
+      config.planTiers && typeof config.planTiers === "object" && !Array.isArray(config.planTiers)
+        ? config.planTiers
+        : {},
+  };
+}
+
 adminRouter.get("/admin/api/:agencyInstallId/support", async (req: Request, res: Response) => {
   const agencyId = await requireAgency(req, res);
   if (!agencyId) return;
@@ -712,20 +896,24 @@ adminRouter.get("/admin/api/:agencyInstallId/support", async (req: Request, res:
   // Return a shape even when no row exists, so the form has one code path. These are
   // the same safe defaults the bot itself falls back to: boundary how_to_only, no
   // allowed domains (strip every link), no extra forbidden terms.
+  //
+  // `quickActions` is a nullable Json column, so a STORED row hands back null while the
+  // no-row branch below correctly hands back []. The client type declares string[], and
+  // nothing type-checks JSON crossing the wire — so the tab rendering it called .map()
+  // on null and blanked the whole dashboard. Normalise here rather than at the one call
+  // site: the declared shape is the contract, and a caller that trusts it should be right.
   res.json({
-    config: config ?? {
-      enabled: false,
-      greeting: null,
-      quickActions: [],
-      businessHours: null,
-      escalationEmails: [],
-      supportBoundary: "how_to_only",
-      boundaryNotes: null,
-      forbiddenTerms: [],
-      allowedLinkDomains: [],
-      voiceTone: null,
-      userNoun: null,
-    },
+    config: config
+      ? serialiseSupportConfig(config)
+      : /**
+         * The no-row case goes through the SAME serialiser, so the two branches cannot
+         * drift in shape — only in values. Hand-listing it was the other half of the
+         * hazard above: add a column, wire it into the PUT, forget this list, and a fresh
+         * agency's form binds a control to `undefined` while every existing agency's works.
+         * That is invisible on any database that already has a row, which is every
+         * database anybody develops against.
+         */
+        serialiseSupportConfig(EMPTY_SUPPORT_CONFIG),
     locationsEnabled,
     locationsTotal,
   });
@@ -736,11 +924,32 @@ adminRouter.put("/admin/api/:agencyInstallId/support", async (req: Request, res:
   if (!agencyId) return;
 
   const body = req.body ?? {};
+
+  /**
+   * A MISSING field is not an instruction to switch it off — the same answer the
+   * per-sub-account twin got on 2026-08-22, arriving one level up on the switch that
+   * gates support for EVERY sub-account rather than one.
+   *
+   * This route is whole-object, so every omitted field is a deletion, and that contract is
+   * fine for a greeting somebody can retype. It is not fine here, and it had already cost
+   * something: a harness round-tripped the GET's ENVELOPE (`{config, locationsEnabled,
+   * locationsTotal}`) instead of the bare config, so the body carried no top-level
+   * `enabled` and no `escalationEmails`, and the route answered 200 having switched the
+   * agency's support off and deleted the address a tier-3 hand-off lands on.
+   *
+   * `!!` is wrong in both directions: it read a missing key as OFF, and it read the STRING
+   * "false" — which is what a form-encoded body produces — as ON.
+   */
+  if (typeof body.enabled !== "boolean") {
+    return res.status(400).json({
+      error: "enabled must be true or false. Send the whole config back, not just the part you changed.",
+    });
+  }
+  const enabled = body.enabled;
+
   const escalationEmails = strList(body.escalationEmails, 5).filter((e) => EMAIL_RE.test(e));
   const badEmail = strList(body.escalationEmails, 5).find((e) => !EMAIL_RE.test(e));
   if (badEmail) return res.status(400).json({ error: `"${badEmail}" is not a valid email address.` });
-
-  const enabled = !!body.enabled;
   if (enabled && escalationEmails.length === 0) {
     return res.status(400).json({
       error:
@@ -805,9 +1014,17 @@ adminRouter.put("/admin/api/:agencyInstallId/support", async (req: Request, res:
     }
   }
 
+  // Response targets. Validated BEFORE the upsert, like every other field here, so a bad
+  // value refuses the save rather than being quietly dropped — an SLA an agency believes
+  // they set and did not is worse than no SLA, because they stop watching the queue.
+  const sla = validateSlaPolicy(body.slaFirstResponseMins);
+  if (!sla.ok) return res.status(400).json({ error: sla.error });
+
   const data = {
     enabled,
     planTiers,
+    // Same DbNull sentinel as businessHours below, and for the same reason.
+    slaFirstResponseMins: sla.value === null ? Prisma.DbNull : sla.value ?? Prisma.DbNull,
     greeting: trimOrNull(body.greeting, 300),
     quickActions: strList(body.quickActions, 5).map((q) => q.slice(0, 60)),
     // Prisma.DbNull, not plain null: clearing a nullable Json column needs the sentinel,
@@ -831,7 +1048,9 @@ adminRouter.put("/admin/api/:agencyInstallId/support", async (req: Request, res:
   // stale for the cache TTL and the next answer still says "isn't part of your setup"
   // instead of naming the plan. Same reasoning as createThemeVersion.
   invalidateBrandMap();
-  res.json(config);
+  // The SAME shape the GET returns. The dashboard stores this response into the very state
+  // the GET filled, so returning the raw row gave one resource two shapes.
+  res.json(serialiseSupportConfig(config));
 });
 
 /**
@@ -905,6 +1124,8 @@ adminRouter.post("/admin/api/:agencyInstallId/support/dry-run", async (req: Requ
         clean: blocking.length === 0,
         findings: answer.findings.map((f) => ({ gate: f.gate, detail: f.detail })),
         usedReferences: answer.citations.length,
+        // Why this row is not an answer, when it is not one. Never reaches a client.
+        modelFailure: answer.modelFailure ?? null,
       });
     } catch (e) {
       results.push({
@@ -920,16 +1141,51 @@ adminRouter.post("/admin/api/:agencyInstallId/support/dry-run", async (req: Requ
     }
   }
 
+  /**
+   * DID THE BOT ACTUALLY RUN?
+   *
+   * `answerQuestion` swallows every model failure and returns one polite hand-off, so a
+   * dead bot produced six rows with no gate findings — and `allClean` is computed from gate
+   * findings, so this screen answered **"Nothing leaked."** over six questions the model
+   * never saw. Measured 2026-08-26 with the OpenAI account out of credits: 6/6 hand-offs,
+   * `allClean: true`, and nothing anywhere naming the cause. An agency reads that as a pass
+   * and switches support on.
+   *
+   * "Clean" still means what it says — what the GATES found — because that is the sentence
+   * the rest of the screen is built on. What was missing is the prior question, and it is
+   * reported separately with the remedy attached, `tokenFailure.ts`-style.
+   */
+  const failures = results.map((r) => r.modelFailure).filter(Boolean) as ModelFailure[];
+  const modelFailure = failures.length
+    ? {
+        // The most common one, which for a dead key or a dead account is every row.
+        kind: failures[0],
+        rows: failures.length,
+        of: results.length,
+        remedy: MODEL_REMEDY[failures[0]],
+        permanent: isPermanentModelFailure(failures[0]),
+      }
+    : null;
+
   res.json({
     // Shown back so it is obvious WHICH client this was answered as - a dry run against
     // the wrong sub-account would be reassuring and meaningless.
     brandName: brand.brandName,
     brandNameSource: brand.brandNameSource,
     locationName: location.locationName,
-    renamedLabels: brand.featureLabels,
+    // What they CHANGED, not every label there is - this screen exists to show the inputs
+    // that differ per agency, and padding it with platform defaults is the one thing that
+    // makes those unreadable.
+    renamedLabels: brand.renamedLabels,
     hiddenFeatures: brand.hiddenFeatures,
     results,
     allClean: results.every((r) => r.clean),
+    /**
+     * The gates found nothing AND the bot actually answered. `allClean` alone was being
+     * read as "ready to switch on", and it is true of a bot that answered nothing at all.
+     */
+    ready: results.every((r) => r.clean) && modelFailure === null,
+    modelFailure,
   });
 });
 
@@ -995,10 +1251,10 @@ adminRouter.get("/admin/api/:agencyInstallId/kb", async (req: Request, res: Resp
       body: a.bodyNormalized,
       status: a.status,
       featureTags: a.featureTags,
-      // Why it was quarantined, so they can fix it rather than guess.
-      residualLeaks: Array.isArray(a.residualLeaks)
-        ? (a.residualLeaks as any[]).map((l) => String(l?.match ?? "")).filter(Boolean)
-        : [],
+      // Why it was quarantined, so they can fix it rather than guess — the words as they
+      // appear in their own article, one entry per occurrence rather than one per
+      // lexicon rule that fired on it.
+      residualLeaks: leakTerms(a.residualLeaks),
       updatedAt: a.updatedAt,
     })),
     /** How many shared articles back them up. Count only — the content isn't theirs. */
@@ -1053,9 +1309,7 @@ async function writeAgencyArticle(
     // Quarantine is not a failure to hide: tell them exactly what tripped it, because
     // an article sitting in needs_review is invisible to the bot until they fix it.
     quarantined: result.status === "quarantined",
-    residualLeaks: Array.isArray(saved!.residualLeaks)
-      ? (saved!.residualLeaks as any[]).map((l) => String(l?.match ?? "")).filter(Boolean)
-      : [],
+    residualLeaks: leakTerms(saved!.residualLeaks),
   });
 }
 
@@ -1134,7 +1388,22 @@ adminRouter.get("/admin/api/:agencyInstallId/kb/feeds", async (req: Request, res
       lastPolledAt: true, lastItemAt: true, lastError: true, consecutiveErrors: true,
     },
   });
-  res.json({ feeds });
+  res.json({
+    feeds: feeds.map((f) => ({
+      ...f,
+      /**
+       * Did WE stop, or did they? Both states are `enabled: false`, and the screen showed
+       * both as "paused" beside a Resume button — so a feed the poller abandoned after ten
+       * straight failures was indistinguishable from one the agency parked deliberately,
+       * and nothing said we had stopped trying. The remedies differ: a pause ends when they
+       * say so, and an abandoned feed never polls again until somebody clicks.
+       *
+       * Derived HERE rather than in the browser, because the threshold belongs to the
+       * poller and a copy of it in a component is a number that drifts silently.
+       */
+      gaveUp: !f.enabled && f.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS,
+    })),
+  });
 });
 
 adminRouter.post("/admin/api/:agencyInstallId/kb/feeds", async (req: Request, res: Response) => {
@@ -1265,9 +1534,23 @@ adminRouter.put(
       return res.status(403).json({ error: "Location does not belong to this agency install" });
     }
 
+    /**
+     * A MISSING field is not an instruction to switch it off.
+     *
+     * `!!req.body?.supportEnabled` read any body without the key — a typo, an older client,
+     * a PUT that meant something else — as a deliberate "off", and this is the switch that
+     * decides whether the widget appears in front of the agency's own customers. It is the
+     * `Number("")` trap in a boolean costume, and the same answer applies: refuse rather
+     * than infer. Caught when a harness sent `{enabled:true}` and the route cheerfully
+     * reported the widget switched OFF.
+     */
+    if (typeof req.body?.supportEnabled !== "boolean") {
+      return res.status(400).json({ error: "supportEnabled must be true or false." });
+    }
+
     const updated = await prisma.locationInstall.update({
       where: { id: location.id },
-      data: { supportEnabled: !!req.body?.supportEnabled },
+      data: { supportEnabled: req.body.supportEnabled },
     });
     res.json({ id: updated.id, supportEnabled: updated.supportEnabled });
   }

@@ -5,6 +5,7 @@ import { searchKb, SearchHit } from "./kbSearch";
 import { renderForBrand } from "./kbNormalize";
 import { guardAnswer, GateFinding } from "./answerGuard";
 import { describeError } from "./security";
+import { classifyModelFailure, MODEL_REMEDY, type ModelFailure } from "./modelFailure";
 import type { SupportConfig } from "@prisma/client";
 
 /**
@@ -172,6 +173,13 @@ export interface BotAnswer {
   findings: GateFinding[];
   /** How many generations it took. >1 means a gate fired. */
   attempts: number;
+  /**
+   * Why the model call failed, when it did. INTERNAL — never sent to a client, whose
+   * chat window is no place for `insufficient_quota`. It exists for the AGENCY's dry run,
+   * which is the go-live gate and could not tell "no key" from "no credits" from "a bad
+   * minute": all three arrive as the same polite hand-off. See `modelFailure.ts`.
+   */
+  modelFailure?: ModelFailure;
   usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number };
 }
 
@@ -547,7 +555,26 @@ export async function answerQuestion(input: {
     brand.hiddenFeatures.length
       ? searchKb({
           query: question,
-          onlyFeatures: brand.hiddenFeatures,
+          /*
+           * The BEST answer to this question, hidden or not — deliberately neither
+           * `onlyFeatures` nor the hidden exclusion.
+           *
+           * Asking "does ANY hidden-tagged article match?" worked at 253 hand-written
+           * articles and collapsed at 1,443. Tagging is case-INSENSITIVE by design, and the
+           * seed corpus keeps that safe by fixing the PROSE — house style forbids using a
+           * nav label as ordinary English. That remedy does not exist for pages we did not
+           * write: 4.6% of crawled articles carry the `memberships` tag against 0.4% of
+           * hand-written ones, so some incidentally-tagged page matches almost any query.
+           * Every well-answered question then ALSO filed a ticket reading "asked about
+           * Memberships, which isn't part of their setup" — burying the desk in questions
+           * the bot got right, exactly what ANSWERED_WITHOUT_KB_RE prevents elsewhere.
+           *
+           * Raising the rank floor does not separate them: the match is genuinely strong,
+           * it is the TAG that is wrong. What does separate them is comparing against the
+           * alternatives — if the single best answer we have is about a feature they cannot
+           * see, they asked about it; if it ranks third behind two articles that answer
+           * them properly, they did not.
+           */
           agencyInstallId: brand.agencyInstallId,
           limit: 1,
         })
@@ -637,11 +664,15 @@ export async function answerQuestion(input: {
         cacheReadTokens: response.usage?.prompt_tokens_details?.cached_tokens ?? 0,
       };
     } catch (e) {
-      console.error(`[bot] generation failed: ${describeError(e)}`);
+      const kind = classifyModelFailure(e);
+      console.error(`[bot] generation failed (${kind}): ${describeError(e)} — ${MODEL_REMEDY[kind]}`);
       return {
         ...empty,
         text: `Sorry — I'm having trouble right now. Let me get someone from the team to help.`,
-        escalationReason: "model call failed",
+        // The reason NAMES the cause now. It used to say "model call failed" for all five,
+        // which is the one thing every reader already knew.
+        escalationReason: `model call failed (${kind})`,
+        modelFailure: kind,
         attempts: attempt,
       };
     }

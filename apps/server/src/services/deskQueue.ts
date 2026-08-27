@@ -38,18 +38,61 @@ export const QUEUE_ORDER: Prisma.ConversationOrderByWithRelationInput[] = [
   { queuedAt: "asc" },
 ];
 
-/** Unclaimed, escalated, and within the tier this agent is allowed to take. */
-export function queueWhere(maxTier?: number): Prisma.ConversationWhereInput {
+/**
+ * Unclaimed, escalated, not snoozed, and within the tier this agent is allowed to take.
+ *
+ * The snooze condition lives HERE rather than in each caller, for the same reason
+ * QUEUE_ORDER is a single constant: "take next", the manager's distribute, the board's
+ * depth, the client's queue position and every automation pass all read through this,
+ * and a definition duplicated five ways drifts in whichever copy somebody forgets. A
+ * ticket that is snoozed out of one of those surfaces but not the others is worse than
+ * one that is snoozed nowhere — it would be counted in the depth an agent is judged on
+ * while being unreachable from the button that claims it.
+ */
+export function queueWhere(maxTier?: number, now: Date = new Date()): Prisma.ConversationWhereInput {
   return {
     status: "escalated",
     assignedToId: null,
+    // NULL means never snoozed, which must stay in the queue - so this is an OR, not a
+    // comparison. `snoozedUntil: { lte: now }` alone would silently hide every ticket
+    // nobody had ever snoozed, i.e. all of them.
+    OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }],
     ...(maxTier === undefined ? {} : { tier: { lte: maxTier } }),
   };
 }
 
+/**
+ * What "holding a ticket" means, in ONE place.
+ *
+ * `releaseTicketsFrom` uses it to decide what an offboarding returns to the queue, and
+ * `heldCountsFor` uses it to tell the admin how many that will be BEFORE they click. Two
+ * definitions would let the staff screen promise a number the release does not deliver -
+ * the same reason `QUEUE_ORDER` is shared by the desk, the manager and the client.
+ */
+const HELD_STATUSES = ["escalated", "open"] as const;
+
 /** A ticket an agent is currently holding: claimed, and not finished. */
 export function heldWhere(deskUserId: string): Prisma.ConversationWhereInput {
-  return { assignedToId: deskUserId, status: { in: ["escalated", "open"] } };
+  return { assignedToId: deskUserId, status: { in: [...HELD_STATUSES] } };
+}
+
+/**
+ * How many tickets each of these people is holding — ONE query for the whole list.
+ *
+ * Per user it would be a query per row on a screen that renders every desk account, the
+ * same reasoning as reading one support config per AGENCY rather than per ticket.
+ */
+export async function heldCountsFor(deskUserIds: string[]): Promise<Record<string, number>> {
+  if (deskUserIds.length === 0) return {};
+  const rows = await prisma.conversation.groupBy({
+    by: ["assignedToId"],
+    where: { assignedToId: { in: deskUserIds }, status: { in: [...HELD_STATUSES] } },
+    _count: { _all: true },
+  });
+  const counts: Record<string, number> = {};
+  for (const id of deskUserIds) counts[id] = 0;
+  for (const r of rows) if (r.assignedToId) counts[r.assignedToId] = r._count._all;
+  return counts;
 }
 
 // --- pure arithmetic -------------------------------------------------------------
@@ -238,7 +281,10 @@ export async function claimNext(agent: {
   for (const candidate of candidates) {
     const { count } = await prisma.conversation.updateMany({
       where: { id: candidate.id, assignedToId: null, status: "escalated" },
-      data: { assignedToId: agent.id, assignedAt: new Date() },
+      // botPaused in the SAME statement that claims it, not a second update: a claim
+      // that succeeded and then failed to stand the bot down would leave the assistant
+      // answering over an agent who has every reason to think the ticket is theirs.
+      data: { assignedToId: agent.id, assignedAt: new Date(), botPaused: true },
     });
     if (count === 1) return { claimed: candidate.id };
   }
@@ -318,19 +364,32 @@ export async function releaseTicketsFrom(
 export async function queuePosition(conversationId: string): Promise<number | null> {
   const conversation = await prisma.conversation.findUnique({
     where: { id: conversationId },
-    select: { status: true, assignedToId: true, priority: true, queuedAt: true, lastMessageAt: true },
+    select: {
+      status: true, assignedToId: true, priority: true,
+      queuedAt: true, lastMessageAt: true, snoozedUntil: true,
+    },
   });
   if (!conversation) return null;
   if (conversation.status !== "escalated" || conversation.assignedToId) return null;
+  // A snoozed ticket is not in the queue, so it has no position. Returning one would
+  // show a waiting client a place in a line their conversation is not standing in.
+  if (conversation.snoozedUntil && conversation.snoozedUntil > new Date()) return null;
 
   const queuedAt = conversation.queuedAt ?? conversation.lastMessageAt;
+  const now = new Date();
   // TicketPriority is declared low → urgent, and Postgres orders an enum by its
   // declaration order, so `>` here means "more urgent" exactly as `priority: desc` does.
+  //
+  // The snooze clause mirrors `queueWhere` exactly. It has to: this number and the
+  // desk's own ordering are read on two different screens that nobody can see at once,
+  // so if they disagree the only way to find out is a client being told they are third
+  // while the desk shows them fifth.
   const rows = await prisma.$queryRaw<{ ahead: bigint }[]>`
     SELECT count(*) AS ahead
       FROM "Conversation"
      WHERE "status" = 'escalated'
        AND "assignedToId" IS NULL
+       AND ("snoozedUntil" IS NULL OR "snoozedUntil" <= ${now})
        AND "id" <> ${conversationId}
        AND (
          "priority" > ${conversation.priority}::"TicketPriority"
@@ -403,10 +462,41 @@ export function enterQueuePatch(current: { status: string; queuedAt: Date | null
   };
 }
 
+/**
+ * Seconds to words. The ONE mapping, and it had grown three.
+ *
+ * This function was dead while the widget did its own `Math.round(s / 60) + " min"` inline
+ * and `QueueBoard` did its own compact `2h 15m`. That would be untidy rather than wrong,
+ * except for what the desk's line actually claims: the payload comment says it shows
+ * "what a client at the back of the queue would be told right now ... so the promise the
+ * widget is making is never a surprise to the desk". It was re-deriving that promise with
+ * a different formatter, so at 4,000 seconds the desk read "1h 7m" while the client was
+ * told "about 67 min", and under a minute the desk showed a precision ("45s") the client
+ * never sees. Same failure as three definitions of lateness, and the same fix.
+ *
+ * Hours appear above 60 minutes because "about 243 min" is a number the reader has to
+ * convert, on the screen of somebody who is already waiting.
+ */
 export function formatWait(seconds: number): string {
   if (seconds < 60) return "under a minute";
   const minutes = Math.round(seconds / 60);
   if (minutes < 60) return `${minutes} min`;
   const hours = Math.round((seconds / 3600) * 10) / 10;
   return `${hours} hr`;
+}
+
+/**
+ * The whole sentence, built server-side like `connectHint` and for the same reason: every
+ * other client-facing wording decision is made here, where it can be read and changed in
+ * one place, rather than assembled from fragments inside a template-literal script that
+ * ships into a customer's CRM.
+ *
+ * Null in, null out — an absent estimate is a real answer (fewer than five measured
+ * responses, or nobody on the desk), and inventing "someone will be right with you" is
+ * the promise people remember and quote back.
+ */
+export function waitSentence(seconds: number | null): string | null {
+  if (seconds == null) return null;
+  const wait = formatWait(seconds);
+  return wait === "under a minute" ? "Usually under a minute." : `Usually about ${wait}.`;
 }

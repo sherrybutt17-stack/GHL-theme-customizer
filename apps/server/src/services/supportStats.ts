@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
+import { ticketTypeLabel } from "./ticketTypes";
 import {
   GHL_SIDEBAR_FEATURES,
   GHL_AGENCY_SIDEBAR_FEATURES,
@@ -67,6 +68,28 @@ export interface SupportStats {
   }[];
   /** What clients actually ask about, from the tags of articles the bot cited. */
   topTopics: { key: string; label: string; count: number }[];
+  /**
+   * What the things that NEEDED A PERSON were about — the complement to `topTopics`, and
+   * the reason it exists.
+   *
+   * `topTopics` is built from the tags of articles the bot CITED, so it can only ever
+   * describe questions the knowledge base already answered. The questions that beat the
+   * bot are exactly the ones where retrieval found nothing, so they contribute no tags and
+   * are INVISIBLE there — the blind spot is documented on that function and this is the
+   * only thing in the product that can see past it. It is the agency's most actionable
+   * number for the same reason: these are the conversations that cost a human.
+   *
+   * `untyped` is reported rather than hidden. Types are set by hand on the desk, so a
+   * breakdown of only the categorised ones would quietly describe a subset while looking
+   * like the whole — the same reasoning as `firstReply.sampleCount`.
+   */
+  handoffTypes: {
+    /** Conversations that reached the human queue at all, in this window. */
+    total: number;
+    /** Of those, how many nobody categorised. */
+    untyped: number;
+    types: { key: string; label: string; count: number }[];
+  };
   daily: { date: string; conversations: number; deflected: number }[];
 }
 
@@ -96,6 +119,7 @@ export async function supportStats(agencyInstallId: string, days = 30): Promise<
       status: true,
       deflected: true,
       csat: true,
+      ticketType: true,
       startedAt: true,
       queuedAt: true,
       firstAgentReplyAt: true,
@@ -103,6 +127,32 @@ export async function supportStats(agencyInstallId: string, days = 30): Promise<
       locationInstall: { select: { locationName: true } },
     },
   });
+
+  /**
+   * What needed a person, by kind.
+   *
+   * Counted over conversations that reached the human queue at all — `queuedAt` set,
+   * which is true for a client escalation AND for a ticket an agent raised from the desk.
+   * NOT `status === "escalated"`: that is where a conversation is NOW, so counting it
+   * would drop every ticket the desk has since resolved, i.e. exactly the work that got
+   * done. The question is what needed a human in this window, not what still does.
+   *
+   * Computed from rows this function already loaded, so it costs no extra query.
+   */
+  const handedOff = conversations.filter((c) => c.queuedAt !== null);
+  const typeCounts = new Map<string, number>();
+  let untyped = 0;
+  for (const c of handedOff) {
+    if (!c.ticketType) { untyped++; continue; }
+    typeCounts.set(c.ticketType, (typeCounts.get(c.ticketType) ?? 0) + 1);
+  }
+  const handoffTypes: SupportStats["handoffTypes"] = {
+    total: handedOff.length,
+    untyped,
+    types: [...typeCounts.entries()]
+      .map(([key, count]) => ({ key, label: ticketTypeLabel(key) ?? key, count }))
+      .sort((a, b) => b.count - a.count),
+  };
 
   const escalated = conversations.filter((c) => c.status === "escalated").length;
   const deflected = conversations.filter((c) => c.deflected).length;
@@ -185,6 +235,7 @@ export async function supportStats(agencyInstallId: string, days = 30): Promise<
     },
     byLocation: [...byLocationMap.values()].sort((a, b) => b.conversations - a.conversations),
     topTopics,
+    handoffTypes,
     daily: [...dailyMap.entries()].map(([date, v]) => ({ date, ...v })),
   };
 }

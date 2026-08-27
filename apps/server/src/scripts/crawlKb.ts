@@ -24,18 +24,23 @@ function arg(flag: string): string | undefined {
 async function main(): Promise<void> {
   const origin = arg("origin");
   if (!origin) {
-    console.error("Usage: --origin https://help.example.com [--prefix /path] [--max 50] [--dry-run]");
+    console.error("Usage: --origin https://help.example.com [--prefix /path] [--sitemap /support/sitemap.xml] [--max 50] [--dry-run]");
     process.exit(1);
   }
 
   const maxPages = Number(arg("max") ?? 25);
   const dryRun = process.argv.includes("--dry-run");
   const prefixes = arg("prefix") ? [arg("prefix") as string] : undefined;
+  const sitemapUrl = arg("sitemap");
+  // 0 re-fetches everything; the default skips anything crawled in the last 7 days so a
+  // run resumes instead of restarting.
+  const refetchAfterDays = arg("refetch-after") !== undefined ? Number(arg("refetch-after")) : undefined;
 
   console.log(`Crawling ${origin}${prefixes ? ` (prefix ${prefixes.join(", ")})` : ""}`);
+  if (sitemapUrl) console.log(`  sitemap:   ${sitemapUrl}`);
   console.log(`  max pages: ${maxPages}${dryRun ? "   DRY RUN - nothing will be written" : ""}\n`);
 
-  const summary = await crawlHelpCenter({ origin, pathPrefixes: prefixes, maxPages, dryRun });
+  const summary = await crawlHelpCenter({ origin, pathPrefixes: prefixes, maxPages, dryRun, sitemapUrl, refetchAfterDays });
 
   console.log("\n--- summary ---");
   for (const [k, v] of Object.entries(summary)) console.log(`  ${k.padEnd(12)} ${v}`);
@@ -46,7 +51,9 @@ async function main(): Promise<void> {
         `NOT retrievable. Review them and extend services/brandLexicon.ts if a new phrasing turned up.`
     );
   }
-  if (summary.truncated) {
+  if (summary.abortReason) {
+    console.log(`\n⚠  THE CRAWL STOPPED EARLY — this is NOT a complete crawl.\n   ${summary.abortReason}`);
+  } else if (summary.truncated) {
     console.log(`\n⚠  Coverage was CAPPED at --max ${maxPages}. This is not a complete crawl.`);
   }
 }

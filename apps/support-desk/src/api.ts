@@ -36,6 +36,9 @@ export interface DeskUserAdminView extends DeskUser {
   availability: "available" | "away";
   tier: number;
   maxConcurrent: number;
+  /** Live tickets they hold right now — every one of these returns to the queue if
+      the account is disabled, so the number has to be readable before the click. */
+  heldTickets: number;
 }
 
 /** Thrown for any non-2xx so callers can branch on 401 vs a real failure. */
@@ -151,13 +154,63 @@ export interface InboxRow {
   handedToAgencyAt: string | null;
   preview: string;
   brandLeakHits: number;
+  origin: "widget" | "desk";
+  ticketType: string | null;
+  ticketTypeLabel: string | null;
+  snoozedUntil: string | null;
+  botPaused: boolean;
+  /** What the client is paying for, when their agency has told us. */
+  planName: string | null;
+  /**
+   * Whose turn is it — DERIVED on the server from the newest message's role, never
+   * stored. A stored flag beside a stored "last sender" is two fields encoding one fact
+   * the transcript already answers, and any of the three can then disagree.
+   */
+  awaitingReply: boolean;
+  /** Lateness against the agency's target. Null when no first-response clock is running. */
+  sla: SlaView | null;
+}
+
+/**
+ * How a ticket stands against its agency's OWN first-response target.
+ *
+ * Computed on the server and never re-derived here: the target lives on the agency's
+ * support config and the clock runs in their business hours, so a browser cannot know
+ * either. Null when no clock is running — never escalated, or a human has already
+ * replied — which is a real answer and not a zero.
+ */
+export interface SlaView {
+  targetMinutes: number;
+  /** Minutes waited. OPEN minutes when `inOpenHours`, wall clock otherwise. */
+  elapsedMinutes: number;
+  breached: boolean;
+  usedFraction: number;
+  /** False means the agency has set no usable hours, so this is plain elapsed time. */
+  inOpenHours: boolean;
+}
+
+export interface TicketTypeOption {
+  key: string;
+  label: string;
+  hint: string;
+}
+
+export interface DeskLocation {
+  ghlLocationId: string;
+  locationName: string | null;
+  agencyInstallId: string;
+  agencyName: string | null;
+  /** The name the CLIENT knows the platform by — what a ticket must be answered as. */
+  brandName: string | null;
+  supportEnabled: boolean;
 }
 
 /** Everything the agent must have in front of them before typing a word. */
 export interface BrandContext {
   brandName: string | null;
   brandNameSource: string | null;
-  renamedLabels: Record<string, string>;
+  /** Only what differs from the platform's own label, as the pair it is. */
+  renamedLabels: Array<{ key: string; from: string; to: string }>;
   hiddenFeatures: string[];
   forbiddenTerms: string[];
   allowedLinkDomains: string[];
@@ -194,7 +247,19 @@ export interface Ticket {
   handedToAgencyAt: string | null;
   deflected: boolean;
   csat: number | null;
-  contextSnapshot: { pageUrl?: string; userAgent?: string; cssApplied?: boolean } | null;
+  origin: "widget" | "desk";
+  ticketType: string | null;
+  ticketTypeLabel: string | null;
+  snoozedUntil: string | null;
+  /** True when a human has taken over and the assistant must stay quiet. */
+  botPaused: boolean;
+  contactEmail: string | null;
+  contactName: string | null;
+  createdBy: { id: string; name: string } | null;
+  contextSnapshot: {
+    pageUrl?: string; userAgent?: string; cssApplied?: boolean;
+    raisedBy?: string; raisedAt?: string; channel?: string;
+  } | null;
   brandLeakHits: number;
   overlapRejects: number;
   context: BrandContext;
@@ -221,14 +286,37 @@ export interface CannedReply {
   agencyInstallId: string | null;
 }
 
-export const fetchInbox = (params: { status?: string; mine?: boolean; unassigned?: boolean } = {}) => {
+export interface InboxCounts {
+  escalated: number;
+  open: number;
+  unassigned: number;
+  /** Live conversations whose newest message came from the client. */
+  awaitingReply: number;
+  /** Held by the signed-in agent. */
+  mine: number;
+}
+
+export const fetchInbox = (
+  params: {
+    status?: string;
+    mine?: boolean;
+    unassigned?: boolean;
+    createdByMe?: boolean;
+    ticketType?: string;
+  } = {}
+) => {
   const q = new URLSearchParams();
   if (params.status) q.set("status", params.status);
   if (params.mine) q.set("mine", "1");
   if (params.unassigned) q.set("unassigned", "1");
-  return request<{ conversations: InboxRow[]; counts: { escalated: number; open: number; unassigned: number } }>(
-    `/desk/api/inbox?${q}`
-  );
+  if (params.createdByMe) q.set("createdByMe", "1");
+  if (params.ticketType) q.set("ticketType", params.ticketType);
+  return request<{
+    conversations: InboxRow[];
+    counts: InboxCounts;
+    /** True when more rows matched than were returned — never inferred from the count. */
+    truncated: boolean;
+  }>(`/desk/api/inbox?${q}`);
 };
 
 export const fetchTicket = (id: string) => request<Ticket>(`/desk/api/conversations/${id}`);
@@ -239,11 +327,58 @@ export const assignTicket = (id: string, assigneeId?: string | null) =>
     { method: "POST", body: JSON.stringify({ assigneeId }) }
   );
 
-export const updateTicket = (id: string, patch: { status?: TicketStatus; priority?: TicketPriority; subject?: string }) =>
-  request<{ id: string; status: TicketStatus; priority: TicketPriority; subject: string | null }>(
-    `/desk/api/conversations/${id}`,
-    { method: "PATCH", body: JSON.stringify(patch) }
-  );
+export const updateTicket = (
+  id: string,
+  patch: {
+    status?: TicketStatus;
+    priority?: TicketPriority;
+    subject?: string;
+    ticketType?: string | null;
+    /** ISO string to snooze until, or null to wake it now. */
+    snoozedUntil?: string | null;
+    botPaused?: boolean;
+  }
+) =>
+  request<{
+    id: string;
+    status: TicketStatus;
+    priority: TicketPriority;
+    subject: string | null;
+    ticketType: string | null;
+    snoozedUntil: string | null;
+    botPaused: boolean;
+  }>(`/desk/api/conversations/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+
+/** The sub-accounts a ticket can be raised against. A typeahead, not a full list. */
+export const fetchDeskLocations = (q: string) =>
+  request<{ locations: DeskLocation[] }>(`/desk/api/locations?q=${encodeURIComponent(q)}`);
+
+/** Served rather than duplicated here — a copy in the bundle is a copy that drifts. */
+export const fetchTicketTypes = () =>
+  request<{ types: TicketTypeOption[] }>("/desk/api/ticket-types");
+
+/**
+ * Raise a ticket for a client who reached us some other way.
+ *
+ * The `body` is what the CLIENT said, stored `role=user`. It is deliberately not gated:
+ * the gates exist for text going TO a client, and refusing an agent for writing down
+ * that their client said "GoHighLevel" would block the most useful thing they can record.
+ */
+export const createTicket = (input: {
+  ghlLocationId: string;
+  subject: string;
+  body: string;
+  channel?: string;
+  priority?: TicketPriority;
+  ticketType?: string | null;
+  contactEmail?: string;
+  contactName?: string;
+  assignToMe?: boolean;
+}) =>
+  request<{ id: string; assigned: boolean }>("/desk/api/conversations", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 
 /**
  * Check a draft without sending. The server re-runs the identical check on send, so
@@ -301,7 +436,10 @@ export interface QueueRow {
   brandName: string | null;
   agencyName: string | null;
   locationName: string | null;
+  /** Wall-clock wait — what a shift lead means by "how long has that person been sitting". */
   waitingSeconds: number;
+  /** Whether that wait is actually LATE, which only the agency's target can say. */
+  sla: SlaView | null;
 }
 
 export interface QueueAgent {
@@ -321,6 +459,8 @@ export interface QueueBoard {
   agents: QueueAgent[];
   /** What a client joining the back of the queue would be told. null = we won't guess. */
   estimatedWaitSeconds: number | null;
+  /** The literal sentence the widget shows a waiting client, or null when there is none. */
+  estimatedWaitText: string | null;
 }
 
 export const fetchQueue = () => request<QueueBoard>("/desk/api/queue");

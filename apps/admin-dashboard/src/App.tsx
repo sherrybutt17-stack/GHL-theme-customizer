@@ -13,6 +13,7 @@ import {
   saveTheme,
   setEnabled,
   fetchSupportConfig,
+  saveSupportConfig,
   setSupportEnabled,
   type AgencyDefaultTheme,
   type LocationRow,
@@ -78,7 +79,7 @@ export function App() {
   const [presets, setPresets] = useState<ThemePreset[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [resetTarget, setResetTarget] = useState<{ id: string; name: string } | null>(null);
+  const [resetTarget, setResetTarget] = useState<{ id: string; name: string; versions: number } | null>(null);
   const [resettingDefault, setResettingDefault] = useState(false);
   const [deletingPreset, setDeletingPreset] = useState<{ id: string; name: string } | null>(null);
   const [confirmDisableAll, setConfirmDisableAll] = useState(false);
@@ -90,6 +91,11 @@ export function App() {
   // Only the master switch is needed out here — it decides whether the per-row
   // support toggles do anything, so the row UI can say so instead of lying.
   const [supportOn, setSupportOn] = useState(false);
+  // The whole config, not just the switch: the Plan column saves through the
+  // support PUT, which clears any field it is not sent.
+  const [supportConfig, setSupportConfig] = useState<SupportConfig | null>(null);
+  /** Secondary resources that did not load. Empty is the normal case. */
+  const [partialLoad, setPartialLoad] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkPresetId, setBulkPresetId] = useState("");
   const [busy, setBusy] = useState(false);
@@ -130,9 +136,27 @@ export function App() {
       setLoading(false);
       return;
     }
-    // Load the four resources independently: a failure in a secondary one (presets,
-    // the default theme, support) must not blank out the sub-account list, which is
-    // the core of the page. Surface an error only if the essential locations call fails.
+    /**
+     * Load the four resources independently: a failure in a secondary one (presets, the
+     * default theme, support) must not blank out the sub-account list, which is the core
+     * of the page.
+     *
+     * That reasoning is right and it used to stop one step short — "surface an error only
+     * if the essential locations call fails" — so the other three failed in COMPLETE
+     * SILENCE. Measured, by blocking each endpoint and rendering: with the agency default,
+     * the presets, or the support config failing, the page is indistinguishable from a
+     * healthy one. Not blanking the page and not mentioning it are different decisions,
+     * and only the first one was made.
+     *
+     * What each silence says, in the agency's words rather than ours:
+     *   - the default theme reads as "you have never set one", and its editor then opens
+     *     as if there were nothing there. A save from that state writes over a real
+     *     agency-wide theme — recoverable, because `AgencyDefaultThemeVersion` snapshots
+     *     before every save, but not something to discover afterwards.
+     *   - the presets read as "you have no presets".
+     *   - support reads as OFF, because `supportOn` starts false — a false statement about
+     *     a switch that decides whether the widget appears in front of their clients.
+     */
     Promise.allSettled([
       fetchLocations(agencyId),
       fetchDefaultTheme(agencyId),
@@ -146,7 +170,16 @@ export function App() {
         } else setError(locs.reason?.message ?? "Failed to load sub-accounts.");
         if (def.status === "fulfilled") setDefaultTheme(def.value);
         if (pre.status === "fulfilled") setPresets(pre.value);
-        if (sup.status === "fulfilled") setSupportOn(sup.value.config.enabled);
+        if (sup.status === "fulfilled") {
+          setSupportOn(sup.value.config.enabled);
+          setSupportConfig(sup.value.config);
+        }
+        // Named by what the reader would look for, not by the endpoint that failed.
+        const missing: string[] = [];
+        if (def.status === "rejected") missing.push("your agency default theme");
+        if (pre.status === "rejected") missing.push("your saved presets");
+        if (sup.status === "rejected") missing.push("your client support settings");
+        setPartialLoad(missing);
       })
       .finally(() => setLoading(false));
   }, [agencyId]);
@@ -243,11 +276,55 @@ export function App() {
 
   function handleSupportSaved(config: SupportConfig) {
     setSupportOn(config.enabled);
+    setSupportConfig(config);
+  }
+
+  /**
+   * What this client actually bought, so the bot can say "isn't included on your Starter
+   * plan" instead of the vaguer "isn't part of your setup".
+   *
+   * It lives on `SupportConfig.planTiers` — one `{ locationInstallId: plan }` map for the
+   * whole agency — but it is a per-sub-account fact, exactly like the Support toggle it
+   * sits beside, so it belongs in the row rather than behind a modal.
+   *
+   * SAVED ON BLUR, never per keystroke: each save is a PUT of the entire support config,
+   * so typing "Starter" would otherwise be seven round trips of the agency's whole policy.
+   */
+  async function handlePlanChange(locId: string, plan: string) {
+    const cfg = supportConfig;
+    /**
+     * REFUSE rather than save a partial object. The support PUT is whole-object — it
+     * clears any field it is not sent — so PUTting without the loaded config would wipe
+     * the greeting, the blocked terms, the response targets and the hours. The config
+     * load is deliberately allowed to fail without blanking this page (see the
+     * allSettled above), which is exactly how we would get here with nothing loaded.
+     */
+    if (!cfg) {
+      setError("Couldn't load your support settings, so plan names can't be saved right now. Reload and try again.");
+      return;
+    }
+    const trimmed = plan.trim().slice(0, 60);
+    const current = cfg.planTiers ?? {};
+    if ((current[locId] ?? "") === trimmed) return;
+
+    const next = { ...current };
+    if (trimmed) next[locId] = trimmed;
+    else delete next[locId];
+
+    setError(null);
+    setSupportConfig({ ...cfg, planTiers: next });
+    try {
+      const saved = await saveSupportConfig(agencyId!, { ...cfg, planTiers: next });
+      setSupportConfig(saved);
+    } catch (e) {
+      setSupportConfig(cfg);
+      setError((e as Error).message);
+    }
   }
 
   // window.confirm is a no-op in GHL's cross-origin iframe, so use an in-app dialog.
-  function handleReset(locId: string, name: string) {
-    setResetTarget({ id: locId, name });
+  function handleReset(locId: string, name: string, versions: number) {
+    setResetTarget({ id: locId, name, versions });
   }
 
   async function doReset() {
@@ -257,7 +334,11 @@ export function App() {
     setError(null);
     try {
       await resetTheme(agencyId!, locId);
-      setLocations((prev) => prev.map((l) => (l.id === locId ? { ...l, theme: null } : l)));
+      // `themeVersions` back to 0 as well, or a second Reset on the same row would still
+      // offer to delete the history it just deleted.
+      setLocations((prev) =>
+        prev.map((l) => (l.id === locId ? { ...l, theme: null, themeVersions: 0 } : l))
+      );
     } catch (e) {
       setError((e as Error).message);
     }
@@ -358,6 +439,12 @@ export function App() {
     }
   }
 
+  /** How many menu items the chosen preset would reorder — 0 when it carries no order. */
+  const bulkOrderCount = (() => {
+    const p = presets.find((x) => x.id === bulkPresetId);
+    return Array.isArray(p?.menuOrder) ? p!.menuOrder.length : 0;
+  })();
+
   const allVisibleSelected = visible.length > 0 && visible.every((l) => selected.has(l.id));
   // Reflect a partial selection (some, not all) with the checkbox's indeterminate dash.
   const selectAllRef = useRef<HTMLInputElement>(null);
@@ -449,6 +536,19 @@ export function App() {
             Apply to {selected.size || 0}
           </button>
         </div>
+        {/*
+          A preset is understood as colours, and one saved from a reordered sub-account also
+          carries that sidebar order — which the apply route now honours, because the editor
+          always did and one action must not mean two things. Reordering somebody's menus is
+          not what "apply preset" sounds like, so it is named before the click rather than
+          discovered afterwards, the same rule as bulk disable naming how many sub-accounts
+          are on another page.
+        */}
+        {bulkOrderCount > 0 && (
+          <span className="pill-note">
+            This preset also sets the sidebar order ({bulkOrderCount} items).
+          </span>
+        )}
       </div>
 
       {presets.length > 0 && (
@@ -484,6 +584,27 @@ export function App() {
       )}
       {error && error !== SESSION_EXPIRED_MESSAGE && <div className="error-banner">Error: {error}</div>}
 
+      {/**
+        * Amber, not red, and it names what is missing rather than what broke.
+        *
+        * This is an instruction — reload — not a fault the reader caused, the same split
+        * `App` already makes for an expired session. The list of names matters more than
+        * the count: "some things didn't load" tells somebody to worry without telling them
+        * what about, and the support line has to say what the screen is now claiming
+        * WRONGLY, because a status dot reading "off" is worse than a blank one.
+        */}
+      {partialLoad.length > 0 && (
+        <div className="session-banner">
+          Couldn't load {partialLoad.join(", ").replace(/, ([^,]*)$/, " and $1")}. Reload the page to
+          try again
+          {partialLoad.some((m) => m.includes("support"))
+            ? " — until then the support status shown here may be wrong, and plan names can't be saved."
+            : partialLoad.some((m) => m.includes("default theme"))
+              ? " — until then the agency default will look unset, and saving it would overwrite the real one."
+              : "."}
+        </div>
+      )}
+
       {/* Table */}
       <div className="card table-card">
         {loading && <div className="empty-state">Loading sub-accounts&hellip;</div>}
@@ -502,6 +623,12 @@ export function App() {
                   <th className="col-center">Enabled</th>
                   <th className="col-center" title="Show the support chat bubble in this sub-account">
                     Support
+                  </th>
+                  <th
+                    className="col-center"
+                    title="What this client bought. Used only to say &quot;isn't included on your Starter plan&quot; when they ask about something you don't offer them."
+                  >
+                    Plan
                   </th>
                   <th className="col-center">Theme</th>
                   <th className="col-center">Logo</th>
@@ -567,6 +694,37 @@ export function App() {
                         </label>
                       </td>
                       <td className="col-center">
+                        {/* Uncontrolled: a controlled input would re-render every row on
+                            each keystroke, and the value only leaves this cell on blur.
+                            The KEY carries the stored plan, so the box is remounted from
+                            the server's answer whenever one arrives. Without it
+                            `handlePlanChange`'s rollback — which is written, and is the
+                            whole reason a failed save is safe — could never reach the
+                            DOM: a save that 401'd or was refused because the support
+                            config had not loaded left the typed plan sitting in the cell
+                            looking stored, while the client kept being told the feature
+                            "isn't part of your setup". Same defect the desk's routing
+                            limit had, in the other app. */}
+                        <input
+                          key={`plan:${loc.id}:${supportConfig?.planTiers?.[loc.id] ?? ""}`}
+                          className="plan-input"
+                          type="text"
+                          defaultValue={supportConfig?.planTiers?.[loc.id] ?? ""}
+                          placeholder={supportConfig ? "—" : ""}
+                          disabled={!supportConfig}
+                          maxLength={60}
+                          title={
+                            supportConfig
+                              ? "e.g. Starter, Pro. Leave blank if they're not on a named plan."
+                              : "Support settings didn't load, so plan names can't be edited."
+                          }
+                          onBlur={(e) => void handlePlanChange(loc.id, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") e.currentTarget.blur();
+                          }}
+                        />
+                      </td>
+                      <td className="col-center">
                         <button className="cell-btn" onClick={() => setEditingLocation(loc)}>
                           <span className={`status-badge ${t ? "on" : "off"}`}>
                             {t ? t.brandName || "Custom" : "Default"}
@@ -602,7 +760,9 @@ export function App() {
                         {t && (
                           <button
                             className="btn btn-ghost btn-sm"
-                            onClick={() => handleReset(loc.id, loc.locationName ?? loc.ghlLocationId)}
+                            onClick={() =>
+                              handleReset(loc.id, loc.locationName ?? loc.ghlLocationId, loc.themeVersions ?? 0)
+                            }
                             title="Reset to agency default"
                           >
                             Reset
@@ -721,7 +881,18 @@ export function App() {
       {resetTarget && (
         <ConfirmDialog
           title="Reset to agency default?"
-          message={`Reset "${resetTarget.name}" back to the agency default look? Its custom theme will be removed.`}
+          message={
+            /*
+             * Reset deletes EVERY version, not the current one — so the History tab, which
+             * is the only way back from any other mistake in this editor, is emptied too.
+             * The count is in our own database and is exactly what decides whether somebody
+             * clicks: the same rule as the desk naming how many tickets a Disable releases,
+             * and as bulk disable naming how many sub-accounts are on another page.
+             */
+            resetTarget.versions > 1
+              ? `Reset "${resetTarget.name}" back to the agency default look? This removes its theme and all ${resetTarget.versions} saved versions — the History tab will be empty, and this cannot be undone.`
+              : `Reset "${resetTarget.name}" back to the agency default look? Its custom theme will be removed and this cannot be undone.`
+          }
           confirmLabel="Reset"
           danger
           onConfirm={doReset}

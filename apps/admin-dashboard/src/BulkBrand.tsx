@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { saveTheme, scanBrandWebsite, type LocationRow, type ThemeConfig, type ThemeInput } from "./api";
+import { saveTheme, scanBrandWebsite, SESSION_EXPIRED_MESSAGE, type LocationRow, type ThemeConfig, type ThemeInput } from "./api";
+import { ConfirmDialog } from "./Dialog";
+import { summariseBulk } from "./bulkEnableLogic";
 import { downscaleDataUrl, paletteFromImage } from "./colorUtils";
-import { mergedTheme, parseRows, type RowState } from "./bulkBrandLogic";
+import { bulkBrandDirty, mergedTheme, parseRows, type RowState } from "./bulkBrandLogic";
 
 /**
  * Brand many sub-accounts from one pasted list of `sub-account, website` rows.
@@ -41,18 +43,47 @@ export function BulkBrandModal({
   const [rows, setRows] = useState<RowState[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      // Never lose a long pasted list to a stray Escape.
-      if (e.key === "Escape" && !busy) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, busy]);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
 
   const ready = useMemo(() => (rows ?? []).filter((r) => r.status === "ready"), [rows]);
   const saved = useMemo(() => (rows ?? []).filter((r) => r.status === "saved"), [rows]);
+
+  /**
+   * Closing with work on screen asks first — the same guard the theme editor and the
+   * support settings modal already carry, and the comment that used to sit on the Escape
+   * handler here said exactly this ("Never lose a long pasted list to a stray Escape")
+   * while guarding only on `busy`, which is false for the entire time anybody is reading
+   * the results. Measured before this existed: a five-line list vanished on Escape, and so
+   * did five completed scans; reopening gave an empty box both times. Backdrop clicks did
+   * the same.
+   *
+   * It is the sharpest version of that loss in the product. The theme editor risks typing
+   * you can redo; this risks a SEQUENTIAL pass of fetches over other people's websites —
+   * deliberately serial, so 41 clients is minutes — and redoing it means going back to
+   * every one of those sites.
+   *
+   * Dirty means "closing throws away something that took effort and has not been applied":
+   * scans that were read and not saved, or a pasted list nothing has come of yet. Once a
+   * row is saved it is in the database and closing costs nothing, so a finished run does
+   * not nag.
+   */
+  const dirty = bulkBrandDirty(rows, text);
+
+  function requestClose() {
+    if (busy) return; // mid-flight: there is nothing safe to do but wait
+    if (dirty) setConfirmDiscard(true);
+    else onClose();
+  }
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Escape belongs to the topmost thing on screen — without the guard it closes this
+      // modal out from under the discard prompt, which answers the prompt for you.
+      if (e.key === "Escape" && !confirmDiscard) requestClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, busy, confirmDiscard, dirty]);
 
   async function scanAll() {
     const parsed = parseRows(text, locations);
@@ -111,6 +142,14 @@ export function BulkBrandModal({
     setBusy(true);
     setError(null);
     const applied: { locationInstallId: string; theme: ThemeConfig }[] = [];
+    /**
+     * Every attempt, settled, so the outcome can be SUMMARISED rather than left as badges
+     * in a scrolling list of 41. Without this the only report of a partial failure was a
+     * red word beside each row — reliably missed, and the one failure that has a remedy
+     * (an expired session) was buried in 11px grey text as "Missing or invalid dashboard
+     * token", which means nothing to an agency owner.
+     */
+    const settled: { status: "fulfilled" | "rejected"; reason?: { message?: string } }[] = [];
     const current = rows ?? [];
     for (let i = 0; i < current.length; i++) {
       const row = current[i];
@@ -129,19 +168,31 @@ export function BulkBrandModal({
           })
         );
         applied.push({ locationInstallId: row.location.id, theme });
+        settled.push({ status: "fulfilled" });
         setRows((prev) => prev!.map((r, j) => (i === j ? { ...r, status: "saved" } : r)));
       } catch (e) {
+        settled.push({ status: "rejected", reason: { message: (e as Error).message } });
         setRows((prev) =>
           prev!.map((r, j) => (i === j ? { ...r, status: "failed", note: (e as Error).message } : r))
         );
       }
     }
     setBusy(false);
+    /**
+     * The SAME summariser the bulk enable/disable uses, not a second one written here.
+     * It states the successes ("38 of 41" rather than "3 failed", which leaves the reader
+     * wondering about the other 38) and passes a session expiry through VERBATIM, which is
+     * what lets the amber instruction banner below match on it. Two summarisers would
+     * drift, and this is the screen where a wrong count means an agency believes a client
+     * is branded when they are not.
+     */
+    setError(summariseBulk(settled).message);
     if (applied.length) onApplied(applied);
   }
 
   return (
-    <div className="modal-overlay" onClick={() => !busy && onClose()}>
+    <>
+    <div className="modal-overlay" onClick={requestClose}>
       <div className="modal" style={{ width: 720 }} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h2>Brand many sub-accounts at once</h2>
@@ -173,7 +224,16 @@ export function BulkBrandModal({
             )}
           </div>
 
-          {error && <div className="error-banner">{error}</div>}
+          {error === SESSION_EXPIRED_MESSAGE ? (
+            /* Amber, not red: an instruction, not a fault — and the only failure here the
+               reader can actually act on, since the session cannot be renewed from inside
+               the app. Same split App.tsx makes on the same constant. */
+            <div className="session-banner">
+              <strong>Session expired.</strong> {SESSION_EXPIRED_MESSAGE}
+            </div>
+          ) : (
+            error && <div className="error-banner">{error}</div>
+          )}
 
           {rows && (
             <div className="bulk-list">
@@ -212,17 +272,40 @@ export function BulkBrandModal({
 
           {saved.length > 0 && (
             <p className="field-hint">
-              Saved as a new version for each — every one is reversible from that sub-account's History tab.
+              {/* The COUNT, not just "saved". After a run over 41 rows the badges are in a
+                  scrolling list, and "how many actually landed" is the only question the
+                  agency has. Same reasoning as "38 of 41" on the bulk enable. */}
+              Applied to {saved.length} sub-account{saved.length === 1 ? "" : "s"} — saved as a new
+              version for each, so every one is reversible from that sub-account's History tab.
             </p>
           )}
         </div>
 
         <div className="modal-footer">
-          <button className="btn" disabled={busy} onClick={onClose}>
+          <button className="btn" disabled={busy} onClick={requestClose}>
             {saved.length ? "Done" : "Cancel"}
           </button>
         </div>
       </div>
     </div>
+
+    {confirmDiscard && (
+      <ConfirmDialog
+        title="Discard this run?"
+        /* Names what is actually at risk. A fixed sentence about "your changes" would be
+           wrong in one of the two cases, and a warning that describes the wrong thing is
+           one people learn to click through. */
+        message={
+          dirty === "scans"
+            ? `We've read ${ready.length} site${ready.length === 1 ? "" : "s"} and not applied ${ready.length === 1 ? "it" : "them"} yet. Closing loses the colours and logos we found, and reading them again means another pass over every one of those websites.`
+            : "The list you pasted hasn't been read yet, so nothing you typed will be kept."
+        }
+        confirmLabel="Discard"
+        danger
+        onConfirm={onClose}
+        onCancel={() => setConfirmDiscard(false)}
+      />
+    )}
+    </>
   );
 }

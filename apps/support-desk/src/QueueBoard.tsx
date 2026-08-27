@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
+import { queueReach } from "./queueReach";
+import { slaTone, slaTitle } from "./slaTone";
 import {
   ApiError,
   distributeQueue,
@@ -9,6 +11,7 @@ import {
   type DeskUser,
   type QueueBoard as Board,
 } from "./api";
+import NewTicket from "./NewTicket";
 
 /**
  * The board a manager runs the desk by, and the button an agent actually uses.
@@ -32,12 +35,14 @@ function duration(seconds: number): string {
   return `${hours}h ${minutes % 60}m`;
 }
 
-/** Colour the wait, not the ticket: the number is only meaningful against a target. */
-function waitTone(seconds: number): string {
-  if (seconds > 4 * 3600) return " bad";
-  if (seconds > 3600) return " warn";
-  return "";
-}
+/**
+ * Colour the wait, not the ticket: the number is only meaningful against a target — and
+ * the target is the AGENCY's, resolved server-side against their priorities and their open
+ * hours. This used to say exactly that and then hardcode 1h/4h for everybody, which put a
+ * green row in front of an agent whose automation had already escalated the ticket.
+ *
+ * Shared with the inbox (`slaTone.ts`) so the two lists cannot disagree about one ticket.
+ */
 
 export default function QueueBoard({
   me,
@@ -55,6 +60,7 @@ export default function QueueBoard({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
 
   const load = useCallback(() => {
     fetchQueue()
@@ -126,14 +132,35 @@ export default function QueueBoard({
   if (!board) return <p className="muted pad">Loading the queue…</p>;
 
   const { capacity, responseTime } = board;
+  // Reading of what this same payload already says: each queued ticket's tier against the
+  // tiers actually on duty. See queueReach.ts for why it is not inline.
+  const reach = queueReach(board.queue, board.agents);
 
   return (
     <section className="queue-board">
+      {creating && (
+        <NewTicket
+          onClose={() => setCreating(false)}
+          onCreated={(id) => {
+            setCreating(false);
+            // Refresh the board AND open what was just raised: the agent's next action is
+            // always to work it, and leaving them on the list to hunt for the row they
+            // just created is a step nobody wants.
+            load();
+            onChanged();
+            onOpen(id);
+          }}
+        />
+      )}
       <header className="queue-head">
         <div className="queue-actions">
           <button className="primary" onClick={take} disabled={busy}>
             Take next
           </button>
+          {/* Beside "Take next" rather than in the top bar: this is the existing action
+              cluster, and the Queue tab is the deliberate landing view. A fourth top-bar
+              tab would imply a fourth pane. */}
+          <button onClick={() => setCreating(true)}>New ticket</button>
           {me.role === "mosaic_admin" && (
             <button onClick={distribute} disabled={busy || board.depth === 0}>
               Distribute queue
@@ -191,14 +218,36 @@ export default function QueueBoard({
         ) : (
           <>No chats have reached a person in the last {responseTime.windowDays} days, so there is no average yet.</>
         )}
-        {board.estimatedWaitSeconds !== null && (
-          <> Someone joining now would be told about {duration(board.estimatedWaitSeconds)}.</>
+        {board.estimatedWaitText && (
+          // QUOTED, not paraphrased. This line exists to show the promise the widget is
+          // making; formatting the seconds again with the desk's own compact `1h 7m`
+          // produced a different sentence from the one the client actually reads.
+          <> Someone joining now would be told: “{board.estimatedWaitText}”</>
         )}
       </p>
 
       {capacity.capacity === 0 && board.depth > 0 && (
         <p className="queue-alarm">
           {board.depth} waiting and nobody is available. Clients are being told a person is coming.
+        </p>
+      )}
+
+      {/*
+        * A ticket nobody on duty is allowed to take. `claimNext` and distribute both skip
+        * it silently, so it sat here as an ordinary row — measured on a live desk, the
+        * OLDEST and reddest one, 28 hours in, while "Take next" kept handing over tickets
+        * queued a day later. Every surface said queued; nobody could reach it.
+        *
+        * Split by remedy, because the two states are not the same problem: an unstaffed
+        * tier never clears on its own, while an away colleague does.
+        */}
+      {reach.unreachable > 0 && (
+        <p className="queue-alarm">
+          {reach.unreachable === 1 ? "1 ticket needs" : `${reach.unreachable} tickets need`} tier{" "}
+          {reach.tierNeeded} and the highest tier on duty is {reach.topTierOnDuty}.{" "}
+          {reach.unstaffed
+            ? `No account is at tier ${reach.tierNeeded} at all — “Take next” steps past these, so they wait until somebody's tier is raised or they go to the agency.`
+            : "Whoever holds that tier is away — these wait until they are back."}
         </p>
       )}
 
@@ -215,7 +264,12 @@ export default function QueueBoard({
                 {row.tier > 1 && <span className="tier">tier {row.tier}</span>}
                 <span className="queue-subject">{row.subject || row.locationName || "—"}</span>
               </span>
-              <span className={`queue-wait${waitTone(row.waitingSeconds)}`}>{duration(row.waitingSeconds)}</span>
+              <span
+              className={`queue-wait${slaTone(row.sla)}`}
+              title={slaTitle(row.sla) ?? "No response target is running for this ticket"}
+            >
+              {duration(row.waitingSeconds)}
+            </span>
             </button>
           </li>
         ))}
