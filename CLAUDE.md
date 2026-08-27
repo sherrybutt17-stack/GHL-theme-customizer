@@ -1076,6 +1076,73 @@ read every agency's support conversations.
 - The two halves are deliberate: the driver stops CREATING permanent credentials, and
   `harness-desk-accounts` catches the ones a SIGKILL leaves behind anyway.
 
+#### The agent could not see what the agency had written down (2026-08-27)
+Asked for directly: *"once a lead comes in from a particular agency the files of that agency
+can be viewed in the chat."* There is no file or attachment model anywhere in the schema, so
+"files" can only mean the one agency-scoped body of content that exists — the articles they
+write in *Client support → Your content*.
+
+The gap was real and had been there since the desk was built. `kbSearch` ranks an agency's
+own articles **above** the shared corpus, and this file already says why: they answer *"how
+do I use YOUR process"*, which vendor documentation never will. The desk got none of that.
+It saw the titles the bot happened to **cite**, on messages the bot **answered** — so on a
+ticket the bot returned nothing for, which is most of the ones that reach a human, the agent
+saw nothing at all. The most relevant content in the corpus was invisible on the one screen
+where a person is deciding what to say.
+
+`GET /desk/api/conversations/:id/agency-kb`, and a collapsed panel in `Ticket.tsx`.
+
+- **Scoped by the CONVERSATION, never by a parameter.** The agency is read off the ticket, so
+  there is no id an agent could pass to read somebody else's content — the rule canned
+  replies already enforce with a 403. The mutation that drops it is worth recording because
+  of what it produces rather than that it fails: every agency's articles on every ticket,
+  **rendered under the reading agency's brand name** — `Refund steps in Agency b` on agency
+  A's own runbook. One agency's private process, retitled as another's.
+- **Rendered for THIS client's brand.** The corpus is stored placeholdered, so a raw title
+  reads `Refund steps in {{PLATFORM}}`. This file records that exact defect reaching agents
+  through the citation row one day earlier — our own template syntax on screen, which is
+  neither a vendor name nor a link and therefore passes all three gates on the way into a
+  customer's chat. Measured after: *"How we onboard a new client in **Harbour Suite**… walk
+  them through **Contacts** and **Deals**"* — the agency's rename, on the agent's screen.
+- **Quarantined articles are WITHHELD and COUNTED.** `needs_review` means something
+  brand-shaped survived normalisation, so retrieval skips them; offering one to an agent is
+  handing them text we already believe names the vendor. But an absent article is
+  indistinguishable from one never written, so the count comes back and the panel says so —
+  the review queue's rule, that naming the problem beats silence.
+- **No `sourceUrl`, ever.** *"A link visible to a support rep is a link that gets pasted into
+  a client reply."* Bodies are safe by construction (every URL is stripped at ingest); the
+  provenance column simply must not travel.
+- **The panel sits ABOVE the brand banner, never between it and the compose box.** That
+  banner is pinned flush to the box on purpose — brand name, renames, hidden features and
+  forbidden terms are the last thing read before typing — and displacing it to make room for
+  a reference panel would undo the one placement decision the desk is built around. Measured
+  in the browser: `gapBannerToCompose: 0px`, `panelAboveBanner: true`.
+- **Collapsed, with the count in the summary.** A disclosure whose label says nothing about
+  what is inside is one nobody opens — the onboarding-snippet trap, avoided rather than
+  repeated.
+- **A failed fetch reads as "couldn't load", not "none written".** Those are different facts
+  and only one is a reason to stop looking — the same distinction the live gate check makes
+  between a FAILED check and a CLEAN one.
+- **Zero agency-authored articles existed on this database**, which is the state every
+  install starts in and the one this file has been bitten by twice (the hand-off tile that
+  hid itself, "Your content" never rendered with data). The empty state therefore says what
+  the agency's own content is FOR and where they add it, rather than rendering nothing.
+- Verified live: **20 checks** (`scratchpad/verify-agency-kb.ts`) on two throwaway agencies
+  with a throwaway desk account, articles written through the REAL ingest route so the
+  placeholdering under test is the product's and not the harness's. Confirmed to fail **1**
+  under a mutation dropping `renderForBrand`, **3** under one dropping the agency scope, and
+  **1** under one admitting `needs_review`. Its load-bearing control is that the same agent,
+  in one session, gets **different** content on the two tickets — a route ignoring scope
+  passes every single-agency assertion.
+- **And asserting the payload proves nothing about the screen**, so it was driven in a real
+  browser: panel summary *"This agency's own content — 2 articles"*, titles and bodies
+  brand-rendered, and **no `{{` anywhere in `document.innerText`**.
+  - One driver fault worth keeping: a synthetic `.click()` on the inbox row is a **no-op**
+    (React binds the handler on an inner element), and it printed the row's text as though
+    it had worked while the pane still read *"Pick a conversation to work on."* — so the
+    panel then measured as `PANEL NOT RENDERED` on a ticket that had never opened. Dispatch
+    a real `Input.dispatchMouseEvent` at the row's own coordinates.
+
 #### The banner could not show a rename, and the dry run invented fifty-one
 Found 2026-08-19, by rendering the dry run — the go-live gate, which had never been looked
 at in a browser. Its verdict line read:

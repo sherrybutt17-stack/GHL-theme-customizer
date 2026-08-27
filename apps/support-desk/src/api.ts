@@ -420,6 +420,26 @@ export const renderCannedReply = (conversationId: string, replyId: string) =>
     { method: "POST", body: JSON.stringify({}) }
   );
 
+export interface AgencyArticle {
+  id: string;
+  title: string;
+  body: string;
+  featureTags: string[];
+  updatedAt: string;
+}
+
+/**
+ * The agency's OWN knowledge-base articles, for this ticket.
+ *
+ * Scoped by the conversation on the server — there is no agency id to pass, deliberately,
+ * so an agent cannot read another agency's content. Titles and bodies arrive already
+ * rendered for this client's brand; `sourceUrl` is never returned.
+ */
+export const fetchAgencyKb = (conversationId: string) =>
+  request<{ articles: AgencyArticle[]; heldForReview: number; truncated: boolean }>(
+    `/desk/api/conversations/${conversationId}/agency-kb`
+  );
+
 export const createCannedReply = (input: { title: string; body: string; agencyInstallId?: string }) =>
   request<CannedReply>("/desk/api/canned-replies", { method: "POST", body: JSON.stringify(input) });
 

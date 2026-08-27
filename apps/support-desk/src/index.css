@@ -536,3 +536,40 @@ button.link:hover { text-decoration: underline; }
   font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--border);
 }
 .automation-history li { padding: 2px 0; }
+
+/*
+  THE AGENCY'S OWN CONTENT panel, above the brand banner in the ticket pane.
+
+  Deliberately quieter than the brand banner directly below it. That banner is the desk's
+  safety surface and must stay the loudest thing next to the compose box; this is a
+  reference an agent chooses to open, so it reads as a disclosure rather than an alert.
+
+  `textarea` is not in the base `input, select` rule, which is how the compose box shipped
+  white in a dark UI — so the filter input carries its own colours rather than trusting a
+  bare-element rule to reach it.
+*/
+.agency-kb { border-top: 1px solid var(--border); background: var(--surface); }
+.agency-kb-toggle {
+  width: 100%; text-align: left; background: none; border: 0; color: var(--muted);
+  padding: 8px 18px; font-size: 12px; cursor: pointer; font-family: inherit;
+}
+.agency-kb-toggle:hover { color: var(--text); }
+.agency-kb-caret { display: inline-block; width: 14px; color: var(--muted); }
+.agency-kb-body { padding: 0 18px 12px; max-height: 260px; overflow-y: auto; }
+.agency-kb-filter {
+  width: 100%; margin-bottom: 8px; padding: 6px 9px; font-size: 12.5px;
+  background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px; font-family: inherit;
+}
+.agency-kb-list { display: flex; flex-direction: column; gap: 4px; }
+.agency-kb-item { border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.agency-kb-title {
+  background: none; border: 0; color: var(--accent); font-size: 12.5px; text-align: left;
+  padding: 3px 0; cursor: pointer; font-family: inherit; width: 100%;
+}
+.agency-kb-title:hover { text-decoration: underline; }
+.agency-kb-text {
+  white-space: pre-wrap; font-size: 12.5px; line-height: 1.55; color: var(--text);
+  background: var(--surface-2); border-radius: 6px; padding: 9px 11px; margin: 4px 0 8px;
+}
+.agency-kb-note { font-size: 11.5px; color: var(--muted); line-height: 1.5; padding: 6px 0; }

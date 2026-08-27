@@ -910,6 +910,83 @@ deskInboxRouter.post("/desk/api/canned-replies", requireDeskAuth, async (req: Re
 });
 
 /**
+ * THE AGENCY'S OWN CONTENT, on the ticket.
+ *
+ * A Mosaic agent answering for five brands in an afternoon has no way to see what THIS
+ * agency has written down. The bot has always had it — `kbSearch` ranks an agency's own
+ * articles above the shared corpus precisely because they answer "how do I use YOUR
+ * process", which vendor documentation never will — but the desk only ever saw the titles
+ * the bot happened to CITE, and only on messages the bot answered. On a ticket the bot got
+ * nothing for, which is most of the ones that reach a human, the agent saw nothing at all.
+ *
+ * Four decisions, and each is a way this could leak or mislead:
+ *
+ *  - SCOPED BY THE CONVERSATION, never by a parameter. The agency is read off the ticket,
+ *    so there is no id an agent could pass to read another agency's content. The same rule
+ *    canned replies already enforce with a 403.
+ *  - THE AGENCY'S OWN ARTICLES ONLY (`agencyInstallId` set). The shared corpus is ~1,500
+ *    articles of vendor documentation; including it would bury the handful that are
+ *    actually this agency's, which is the entire point of the panel.
+ *  - RENDERED FOR THIS CLIENT'S BRAND. The corpus is stored placeholdered, so a raw title
+ *    reads `Onboarding in {{PLATFORM}}`. CLAUDE.md records this exact bug reaching agents
+ *    through the citation row — our own template syntax on screen, which is neither a
+ *    vendor name nor a link and so passes every gate on the way into a customer's chat.
+ *    `renderForBrand` here, for the same reason `citationTitles` does it.
+ *  - NO `sourceUrl`, EVER. "A link visible to a support rep is a link that gets pasted into
+ *    a client reply." Bodies are safe by construction — every URL is stripped at ingest —
+ *    but the provenance column must not travel.
+ *
+ * Quarantined articles are EXCLUDED and COUNTED. `needs_review` means something
+ * brand-shaped survived normalisation, so retrieval skips them; showing one to an agent is
+ * offering them text we already believe names the vendor. But an article that is simply
+ * absent is indistinguishable from one that was never written, so the count is returned and
+ * the panel says so — the same reason the review queue names the term rather than saying
+ * "saved".
+ */
+deskInboxRouter.get(
+  "/desk/api/conversations/:id/agency-kb",
+  requireDeskAuth,
+  async (req: Request, res: Response) => {
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: req.params.id },
+      select: { agencyInstallId: true, locationInstall: { select: { ghlLocationId: true } } },
+    });
+    if (!conversation) return res.status(404).json({ error: "Conversation not found" });
+
+    const brand = await resolveBrandMap(conversation.locationInstall.ghlLocationId);
+    const name = brand?.brandName ?? "your dashboard";
+    const labels = brand?.featureLabels ?? {};
+
+    const [rows, heldCount] = await Promise.all([
+      prisma.kbArticle.findMany({
+        where: { agencyInstallId: conversation.agencyInstallId, status: "ready" },
+        select: { id: true, titleNormalized: true, bodyNormalized: true, featureTags: true, updatedAt: true },
+        orderBy: { updatedAt: "desc" },
+        // A cap so one agency with a large corpus cannot make every ticket slow to open.
+        // Stated in the payload rather than silently truncated, the `no silent caps` rule.
+        take: 100,
+      }),
+      prisma.kbArticle.count({
+        where: { agencyInstallId: conversation.agencyInstallId, status: "needs_review" },
+      }),
+    ]);
+
+    res.json({
+      articles: rows.map((a) => ({
+        id: a.id,
+        title: renderForBrand(a.titleNormalized, name, labels),
+        body: renderForBrand(a.bodyNormalized, name, labels),
+        featureTags: a.featureTags,
+        updatedAt: a.updatedAt,
+      })),
+      // What the agent is NOT being shown, and why, so an empty panel is never ambiguous.
+      heldForReview: heldCount,
+      truncated: rows.length === 100,
+    });
+  }
+);
+
+/**
  * Render a canned reply for THIS conversation: {{PLATFORM}} → the client's brand name,
  * {{FEATURE:key}} → the label that client actually sees in their sidebar.
  */

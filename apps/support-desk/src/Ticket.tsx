@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { AgencyArticle } from "./api";
 import {
   ApiError,
   assignTicket,
   checkDraft,
   draftReply,
   escalateTier,
+  fetchAgencyKb,
   fetchCannedReplies,
   fetchQueue,
   fetchTicket,
@@ -82,6 +84,20 @@ export default function Ticket({
   const [busy, setBusy] = useState<null | "send" | "draft" | "hand" | "route" | "template">(null);
   const [naming, setNaming] = useState(false);
   const [canned, setCanned] = useState<CannedReply[]>([]);
+  /*
+    THE AGENCY'S OWN CONTENT. A Mosaic agent switches between five brands in an afternoon
+    and had no way to see what THIS agency has written down: the bot has ranked their own
+    articles above the shared corpus since the day it was built, and the desk only ever saw
+    the titles the bot happened to CITE — so on a ticket the bot answered nothing for, which
+    is most of the ones that reach a human, the agent saw nothing at all.
+
+    Collapsed by default. It is a reference, not a decision, and the brand banner directly
+    above the compose box is what must stay the last thing read before typing.
+  */
+  const [agencyKb, setAgencyKb] = useState<{ articles: AgencyArticle[]; heldForReview: number; truncated: boolean } | null>(null);
+  const [kbOpen, setKbOpen] = useState(false);
+  const [kbFilter, setKbFilter] = useState("");
+  const [kbOpenArticle, setKbOpenArticle] = useState<string | null>(null);
   // Colleagues, for a transfer. Read from the queue board rather than /desk/api/users,
   // which is admin-only — every agent can pass work on, not only managers.
   const [agents, setAgents] = useState<QueueAgent[]>([]);
@@ -93,6 +109,13 @@ export default function Ticket({
         setTicket(t);
         setError(null);
         void fetchQueue().then((b) => setAgents(b.agents)).catch(() => setAgents([]));
+        /*
+          A failure here leaves `agencyKb` null, which the panel renders as "couldn't load"
+          rather than as "this agency has written nothing". Those are different facts and
+          only one of them is a reason to stop looking — the same distinction the live gate
+          check makes between a FAILED check and a CLEAN one.
+        */
+        void fetchAgencyKb(id).then(setAgencyKb).catch(() => setAgencyKb(null));
         return fetchCannedReplies(t.agencyInstallId).then(setCanned).catch(() => setCanned([]));
       })
       .catch((e) => setError(e instanceof ApiError ? e.message : String(e)));
@@ -540,6 +563,112 @@ export default function Ticket({
             )}
           </article>
         ))}
+      </div>
+
+      {/*
+        THE AGENCY'S OWN CONTENT.
+
+        Placed ABOVE the brand banner, never between it and the compose box: that banner is
+        pinned immediately above the box on purpose — brand name, renamed labels, hidden
+        features and forbidden terms are the last thing read before typing — and pushing it
+        away from the box to make room for a reference panel would undo the one placement
+        decision the desk is built around.
+
+        Collapsed by default, and the summary carries the COUNT, so an agent can see there
+        is something to look at without opening it. A disclosure whose label says nothing
+        about what is inside is one nobody opens — the trap already recorded for the
+        onboarding page's JavaScript snippet.
+      */}
+      <div className="agency-kb">
+        <button
+          className="agency-kb-toggle"
+          onClick={() => setKbOpen((v) => !v)}
+          aria-expanded={kbOpen}
+        >
+          <span className="agency-kb-caret">{kbOpen ? "▾" : "▸"}</span>
+          {agencyKb === null
+            ? "This agency's own content — couldn't load"
+            : agencyKb.articles.length === 0
+              ? "This agency's own content — none written yet"
+              : `This agency's own content — ${agencyKb.articles.length} article${agencyKb.articles.length === 1 ? "" : "s"}`}
+        </button>
+
+        {kbOpen && (
+          <div className="agency-kb-body">
+            {agencyKb === null && (
+              <div className="agency-kb-note">
+                Couldn't load this agency's content. That is not the same as them having
+                written none — reopen the ticket to try again.
+              </div>
+            )}
+
+            {agencyKb !== null && agencyKb.articles.length === 0 && (
+              <div className="agency-kb-note">
+                This agency hasn't written any of their own articles. Theirs is the content
+                that answers "how do I use YOUR process", which the shared corpus never
+                will — they add it in the dashboard under "Client support → Your content".
+              </div>
+            )}
+
+            {agencyKb !== null && agencyKb.articles.length > 0 && (
+              <>
+                <input
+                  className="agency-kb-filter"
+                  placeholder="Filter…"
+                  value={kbFilter}
+                  onChange={(e) => setKbFilter(e.target.value)}
+                />
+                <div className="agency-kb-list">
+                  {agencyKb.articles
+                    .filter((a) => {
+                      const q = kbFilter.trim().toLowerCase();
+                      if (!q) return true;
+                      return (a.title + " " + a.body).toLowerCase().includes(q);
+                    })
+                    .map((a) => (
+                      <div key={a.id} className="agency-kb-item">
+                        <button
+                          className="agency-kb-title"
+                          onClick={() => setKbOpenArticle(kbOpenArticle === a.id ? null : a.id)}
+                        >
+                          {a.title}
+                        </button>
+                        {kbOpenArticle === a.id && (
+                          <div className="agency-kb-text">{a.body}</div>
+                        )}
+                      </div>
+                    ))}
+                  {agencyKb.articles.filter((a) => {
+                    const q = kbFilter.trim().toLowerCase();
+                    return !q || (a.title + " " + a.body).toLowerCase().includes(q);
+                  }).length === 0 && (
+                    <div className="agency-kb-note">Nothing matches “{kbFilter}”.</div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {/*
+              What is NOT on screen, and why. An article that is simply absent is
+              indistinguishable from one that was never written, and a quarantined article
+              is the agency's own text that we believe still names the vendor — so an agent
+              hunting for it deserves to know it exists rather than concluding the panel is
+              broken.
+            */}
+            {agencyKb !== null && agencyKb.heldForReview > 0 && (
+              <div className="agency-kb-note">
+                {agencyKb.heldForReview} more {agencyKb.heldForReview === 1 ? "article is" : "articles are"} held
+                for review and not shown here — something brand-shaped survived in them, so the
+                bot can't use them either.
+              </div>
+            )}
+            {agencyKb !== null && agencyKb.truncated && (
+              <div className="agency-kb-note">
+                Showing the 100 most recently updated. Use the filter to reach the rest.
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/*
