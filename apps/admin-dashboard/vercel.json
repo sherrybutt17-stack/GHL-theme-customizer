@@ -1,0 +1,8 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "cd ../.. && npm --workspace @ghl-theme-builder/admin-dashboard run build",
+  "outputDirectory": "dist",
+  "installCommand": "cd ../.. && npm ci",
+  "framework": null,
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}
